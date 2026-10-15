@@ -1,6 +1,9 @@
 {
   "name": "loop-engineering-harness",
-  "owner": { "name": "iagopadilha" },
+  "owner": {
+    "name": "iagopadilha"
+  },
+  "description": "Orchestrator, spec-driven engine, subagents, guard hook and unattended loop for Claude Code.",
   "plugins": [
     {
       "name": "loop-engineering-harness",
