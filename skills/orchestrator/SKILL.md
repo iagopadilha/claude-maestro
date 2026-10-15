@@ -204,6 +204,7 @@ Do not repeat in the report what is already in the file. Blocked items and quest
 
 - `references/contracts.md` — return format of each agent and how to interpret it.
 - `references/entry-adoption-standalone.md` — handoff to the unsupervised loop, adopting ready-made material (`origin=adopted`), standalone feature vs roadmap. Read before Phase 0.
+- `references/example-flow.md` — a complete run from the first chat to the PR: files, statuses, a failure, a question, notifications.
 - `references/dispatch.md` — executor routing, path collision, parallelism, worktree protocol.
 - `references/regression.md` — refactoring regression (`regression=yes` in the ROADMAP, `refactor-*` only): `RG-xx` cases, baseline before editing, comparison after, how to check effect (curl, Playwright, database, logs).
 - `references/refactoring.md` — refactoring to the project's standard in the loop: `refactor-*` feature, shell before pages, search gate, scope in a LEGACY project.

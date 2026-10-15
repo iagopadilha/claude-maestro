@@ -55,7 +55,7 @@ One line per feature, deterministic, inside the stage it belongs to:
 - [pix-payment] status=verified scope=Medium kind=back paths=apps/api/orders
 - [checkout-summary] status=verified scope=Small kind=front paths=apps/web/checkout note=unverified
 - [coupon] status=blocked scope=Large kind=both paths=packages/ui,apps/web/checkout
-- [relatorio-fiscal] status=specced scope=Small kind=back paths=apps/api/fiscal origin=adopted
+- [tax-report] status=specced scope=Small kind=back paths=apps/api/tax origin=adopted
 ```
 
 Field `tries=<n>` (accumulated failures of the feature: gate `BLOCKED`, executor/verifier `FAIL`, E2E `FAIL`). **On each failure the orchestrator increments `tries` on the line; on reaching 2 the feature becomes `blocked`** (quarantine). `tries>=2` outside `blocked` is a violation.
@@ -100,7 +100,7 @@ A single `STATE.md` grows without bound and is read in full on every resume. So 
 **Phase closing (mandatory at the end of each stage, also if the loop stops midway through it):**
 1. Write `phases/stage-NN.md` with the fixed sections: `Delivered`, `User decisions`, `Lessons`, `Unverified`, `Blocked`, `For the next stage`. Short prose; slug and path instead of content.
 2. Empty from `STATE.md` everything that belongs to the closed stage; keep only what still holds (active quarantine, open question).
-3. Update the stage's line in `ROADMAP.md` with `fechada -> phases/stage-NN.md`.
+3. Update the stage's line in `ROADMAP.md` with `closed -> phases/stage-NN.md`.
 4. Stop at the checkpoint with the stage summary (the same text as `For the next stage`).
 
 **Stop in the middle of a stage** (user interrupted, mandatory stop, context running out): write in `STATE.md` a `STOP` block with `where it stopped`, `exact next step`, `what the user decided since the last checkpoint` and `pending question`. A decision given in chat goes to the file right away, not at the end.
