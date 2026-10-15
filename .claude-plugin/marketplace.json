@@ -1,0 +1,11 @@
+{
+  "name": "loop-engineering-harness",
+  "owner": { "name": "iagopadilha" },
+  "plugins": [
+    {
+      "name": "loop-engineering-harness",
+      "source": "./",
+      "description": "Orchestrator skill, spec-driven engine, subagents, guard hook and unattended loop script."
+    }
+  ]
+}
