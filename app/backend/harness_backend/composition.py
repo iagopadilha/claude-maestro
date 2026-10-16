@@ -53,9 +53,11 @@ def build_application(config=None, **config_overrides):
         return server.url or ""
 
     projects_module = build_projects_module(config, log, get_app_url)
-    loop_read_module = build_loop_read_module(config, log, projects_module.project_service, activity_monitor)
+    loop_read_module = build_loop_read_module(config, log, projects_module.project_service, activity_monitor,
+                                              projects_module.planning_requirement_service)
     loop_commands_module = build_loop_commands_module(config, log, projects_module.project_service,
-                                                      loop_read_module.loop_status_service, activity_monitor, get_app_url)
+                                                      loop_read_module.loop_status_service, activity_monitor, get_app_url,
+                                                      projects_module.planning_requirement_service)
     app_controller = AppController(config, log, server, activity_monitor, projects_module.project_service,
                                    app_diagnostics_service=build_app_diagnostics_service(config))
 

@@ -372,6 +372,20 @@ def nothing_left_to_do(done, total, opts, state=None, tiebreak_possible=False):
     return bool(total) and done == total and not (opts.option or opts.answer) and not will_auto_answer and not tiebreak_possible
 
 
+def approval_problems(root, answering=False):
+    """The roadmap must have been approved by the user (ROADMAP-APPROVED.json). When answering a question (--answer/--option)
+    the signature is not compared (the loop may legitimately change rows mid-run), but the approval file must exist: an
+    answer never starts a loop on a roadmap nobody approved."""
+    if answering:
+        if os.path.isfile(loop_state.loop_path(root, loop_state.APPROVAL_NAME)):
+            return []
+        return ["roadmap never approved: an answer does not replace the approval (Approve roadmap button in the panel)"]
+    approval = loop_state.roadmap_approval(root)
+    if approval["approved"]:
+        return []
+    return ["roadmap not approved: %s (Approve roadmap button in the panel)" % approval["reason"]]
+
+
 def preflight(repo, opts):
     """Checks everything the loop needs and returns (problems, warnings). Creates nothing."""
     problems, warns = [], []
@@ -402,10 +416,8 @@ def preflight(repo, opts):
         else:
             note = " (answering the loop's question: the answer may reopen a quarantined feature)" if done == total else ""
             print("[check] ROADMAP: %d features, %d closed, %d to do%s" % (total, done, total - done, note))
-    if os.path.exists(os.path.join(root, ".specs", "project", "ROADMAP.md")) and not (opts.option or opts.answer):
-        approval = loop_state.roadmap_approval(root)
-        if not approval["approved"]:
-            problems.append("roadmap not approved: %s (Approve roadmap button in the panel)" % approval["reason"])
+    if os.path.exists(os.path.join(root, ".specs", "project", "ROADMAP.md")):
+        problems += approval_problems(root, answering=bool(opts.option or opts.answer))
     if not re.search(r"^Conformance:\s*(STANDARD|LEGACY)", read(os.path.join(root, "CLAUDE.md")), re.M):
         problems.append("CLAUDE.md has no `Conformance: STANDARD|LEGACY` line (harness.py classify <repo> --write STANDARD|LEGACY, or the Conformance button in the panel)")
     problems += test_environment_problems(root, opts)

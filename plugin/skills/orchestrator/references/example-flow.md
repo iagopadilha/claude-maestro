@@ -45,7 +45,7 @@ The answer is saved in `CLAUDE.md`. Subagents read it before they edit anything.
 ```
 /orchestrator roadmap
 ```
-The `Plan` agent proposes stages and features (or press **Generate roadmap** in the panel and type the goal). The orchestrator writes `.specs/project/ROADMAP.md`, opens the panel and tells you to approve there. One line per feature, a typed grammar checked by the engine's `loop_state.py`:
+The `Plan` agent proposes stages and features (or, in a new project, talk it through in the panel's planning screen, which runs `/orchestrator plan`). The orchestrator writes `.specs/project/ROADMAP.md` and one flow per feature in `.specs/project/FLOWS.md`, opens the panel and tells you to approve there. One line per feature, a typed grammar checked by the engine's `loop_state.py`:
 
 ```
 ## Stage 1: Coupon backend
@@ -186,6 +186,7 @@ You get a summary file `loop-summary-<project>-<date>.md` in the app's output fo
    ├─ features/<slug>/             spec.md (and design.md, tasks.md when needed)
    └─ project/
       ├─ ROADMAP.md                the index, one line per feature
+      ├─ FLOWS.md                  the flow that proves each feature
       ├─ STATE.md                  only the present
       ├─ RULES.md                  limits (imported by CLAUDE.md)
       ├─ TEST-ENVIRONMENT.md       how to test for real (credentials by key, test data)

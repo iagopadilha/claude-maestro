@@ -1,6 +1,8 @@
 /* Root of the project panel (/p/<id>/): the whole page as one Preact tree. Before the first /state only the frame
    shows (as the old static template did); each region renders its content once ctx.state arrives. Container flags
-   (hidden parts, classes, colors, titles) come from the models of the owner modules. */
+   (hidden parts, classes, colors, titles) come from the models of the owner modules.
+   Planning mode (state.planning_required): the PlanningScreen takes the place of the loop panel; header and trail
+   stay. The loop regions stay in the DOM (hidden and empty) because the one-time setup of startPanel is bound to them. */
 import { html } from '../../util/preact.js';
 import { disconnectedDetail } from '../../api/api_client.js';
 import { WhyButton } from '../../components/why_panel.js';
@@ -15,6 +17,7 @@ import { CenterTabs, Caption, PastBar, Legend, CenterCanvas, centerModel, zoomCe
 import { InspectorHead, InspectorTabs, InspectorBody, inspectorModel } from './inspector.js';
 import { ComposerBand, ComposerSeg, FeatureOptions, ComposerTray, ComposerStatus, composerView, composerSubmit, composerKeyDown, pickFeature } from './chat.js';
 import { ActPanel } from './act.js';
+import { PlanningScreen, planningRequired } from './planning.js';
 import { Timeline } from './timeline.js';
 
 const SEP_TITLE = 'drag, use the arrows or double-click to restore';
@@ -33,12 +36,12 @@ function ClosedCard({ c }) {
 }
 
 export function Panel() {
-  const has = !!ctx.state;
-  const im = has ? inspectorModel() : null; // first: it drops a selection that no longer exists
-  const hd = headerModel(), blocks = totalBlocks(), nz = nlZone();
-  const cm = has ? centerModel() : null, cv = has ? composerView() : null;
+  const has = !!ctx.state, planning = has && planningRequired(), on = has && !planning; // on = the loop panel shows
+  const im = on ? inspectorModel() : null; // first: it drops a selection that no longer exists
+  const hd = headerModel(), blocks = totalBlocks(), nz = planning ? { show: false, built: false } : nlZone();
+  const cm = on ? centerModel() : null, cv = on ? composerView() : null;
   const canvasKind = cm ? cm.kind : null;
-  return html`<div id="app">
+  return html`<div id="app" data-mode=${planning ? 'planning' : null}>
     <div id="banner-offline" class="banner banner-offline" role="alert" hidden=${!ctx.offline}>
       <span class="dot dot-red"></span>
       <strong>app disconnected</strong>
@@ -65,18 +68,20 @@ export function Panel() {
     </header>
 
     <div id="trail" class="trail" aria-label="Where this project stands"><${ProgressTrail} /></div>
-    <div id="alert-zone" class="alert-zone">${has ? html`<${Alert} />` : null}</div>
+    <div id="alert-zone" class="alert-zone">${on ? html`<${Alert} />` : null}</div>
     <div id="newloop-zone" class="newloop-zone" hidden=${!nz.show}>${nz.built ? html`<${NewLoop} />` : null}</div>
 
-    <main class="main">
-      <aside class="left" id="left" aria-label="Roadmap">${has ? html`<${RoadmapSidebar} />` : null}</aside>
+    ${planning ? html`<section id="planning" class="planning-zone" aria-label="Planning"><${PlanningScreen} /></section>` : null}
+
+    <main class="main" hidden=${planning}>
+      <aside class="left" id="left" aria-label="Roadmap">${on ? html`<${RoadmapSidebar} />` : null}</aside>
       <div class="sep sep-v" id="sep-left" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Roadmap width" title=${SEP_TITLE}></div>
 
       <section class="center" id="center" aria-label="Loop view">
         <div class="center-bar">
           <button type="button" class="btn btn-sm left-toggle" id="left-toggle" aria-expanded="false" aria-controls="left">Roadmap</button>
           <div class="seg" role="tablist" aria-label="View" id="center-tabs"><${CenterTabs} view=${ui.view} /></div>
-          <div class="caption" id="caption">${has ? html`<${Caption} view=${ui.view} />` : null}</div>
+          <div class="caption" id="caption">${on ? html`<${Caption} view=${ui.view} />` : null}</div>
           <div class="zoom-ctl" id="zoom-ctl" role="group" aria-label="Diagram zoom" hidden=${cm ? !cm.zoom : false}>
             <button type="button" class="btn btn-sm btn-ghost" id="zoom-out" title="zoom out (Ctrl + scroll)" aria-label="zoom out" onClick=${() => zoomCenter(1 / 1.2)}>−</button>
             <span class="zoom-val mono" id="zoom-val">100%</span>
@@ -88,7 +93,7 @@ export function Panel() {
         <div class=${'canvas-wrap' + (canvasKind === 'dg' ? ' dgmode' : canvasKind === 'full' ? ' fullmode' : '')}>
           <div class=${'canvas' + (canvasKind ? ' ' + canvasKind : '')} id="canvas">${cm ? html`<${CenterCanvas} cm=${cm} />` : null}</div>
         </div>
-        <div class="legend" id="legend" hidden=${cm ? !cm.legend : false}>${has ? html`<${Legend} view=${ui.view} />` : null}</div>
+        <div class="legend" id="legend" hidden=${cm ? !cm.legend : false}>${on ? html`<${Legend} view=${ui.view} />` : null}</div>
       </section>
 
       <div class="sep sep-v" id="sep-right" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Inspector width" title=${SEP_TITLE}></div>
@@ -96,7 +101,7 @@ export function Panel() {
         <div class="insp-head" id="insp-head">${im ? html`<${InspectorHead} m=${im} />` : null}</div>
         <div class="insp-tabs" id="insp-tabs" role="tablist" aria-label="Inspector">${im ? html`<${InspectorTabs} m=${im} />` : null}</div>
         <div class=${'insp-body' + (im && im.chat ? ' is-chat' : '')} id="insp-body">${im ? html`<${InspectorBody} m=${im} />` : null}</div>
-        <section class=${'guard-feed' + (blocks > 0 ? ' has-blocks' : '')} id="guard-feed" aria-label="Guard: tool calls blocked by the PreToolUse hook">${has ? html`<${GuardFeed} />` : null}</section>
+        <section class=${'guard-feed' + (blocks > 0 ? ' has-blocks' : '')} id="guard-feed" aria-label="Guard: tool calls blocked by the PreToolUse hook">${on ? html`<${GuardFeed} />` : null}</section>
         <form class=${cv ? cv.cls : 'composer m-instruct'} id="composer" aria-label="Composer: instruct the loop, act or ask" onSubmit=${composerSubmit}>
           <div class="cp-band" id="cp-band">${cv ? html`<${ComposerBand} m=${cv.m} />` : null}</div>
           <div class="cp-seg" id="cp-seg" role="tablist" aria-label="Intent" hidden=${cv ? !cv.m.act : false}>${cv ? html`<${ComposerSeg} m=${cv.m} />` : null}</div>
@@ -115,16 +120,16 @@ export function Panel() {
       </aside>
     </main>
 
-    <div class="sep sep-h" id="sep-foot" role="separator" aria-orientation="horizontal" tabindex="0" aria-label="Timeline height" title=${SEP_TITLE}></div>
-    <footer class="footer" id="footer">
+    <div class="sep sep-h" id="sep-foot" hidden=${planning} role="separator" aria-orientation="horizontal" tabindex="0" aria-label="Timeline height" title=${SEP_TITLE}></div>
+    <footer class="footer" id="footer" hidden=${planning}>
       <div class="footer-title">
         <div class="strong">Turns</div>
         <div class="mono dim-sm">● = latest turn (live)</div>
       </div>
-      <div class="timeline" id="timeline" role="group" aria-label="Loop turns">${has ? html`<${Timeline} />` : null}</div>
+      <div class="timeline" id="timeline" role="group" aria-label="Loop turns">${on ? html`<${Timeline} />` : null}</div>
     </footer>
 
-    <div id="idle-note" class="idle-note mono">${has ? idleText() : ''}</div>
+    <div id="idle-note" class="idle-note mono">${on ? idleText() : ''}</div>
     <div id="closed" class="closed" hidden=${!ui.closed}>${ui.closed ? html`<${ClosedCard} c=${ui.closed} />` : null}</div>
   </div>`;
 }

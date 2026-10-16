@@ -18,6 +18,7 @@ export const STATUS = {
   error: { label: 'Error', c: '#F06A5E', bg: '#1E1413', line: '#5A2A26' },
   stopped: { label: 'Stopped', c: '#C9C4BE', bg: '#1E2024', line: '#3A3E45' },
   no_loop: { label: 'No loop', c: '#8B9098', bg: '#15171A', line: '#2A2D33' },
+  planning: { label: 'Planning', c: '#A58BFF', bg: '#201B2C', line: '#3A2F5C' }, // planning mode (state.planning_required)
 };
 export const ROLE_DESC = {
   orchestrator: 'roadmap · dispatch · commit · checkpoint',

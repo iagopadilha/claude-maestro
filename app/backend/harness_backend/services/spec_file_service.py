@@ -1,6 +1,6 @@
 """View and edit of the `.md` files of `.specs/` (grouped tree, read with a version, write with a version conflict check).
 
-Edit rules (docs/ARCHITECTURE.md): editable `features/**`, `codebase/**`, `project/PROJECT.md`, `RULES.md` and
+Edit rules (docs/ARCHITECTURE.md): editable `features/**`, `codebase/**`, `project/PROJECT.md`, `FLOWS.md`, `RULES.md` and
 `TEST-ENVIRONMENT.md`; `ROADMAP.md` and `STATE.md` only with the loop stopped; `loop/json` and `loop/internal` never
 (not even read). Every path goes through the repository's safe resolver (no `..`, absolute path or symbolic link).
 """
@@ -14,7 +14,7 @@ from ..repositories.specs_file_repository import compute_bytes_version, loop_sta
 EDITABLE_EXTENSION = ".md"
 LOOP_DIR_RELATIVE = "project/" + loop_state.LOOP_FOLDER_NAME
 FORBIDDEN_DIRS = (LOOP_DIR_RELATIVE + "/" + loop_state.JSON_FOLDER_NAME, LOOP_DIR_RELATIVE + "/" + loop_state.INTERNAL_FOLDER_NAME)
-EDITABLE_PROJECT_FILES = ("project/PROJECT.md", "project/RULES.md", "project/TEST-ENVIRONMENT.md")
+EDITABLE_PROJECT_FILES = ("project/PROJECT.md", "project/FLOWS.md", "project/RULES.md", "project/TEST-ENVIRONMENT.md")
 EDITABLE_WITH_LOOP_STOPPED_FILES = ("project/ROADMAP.md", "project/STATE.md")
 FEATURE_FILE_MIN_DEPTH = 3  # features/<slug>/<file>.md
 LOOP_ROOT_FILE_DEPTH = 3  # project/loop/<file>.md

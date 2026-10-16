@@ -1,6 +1,8 @@
-/* "Where this project stands" trail (GET progress): folder, git, structure, conformance, map, roadmap, approval,
-   test environment and loop, with the button for the next action. Also the claude jobs (map, generate and refine
-   the roadmap) followed through GET jobs/<id>. Without an approved roadmap the loop does not start. */
+/* "Where this project stands" trail (GET progress): folder, git, structure, conformance, map, roadmap, flows,
+   approval, test environment and loop, with the button for the next action. Also the claude jobs (map, generate and
+   refine the roadmap) followed through GET jobs/<id>. Without an approved roadmap the loop does not start.
+   In planning mode (state.planning_required) the roadmap and flows are written in the planning chat and the approval
+   goes through the planning checklist: the trail points there instead of the one-shot roadmap dialog. */
 import { html, useState, useEffect } from '../../util/preact.js';
 import { dur, list, txt } from '../../util/format.js';
 import { followJob } from '../../api/api_client.js';
@@ -14,12 +16,13 @@ import { renderAll, schedulePoll } from '../project_panel.js';
 import { openNewLoop } from './alert.js';
 import { approveRoadmap, APPROVAL_NOTICE } from './new_loop.js';
 import { openProjectFile, loadTree } from './files.js';
+import { planningRequired, approvePlan } from './planning.js';
 
 const DEFAULT_STEPS = [
   ['folder', 'Folder'], ['git', 'Git'], ['structure', '.specs structure'], ['conformance', 'Conformance'], ['map', 'Code map'],
-  ['roadmap', 'Roadmap'], ['approval', 'Approval'], ['test_environment', 'Test environment'], ['loop', 'Loop'],
+  ['roadmap', 'Roadmap'], ['flows', 'Flows'], ['approval', 'Approval'], ['test_environment', 'Test environment'], ['loop', 'Loop'],
 ];
-const STEP_OF_ACTION = { structure: 'structure', conformance: 'conformance', map: 'map', roadmap: 'roadmap', approve: 'approval', test_environment: 'test_environment', check: 'loop', start_loop: 'loop', follow: 'loop' };
+const STEP_OF_ACTION = { structure: 'structure', conformance: 'conformance', map: 'map', roadmap: 'roadmap', flows: 'flows', approve: 'approval', test_environment: 'test_environment', check: 'loop', start_loop: 'loop', follow: 'loop' };
 const TYPE_ROADMAP = /roadmap/i, TYPE_MAP = /^map$|codebase/i;
 
 const tr = { loading: false, error: null, jobs: [], following: new Map(), dialog: null, lastRead: 0, roadmap: null };
@@ -71,6 +74,8 @@ function follow(id, type) {
 }
 const jobName = (type) => (TYPE_ROADMAP.test(type || '') ? 'Roadmap' : TYPE_MAP.test(type || '') ? 'Code map' : 'Job');
 const jobsOf = (re) => tr.jobs.filter((j) => re.test(j.type || ''));
+/** True while a code map job runs. */
+export const mapRunning = () => jobsOf(TYPE_MAP).some((j) => j.state === 'running');
 const elapsed = (j) => { const t0 = Date.parse(j.started_at), t1 = j.finished_at ? Date.parse(j.finished_at) : Date.now(); return Number.isFinite(t0) ? dur(Math.max(0, (t1 - t0) / 1000)) : ''; };
 
 // ---------- actions ----------
@@ -79,7 +84,8 @@ function conformanceInput(allowLater) {
   let value = conformanceDefault(null, allowLater);
   return { node: html`<${Conformance} allowLater=${allowLater} onChange=${(v) => { value = v; }} />`, value: () => value };
 }
-async function initializeStructure() {
+/** Trail action (also used by the planning checklist): dialog that creates the .specs structure. */
+export async function initializeStructure() {
   const field = conformanceInput(true);
   openDialog({
     title: 'Initialize the .specs structure',
@@ -97,7 +103,8 @@ async function initializeStructure() {
     ],
   });
 }
-function chooseConformance() {
+/** Trail action (also used by the planning checklist): writes the Conformance line. */
+export function chooseConformance() {
   const field = conformanceInput(false);
   openDialog({
     title: 'Code conformance',
@@ -112,7 +119,8 @@ function chooseConformance() {
     ],
   });
 }
-async function mapCodebase() {
+/** Trail action (also used by the planning checklist): starts the code map job. */
+export async function mapCodebase() {
   const ok = await confirmDialog({ title: 'Map the code?', text: 'Runs claude with the /orchestrator skill in map mode: it reads the project and writes .specs/codebase (stack, architecture, conventions). Spends tokens and may take a few minutes. It does not touch the code.', yesText: 'Map now' });
   if (!ok) return;
   try {
@@ -249,21 +257,27 @@ async function sendRoadmap(kind) {
 // ---------- drawing ----------
 function actionButton(action) {
   const B = (text, fn, cls = 'btn-primary') => html`<button type="button" id="tr-main-action" class=${'btn btn-sm ' + cls} onClick=${fn} disabled=${!fn}>${text}</button>`;
-  const mapRunning = jobsOf(TYPE_MAP).some((j) => j.state === 'running');
+  const planning = planningRequired();
   switch (action) {
     case 'structure': return B('Initialize structure', initializeStructure);
     case 'conformance': return B('Choose conformance', chooseConformance);
-    case 'map': return mapRunning ? B('Mapping…', null, 'btn-pending') : B('Map codebase', mapCodebase);
-    case 'roadmap': return B('Generate roadmap', openRoadmapDialog);
-    case 'approve': return B('Approve roadmap', approveWithNotice);
+    case 'map': return mapRunning() ? B('Mapping…', null, 'btn-pending') : B('Map codebase', mapCodebase);
+    case 'roadmap': return planning ? null : B('Generate roadmap', openRoadmapDialog);
+    case 'flows': return planning ? null : B('Open FLOWS.md', () => openProjectFile('FLOWS.md'));
+    case 'approve': return B('Approve roadmap', planning ? approvePlan : approveWithNotice);
     case 'test_environment': return B('Describe the test environment', () => openProjectFile('TEST-ENVIRONMENT.md'));
     case 'check': case 'start_loop': return B('Check and start loop', openNewLoop);
     default: return null;
   }
 }
+const PLANNING_TEXT = {
+  roadmap: 'Plan the roadmap in the chat below.', flows: 'Ask the planning chat for the missing flows (FLOWS.md).',
+  approve: 'Every gate passes: approve the roadmap.',
+};
 const ACTION_TEXT = {
   structure: 'Create the .specs folder for the loop to keep its state.', conformance: 'Say whether the code follows the skill pattern or is legacy.',
   map: 'Map the existing code so the roadmap starts from what already exists.', roadmap: 'Generate the roadmap from the project goal.',
+  flows: 'Write one flow per feature in FLOWS.md (what the verifier checks).',
   approve: 'Review and approve the roadmap: without approval the loop does not start.', test_environment: 'Optional: say how to start the app for flow tests.',
   check: 'All set: check and start the loop.', start_loop: 'All set: check and start the loop.', follow: 'Loop in progress: follow it below.',
 };
@@ -291,16 +305,17 @@ export function ProgressTrail() {
   });
   const runningJobs = tr.jobs.filter((j) => j.state === 'running');
   const approved = approval().approved || (byId.approval && byId.approval.ok);
-  const aiRoadmap = pr.next_action !== 'roadmap' && status() !== 'running' && byId.structure && byId.structure.ok;
+  const planning = planningRequired();
+  const aiRoadmap = !planning && pr.next_action !== 'roadmap' && status() !== 'running' && byId.structure && byId.structure.ok;
   return html`<div class="tr-line full-line"><span class="tr-title">Where this project stands</span>
     <${Checklist} label="Where this project stands" steps=${steps} currentId=${STEP_OF_ACTION[pr.next_action] || null} />
     <div class="tr-action">
-      <span class="tr-next">${ACTION_TEXT[pr.next_action] || ''}</span>
+      <span class="tr-next">${(planning && PLANNING_TEXT[pr.next_action]) || ACTION_TEXT[pr.next_action] || ''}</span>
       ${actionButton(pr.next_action)}
       ${aiRoadmap ? html`<button type="button" id="tr-ai-roadmap" class="btn btn-sm btn-ghost" onClick=${openRoadmapDialog} title="generate or refine the roadmap with claude">AI roadmap</button>` : null}
       ${runningJobs.map((j) => html`<button key=${j.id} type="button" id=${'tr-job-' + j.id} class="tr-job" onClick=${TYPE_ROADMAP.test(j.type || '') ? openRoadmapDialog : null} title="claude job running">
         <span class="spinner sm" aria-hidden="true"></span><${JobTimer} j=${j} /></button>`)}
-      ${!approved && ['roadmap', 'approve', 'structure', 'conformance', 'map'].includes(pr.next_action) ? html`<span class="tr-note">Without an approved roadmap the loop does not start.</span>` : null}
+      ${!approved && ['roadmap', 'flows', 'approve', 'structure', 'conformance', 'map'].includes(pr.next_action) ? html`<span class="tr-note">Without an approved roadmap the loop does not start.</span>` : null}
     </div>
   </div>`;
 }

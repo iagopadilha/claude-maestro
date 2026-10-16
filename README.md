@@ -44,14 +44,14 @@ flowchart LR
 
 ## Why a panel
 
-A loop that runs for hours writes dozens of files: `ROADMAP.md`, `STATE.md`, `VALIDATE.md`, `ANSWERS.md`, `LOOP.json`, a spec per feature, turn logs, snapshots and the transcript of every subagent. Reading them one `.md` at a time does not show you what is happening.
+A loop that runs for hours writes dozens of files: `ROADMAP.md`, `FLOWS.md`, `STATE.md`, `VALIDATE.md`, `ANSWERS.md`, `LOOP.json`, a spec per feature, turn logs, snapshots and the transcript of every subagent. Reading them one `.md` at a time does not show you what is happening.
 
 The panel puts them in one view, and turns the engine commands into buttons that ask for confirmation. The commands are `--check`, `--answer`, `--option`, `--rewind`, the state checks and the final delivery. There is less to type and nothing to paste wrong.
 
 - **Graph engineering.** The roadmap is a graph: features grouped by stage, with dependency edges and status colours. The state machine shows how many features are in each node. Click a node to open that feature, turn or agent and act on that point: read its spec, inspect its log, chat about it, send an instruction, or answer its question.
 - **Loop engineering.** Watch the current turn by lane, the history of every agent with tokens and duration, the limits (cost, turns without progress), and the quarantine. The panel also lists the decisions the loop took for you to validate later.
-- **Any starting point.** Create a project from scratch (folder, git, `.specs/`), open an existing repo (map it, then generate the roadmap), or open a project whose loop stopped midway: the panel shows where it is and the next action.
-- **The roadmap gate stays yours.** Generate the roadmap from a goal inside the panel, refine it, and approve it with a click. The loop does not start without an approved roadmap.
+- **Any starting point.** Create a project from scratch (folder, git, `.specs/`), open an existing repo (map it, then plan the roadmap in the planning chat), or open a project whose loop stopped midway: the panel shows where it is and the next action.
+- **The roadmap gate stays yours.** A new project opens in planning mode: a live chat (`/orchestrator plan`) asks you questions and writes `PROJECT.md`, `ROADMAP.md` and `FLOWS.md` (the flow that proves each feature) while you watch them in a preview. **Approve roadmap** unlocks only when the checklist is green: prerequisites, a goal, valid features, no open question and a flow per feature. The loop does not start without an approved roadmap.
 
 ## Layout
 
@@ -102,7 +102,8 @@ Or start from a chat. The skill opens the panel for you when it writes the roadm
 
 ```
 /orchestrator map        document an unfamiliar repo
-/orchestrator roadmap    propose the roadmap; approve it in the panel
+/orchestrator plan       plan by conversation: it asks, you answer, it writes PROJECT, ROADMAP and FLOWS
+/orchestrator roadmap    propose the roadmap (and its flows) in one go; approve it in the panel
 /orchestrator stage 1    run one stage (or /orchestrator <slug> for one feature)
 ```
 

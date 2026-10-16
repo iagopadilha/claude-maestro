@@ -8,7 +8,7 @@ The loop's state lives in `.specs/`, in the `tlc-spec-driven` format. This docum
 .specs/
   codebase/              repo map (brownfield-mapper): the 7 documents
   features/<slug>/       spec.md (design.md, tasks.md) and, with regression, regression.md, regression-baseline.json, regression-new.json
-  project/               what belongs to the project and people edit: PROJECT.md ROADMAP.md STATE.md RULES.md TEST-ENVIRONMENT.md phases/ archive/
+  project/               what belongs to the project and people edit: PROJECT.md ROADMAP.md FLOWS.md STATE.md RULES.md TEST-ENVIRONMENT.md phases/ archive/
     loop/                everything the loop owns. At its root only what a person reads:
       ANSWERS.md  VALIDATE.md  DEPENDENCIES.md  GRAPH.md  NOTICE.txt
       json/              machine state: LOOP.json LOOP-CMD.json MONITOR.json meta.json SCOPE.json PERMISSIONS.json
@@ -27,6 +27,7 @@ A project on an old layout (the flat plugin files in `.specs/project/`, or the `
 |---|---|
 | `.specs/project/PROJECT.md` | orchestrator |
 | `.specs/project/ROADMAP.md` | **only** the orchestrator |
+| `.specs/project/FLOWS.md` | **only** the orchestrator (`plan` and `roadmap` modes, and whenever a feature enters or leaves the ROADMAP); the user may edit it. Read by the app (approval gate) and by `verifier-flow` |
 | `.specs/project/STATE.md` | **only** the orchestrator (only the "now", see State by phases) |
 | `.specs/project/phases/stage-NN.md` | **only** the orchestrator (stage closing summary) |
 | `.specs/project/archive/` | **only** the orchestrator (old state, never read on resume) |
@@ -92,6 +93,31 @@ Optional field `e2e=ok|failed|not-covered`: result of the final flow-validation 
 `scope`, `kind` and `paths` are born empty and are filled when the `spec-writer` responds, or read from the spec when the feature is adopted from disk.
 
 `origin=adopted` marks a spec that already existed before this loop. It is the field Phase 4 consults: a feature with `origin=adopted` goes through the gate even with `scope=Small`. Without the field, the feature was born here and the `Small` exemption applies. The roadmap prose (stage objective, completion criterion) stays above the lines, in the tlc format.
+
+**`## Open questions`** closes the ROADMAP: one doubt per line, `- <question> | recommended: <option>`, and nothing else in the section; with no doubt left, the single line `- none`. Every non-empty line in it counts as an open question, and approval needs none.
+
+## FLOWS.md: the flow that proves each feature
+
+`.specs/project/FLOWS.md` holds, for **every** ROADMAP feature, the user-visible (or API) flow that proves it works. Written with the ROADMAP (`plan` and `roadmap` modes); the panel's **Approve roadmap** refuses while a feature has no flow.
+
+```
+# Flows
+
+## [customer-api] Register a customer
+1. POST /customers with a valid tax id
+2. Expected: 201 and the customer id
+3. POST /customers with the same tax id
+4. Expected: 409
+
+## [customer-screen] Sign up from the web
+1. Open /signup, fill name and tax id, submit
+2. Expected: confirmation screen with the customer id
+```
+
+- **Parse rule (the app's):** a section starts at `^##\s*\[(slug)\]\s*(title)?`; its steps are the lines matching `^\s*\d+[.)]\s+\S`. A feature **has a flow** when its section exists with **at least 2 steps**. A slug in FLOWS.md that is not in the ROADMAP is an `orphan`: a warning, not a block.
+- Same slug as the ROADMAP line. Steps state the intent (route and payload, screen and action), never a selector; `Expected:` lines are observable (status, field, visible text, a database row) and are what `verifier-flow` checks. Include the error path when the feature has one. No secrets. A feature with no screen and no route (model, migration, job) states what is run and what is then observed.
+- Renaming or removing a feature renames or removes its section in the same edit.
+- **Use in validation:** `verifier-flow` with `FEATURE: <slug>` takes the feature's section as the source of the flow, completes it with the spec's acceptance criteria and expands it into the `flow-validator` script (`.specs/features/<slug>/flows.md`). Without a section, the flow comes from the spec, as before.
 
 ## Write order: before dispatch, never after
 

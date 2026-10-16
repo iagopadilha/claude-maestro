@@ -39,8 +39,8 @@ function ChatMsg({ m, c }) {
       onClick=${() => takeToCurrent(c, m)}>Bring to the current version</button>` : null}
   </div>`;
 }
-// own 1 s tick while an answer is pending: the rest of the inspector does not re-render
-function Think({ job }) {
+// own 1 s tick while an answer is pending: the rest of the inspector does not re-render (also used by the planning chat)
+export function Think({ job }) {
   const [, tick] = useState(0);
   useEffect(() => {
     if (!job) return undefined;

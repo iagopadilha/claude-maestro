@@ -33,11 +33,19 @@ class FileVersionConflictError(ValueError):
 
 
 class LoopRunningError(RuntimeError):
-    """The operation cannot happen while the loop is running in the project."""
+    """The operation cannot happen while the loop is running in the project. `code` (optional) goes into the response."""
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 class JobInProgressError(RuntimeError):
-    """A claude job is already running in this project."""
+    """A claude job is already running in this project. `code` (optional) goes into the response."""
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 class JobNotFoundError(LookupError):
@@ -58,3 +66,25 @@ class InvalidRoadmapError(ValueError):
 
 class InvalidRequestError(ValueError):
     """Incomplete or malformed request body (e.g. `confirm` other than true, empty goal)."""
+
+
+PLANNING_REQUIRED_CODE = "planning_required"
+PLANNING_BUSY_CODE = "planning_busy"
+PLANNING_PREREQUISITES_CODE = "planning_prerequisites"
+PLANNING_GATES_CODE = "planning_gates"
+LOOP_RUNNING_CODE = "loop_running"
+
+
+class PlanningRequiredError(RuntimeError):
+    """The project is in planning mode (roadmap never approved and no loop ever ran): the operation waits for the approval."""
+
+    code = PLANNING_REQUIRED_CODE
+
+
+class PlanningGatesError(ValueError):
+    """Planning gates that are not ok. `gates` (the whole checklist) goes into the response so the front end shows why."""
+
+    def __init__(self, message, gates, code):
+        super().__init__(message)
+        self.gates = gates
+        self.code = code

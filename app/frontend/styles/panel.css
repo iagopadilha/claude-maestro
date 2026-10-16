@@ -601,3 +601,59 @@ body.resizing-y,body.resizing-y *{cursor:row-resize !important;}
 .gf-rule{color:var(--red);font-weight:500;}
 .gf-exit{margin-left:auto;color:#1A0B09;background:var(--red);border-radius:3px;padding:0 4px;font-weight:600;}
 .gf-detail{font-size:11px;line-height:1.35;color:#E9C9C5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;}
+
+/* ===== planning mode (state.planning_required): checklist | chat | documents ===== */
+#app[data-mode="planning"]{min-width:0;}
+.planning-zone{flex:1 1 0;min-height:0;display:flex;flex-direction:column;}
+.plan{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px;padding:8px 16px 12px;}
+.plan-intro{flex:none;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:7px 12px;border-radius:8px;border:1px solid #3A2F5C;background:#201B2C;font-size:12px;line-height:1.45;color:var(--text2);}
+.plan-kick{flex:none;font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--violet);}
+.plan-grid{flex:1;min-height:0;display:grid;grid-template-columns:minmax(240px,300px) minmax(0,1.25fr) minmax(280px,1fr);gap:12px;}
+.plan-col{min-height:0;min-width:0;display:flex;flex-direction:column;border:1px solid var(--line2);border-radius:8px;background:var(--panel);overflow:hidden;}
+.plan-h{flex:none;display:flex;align-items:center;gap:8px;min-height:40px;padding:6px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+.plan-title{font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--text2);}
+.plan-h .hint{font-size:11px;}
+.plan-scroll{flex:1;min-height:0;overflow:auto;padding:10px 12px;}
+
+/* checklist */
+.plan-gates{list-style:none;margin:0 0 14px;padding:0;display:flex;flex-direction:column;gap:6px;}
+.plan-gate{display:flex;gap:8px;align-items:flex-start;padding:6px 8px;border-radius:6px;border:1px solid var(--line2);background:var(--bg);}
+.plan-gate.bad{border-color:var(--red-line);}
+.plan-gate-ic{flex:none;width:16px;text-align:center;font:600 13px/18px var(--mono);color:var(--dim);}
+.plan-gate.ok .plan-gate-ic{color:var(--green);}
+.plan-gate.bad .plan-gate-ic{color:var(--red);}
+.plan-gate-b{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:4px;}
+.plan-gate-t{font-size:12px;font-weight:500;line-height:18px;word-break:break-word;}
+.plan-gate.ok .plan-gate-t{color:var(--text2);}
+.plan-gate-d{font-size:11px;line-height:1.4;color:var(--muted);word-break:break-word;}
+.plan-gate-items{margin:0;padding-left:16px;font-size:11px;line-height:1.45;color:var(--text2);word-break:break-word;}
+.plan-opt{margin-left:6px;padding:0 4px;border:1px dashed var(--line3);border-radius:4px;font:500 10px var(--mono);color:var(--dim);}
+.plan-approve{display:flex;flex-direction:column;gap:6px;padding-top:10px;border-top:1px solid var(--line);}
+.plan-approve .btn{align-self:stretch;}
+
+/* chat */
+.plan-chat{--cpc:var(--violet);--cpb:#201B2C;}
+.plan-empty{padding:10px 12px 0;}
+.plan-list{padding:10px 12px;}
+.plan-chat .ch-think,.plan-chat .ch-err{margin:0 12px 6px;}
+.plan-pending{opacity:.75;}
+.plan-form{flex:none;display:flex;flex-direction:column;gap:6px;padding:8px 12px 10px;border-top:1px solid var(--line);}
+.plan-lock{padding:6px 8px;border-radius:6px;border:1px solid var(--amber-line);background:var(--amber-bg);color:var(--amber-soft);font-size:12px;line-height:1.4;}
+.plan-box textarea{min-height:54px;}
+.plan-box textarea:disabled{cursor:not-allowed;opacity:.6;}
+.plan-box .btn-primary{background:var(--violet);border-color:var(--violet);color:#0E0F11;}
+.plan-box .btn-primary:hover:not(:disabled){background:#C0AEFF;border-color:#C0AEFF;}
+
+/* documents */
+.plan-docs .seg-btn{padding:4px 10px;}
+
+/* narrow: the three columns stack (checklist, chat, documents) and the zone scrolls */
+@media (max-width:1000px){
+  #app[data-mode="planning"] .header{flex-wrap:wrap;gap:6px 12px;}
+  .planning-zone{overflow:auto;}
+  .plan{flex:none;min-height:auto;padding:8px 10px 12px;}
+  .plan-grid{flex:none;display:flex;flex-direction:column;gap:10px;}
+  .plan-col{flex:none;}
+  .plan-left .plan-scroll{flex:none;overflow:visible;}
+  .plan-chat,.plan-docs{height:min(640px,82vh);}
+}

@@ -14,7 +14,7 @@ from ..repositories.specs_file_repository import classify_structure, list_test_e
 CONFORMANCE_VALUES = ("STANDARD", "LEGACY")
 CONFORMANCE_LINE_PATTERN = re.compile(r"^Conformance:\s*(STANDARD|LEGACY)", re.M)  # the same check as run_loop --check
 STRUCTURE_FOLDERS = ("project", "codebase", "features")
-PROJECT_TEMPLATE_FILES = ("PROJECT.md", "ROADMAP.md", "STATE.md")
+PROJECT_TEMPLATE_FILES = ("PROJECT.md", "ROADMAP.md", "STATE.md", "FLOWS.md")
 RULES_FILE_NAME = "RULES.md"
 TEST_ENVIRONMENT_FILE_NAME = "TEST-ENVIRONMENT.md"
 RULES_TEMPLATE_NAME = "PROJECT_RULES.md"

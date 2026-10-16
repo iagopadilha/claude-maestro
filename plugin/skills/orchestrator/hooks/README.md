@@ -41,7 +41,7 @@ From `PROFILES` and `HARD` in `guard.py`. O = orchestrator, E = executor, S = sp
 | `git-add-all` | `git add .`, `git add -A`/`--all`, `git commit -a` | O | |
 | `git-write` | any git subcommand except `status`, `diff`, `log`, `show`, `rev-parse`, `ls-files`, `blame`, `describe`, `grep`, `shortlog` | E S V | |
 | `dev-write` | write SQL through a non-production database MCP tool | E S V | |
-| `state-write` | writing `ROADMAP.md`, `STATE.md`, `RULES.md`, `phases/`, `archive/` or anything under `.specs/project/loop/` | E S V | |
+| `state-write` | writing `ROADMAP.md`, `FLOWS.md`, `STATE.md`, `RULES.md`, `phases/`, `archive/` or anything under `.specs/project/loop/` | E S V | |
 | `state-script` | `harness.py rules write`, `audit --write/--apply`, `graph --write`, `state loop`/`migrate` | E S V | |
 | `delivery` | `harness.py deliver` / `delivery.py` | E S V | |
 | `loop-run` | `harness.py loop`/`check`/`serve`, `run_loop.py` | E S V | |

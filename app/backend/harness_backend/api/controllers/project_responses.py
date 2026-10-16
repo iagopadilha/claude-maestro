@@ -2,8 +2,9 @@
 from ...domain.project import ProjectNotFoundError
 from ...domain.project_errors import (FileEditRefusedError, FileVersionConflictError, InvalidPathError, InvalidRequestError,
                                       InvalidRoadmapError, JobInProgressError, JobNotFoundError, LoopRunningError,
-                                      LoopWorktreeExistsError, PathOutsideSpecsError, ProjectAlreadyExistsError,
-                                      RoadmapSessionMissingError, SpecFileNotFoundError)
+                                      LoopWorktreeExistsError, PathOutsideSpecsError, PLANNING_GATES_CODE,
+                                      PLANNING_PREREQUISITES_CODE, PlanningGatesError, PlanningRequiredError,
+                                      ProjectAlreadyExistsError, RoadmapSessionMissingError, SpecFileNotFoundError)
 from ..router import Response
 
 PROJECT_NOT_FOUND_MESSAGE = "project not found"
@@ -21,7 +22,9 @@ STATUS_BY_ERROR = (
     (LoopWorktreeExistsError, 409),
     (InvalidRoadmapError, 409),
     (ProjectAlreadyExistsError, 409),
+    (PlanningRequiredError, 409),
 )
+PLANNING_GATES_STATUS = {PLANNING_PREREQUISITES_CODE: 409, PLANNING_GATES_CODE: 422}
 
 
 def respond_converting_errors(action):
@@ -33,9 +36,12 @@ def respond_converting_errors(action):
         return Response.error(404, PROJECT_NOT_FOUND_MESSAGE)
     except FileVersionConflictError as error:
         return Response.error(409, str(error), current_version=error.current_version)
+    except PlanningGatesError as error:
+        return Response.error(PLANNING_GATES_STATUS.get(error.code, 409), str(error), code=error.code, gates=error.gates)
     except tuple(error_type for error_type, _ in STATUS_BY_ERROR) as error:
-        status = next(code for error_type, code in STATUS_BY_ERROR if isinstance(error, error_type))
-        return Response.error(status, str(error))
+        status = next(mapped for error_type, mapped in STATUS_BY_ERROR if isinstance(error, error_type))
+        code = getattr(error, "code", None)  # machine-readable reason (planning mode), only when the error carries one
+        return Response.error(status, str(error), **({"code": code} if code else {}))
 
 
 def project_to_dict(project):

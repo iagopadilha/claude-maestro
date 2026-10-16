@@ -3,7 +3,8 @@ import json
 import os
 import unittest
 
-from .support_projects import TWO_FEATURE_ROADMAP, ProjectsTestCase, create_git_repo, loop_file_path, read_file, run_git, write_file
+from .support_projects import (TWO_FEATURE_ROADMAP, ProjectsTestCase, create_git_repo, loop_file_path, read_file, run_git, write_file,
+                               write_planning_documents)
 
 
 def steps_by_id(progress):
@@ -18,7 +19,7 @@ class TestProgressByMode(ProjectsTestCase):
         self.assertEqual((progress["mode"], progress["next_action"]), ("new", "structure"))
         steps = steps_by_id(progress)
         self.assertEqual([step["id"] for step in progress["steps"]],
-                         ["folder", "git", "structure", "conformance", "map", "roadmap", "approval", "test_environment", "loop"])
+                         ["folder", "git", "structure", "conformance", "map", "roadmap", "flows", "approval", "test_environment", "loop"])
         self.assertTrue(steps["folder"]["ok"])
         self.assertFalse(steps["git"]["ok"])
         self.assertTrue(steps["map"]["optional"], "a repo without code needs no map")
@@ -56,9 +57,22 @@ class TestProgressByMode(ProjectsTestCase):
 
         write_file(os.path.join(repo, ".specs", "project", "ROADMAP.md"), TWO_FEATURE_ROADMAP)
         progress = self.get_progress(project_id)
-        self.assertEqual((progress["mode"], progress["next_action"]), ("planning", "approve"))
+        self.assertEqual((progress["mode"], progress["next_action"]), ("planning", "roadmap"), "PROJECT.md still has FILL_IN")
         self.assertEqual(progress["counts"]["total"], 2)
         self.assertIn("2 feature(s) in 1 stage(s)", steps_by_id(progress)["roadmap"]["detail"])
+        self.assertFalse(steps_by_id(progress)["flows"]["ok"])
+        self.assertEqual(self.request("POST", "/p/%s/api/roadmap/approve" % project_id, {"confirm": True})[0], 422)
+
+        write_planning_documents(repo)
+        write_file(os.path.join(repo, ".specs", "project", "FLOWS.md"), "# Flows\n\n## [api-base] API\n1. GET /x\n2. Expected: 200\n")
+        progress = self.get_progress(project_id)
+        self.assertEqual(progress["next_action"], "flows")
+        self.assertIn("screen-base", steps_by_id(progress)["flows"]["detail"])
+
+        write_planning_documents(repo)
+        progress = self.get_progress(project_id)
+        self.assertEqual((progress["mode"], progress["next_action"]), ("planning", "approve"))
+        self.assertTrue(steps_by_id(progress)["flows"]["ok"])
 
         self.assertEqual(self.request("POST", "/p/%s/api/roadmap/approve" % project_id, {"confirm": True})[0], 200)
         progress = self.get_progress(project_id)
@@ -67,8 +81,8 @@ class TestProgressByMode(ProjectsTestCase):
 
     def test_regression_yes_requires_test_environment(self):
         repo, project_id = self.create_ready_project(approve=False)
-        write_file(os.path.join(repo, ".specs", "project", "ROADMAP.md"), TWO_FEATURE_ROADMAP +
-                   "- [refactor-screen] status=pending scope=Small kind=front paths=src/legacy regression=yes\n")
+        write_planning_documents(repo, TWO_FEATURE_ROADMAP +
+                                 "- [refactor-screen] status=pending scope=Small kind=front paths=src/legacy regression=yes\n")
         self.assertEqual(self.request("POST", "/p/%s/api/roadmap/approve" % project_id, {"confirm": True})[0], 200)
         progress = self.get_progress(project_id)
         self.assertEqual(progress["next_action"], "test_environment")
@@ -97,8 +111,11 @@ class TestProgressByMode(ProjectsTestCase):
 
         write_file(os.path.join(repo, ".specs", "project", "ROADMAP.md"), roadmap + "- [new-one] status=pending scope=Small kind=back paths=src/new\n")
         progress = self.get_progress(project_id)
-        self.assertEqual(progress["next_action"], "approve", "a new feature invalidates the approval (same engine signature)")
-        self.request("POST", "/p/%s/api/roadmap/approve" % project_id, {"confirm": True})
+        self.assertEqual(progress["next_action"], "flows", "a new feature invalidates the approval and needs its flow")
+        self.assertTrue(steps_by_id(progress)["flows"]["optional"] is False)
+        write_planning_documents(repo)
+        self.assertEqual(self.get_progress(project_id)["next_action"], "approve", "same engine signature: approve again")
+        self.assertEqual(self.request("POST", "/p/%s/api/roadmap/approve" % project_id, {"confirm": True})[0], 200)
         self.assertEqual(self.get_progress(project_id)["next_action"], "start_loop")
 
     def test_running_loop_is_in_loop_and_blocks_structure(self):

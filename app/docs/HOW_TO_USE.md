@@ -19,7 +19,7 @@ python <app>/harness.py doctor      # checks the skill, the guard blocking `git 
 CONVERSATION (with Claude)                      APP / SCRIPT (you)
 1 map the project                               6 Check (harness.py check)   checks everything, spends nothing
 2 Conformance STANDARD or LEGACY                7 Start loop (button) or the command the check prints
-3 roadmap + rules (RULES.md)  -> approve        8 the loop runs on its own, in turns, in a worktree
+3 plan: roadmap + flows + rules  -> approve     8 the loop runs on its own, in turns, in a worktree
 4 test environment (TEST-ENVIRONMENT.md)        9 it STOPS and NOTIFIES (toast, email, webhook, panel)
 5 feature specs                                10 you answer in the panel, or with --answer / --option
 ```
@@ -35,11 +35,14 @@ CONVERSATION (with Claude)                      APP / SCRIPT (you)
 
 ## Part 1 - normal conversation (you take part)
 
-Open Claude in the project folder and use `/orchestrator` as usual (or the panel buttons: Map, Generate roadmap, Refine):
+Open Claude in the project folder and use `/orchestrator` as usual, or the panel (Map, Conformance, the planning chat):
 
 1. Context and mapping (`/orchestrator map` in an existing repo).
 2. Set `Conformance: STANDARD` or `LEGACY` (the orchestrator asks, explains why and writes it to `CLAUDE.md`; `python <app>/harness.py classify <repo>` shows the evidence).
-3. Roadmap: the orchestrator proposes, you adjust and **approve** it in the panel (button **Approve roadmap**, which writes `ROADMAP-APPROVED.json`). Without that approval the check refuses to start; changed a feature or a stage afterwards, approve again. Limiting rules (`RULES.md`) come in here, with your phrase.
+3. Roadmap: plan it by conversation and **approve** it in the panel (button **Approve roadmap**, which writes `ROADMAP-APPROVED.json`). Without that approval the check refuses to start; changed a feature or a stage afterwards, approve again. Limiting rules (`RULES.md`) come in here, with your phrase.
+   - **Planning mode.** A project with no approved roadmap that never ran a loop opens in the panel's **planning screen**: checklist on the left, a live chat in the middle, the documents on the right (PROJECT / ROADMAP / FLOWS). Each message runs `/orchestrator plan --headless` in one session resumed every time: it writes only `.specs/project/PROJECT.md`, `ROADMAP.md` and `FLOWS.md`, then tells you what changed and asks the 1 to 3 questions that matter most. Answer them in the chat; the rest wait in the ROADMAP's `## Open questions`. The chat needs the prerequisites first (git, `.specs/` structure, `Conformance:`, and the codebase map when the repo has code); each failing one has its button on the left. **New conversation** starts a fresh session and keeps the documents.
+   - **Approve roadmap** stays disabled (and the back end refuses it) until every gate is green: prerequisites, the PROJECT goal without `FILL_IN`, at least one feature with no grammar or field error, `## Open questions` at `- none`, and in `FLOWS.md` a flow of at least 2 steps for every feature. Until then the loop, the chat with the agents, Act and the whiteboard are not reachable.
+   - `FLOWS.md` holds, per feature (`## [slug] Title`), the numbered steps and `Expected:` results that prove it works; the flow validation (`verifier-flow`, `--e2e`) uses it. `/orchestrator roadmap` writes it too.
 4. **Test environment:** the orchestrator gathers headers, DEV users, URLs and the secret manager key of each secret (name, environment, class that reads it) in `.specs/project/TEST-ENVIRONMENT.md` (template in `<app>/templates/TEST_ENVIRONMENT.md`) and asks you, in one batch, only what is missing. This comes **before** the approval because it is what stops the loop most.
 5. Answer the open questions of the specs.
 6. When all of that is approved, the orchestrator **stops and hands you the ready command**, in a single line.
@@ -50,7 +53,7 @@ python <app>/harness.py serve --project <project-folder>
 ```
 - Starts the app (only `127.0.0.1`, a free port from 47800 to 47899), prints `MONITOR_URL=<project panel url>` and `APP_URL=<hub url>` and opens the browser. If the app **is already up**, it only registers the project in it, prints the URL and exits (one app for every project).
 - Flags: `--port N` (fixed port), `--idle-hours H` (hours without use until it shuts down on its own; `0` = never; default 2), `--no-browser`, `--data-dir D` (default `~/.loop-harness` or `LOOP_DATA_DIR`).
-- The hub (`APP_URL`) lists the projects, opens an existing folder, creates a project from scratch (folder + `git init` + `.specs/`) and shows the diagnostics.
+- The hub (`APP_URL`) lists the projects, opens an existing folder, creates a project from scratch (folder + `git init` + `.specs/`, landing in the planning screen) and shows the diagnostics.
 - The project panel (`/p/<id>/`) shows roadmap, turns, agents, specs, questions, validations, cost and limits, and has the loop buttons.
 
 The loop also ensures the panel on its own: when it starts, `run_loop` reuses the panel that launched it (`LOOP_MONITOR_URL`), or the work's live `MONITOR.json`, or registers the project in the live app (`app.json`), or starts `harness.py serve --project <repo>` detached. It prints `[loop] monitor: <url>` and the URL goes in every notice.
@@ -167,7 +170,7 @@ Without an explicit file, 2 and 3 are merged (the first one that defines a key w
 The check verifies almost all of this and warns about what is missing:
 - **A `.gitignore` ignoring the build folders** (`bin/`, `obj/`, `node_modules/`, `dist/`). Without it the build leaves files behind, the tree looks dirty and the loop stops with "dirty tree".
 - **Everything committed.** The worktree is born from the last commit; a loose change in the repo does not go along.
-- **`Conformance: STANDARD|LEGACY` in `CLAUDE.md`** and **an approved `.specs/project/ROADMAP.md`** (Approve roadmap button).
+- **`Conformance: STANDARD|LEGACY` in `CLAUDE.md`** and **an approved `.specs/project/ROADMAP.md`** (Approve roadmap button, which also needs a flow per feature in `.specs/project/FLOWS.md`).
 - **The mandatory notify channels configured** (when `LOOP_NOTIFY_REQUIRED` lists any), otherwise the preflight refuses to start.
 - **The orchestrator skill reachable** (`SKILL.md` + `hooks/guard.py`, plugin `hooks/hooks.json`): `harness.py doctor` checks it.
 - **.NET:** `dotnet` on PATH; the build restores on its own (needs network or the NuGet cache). **Node:** `--setup "npm ci"` if there are dependencies.

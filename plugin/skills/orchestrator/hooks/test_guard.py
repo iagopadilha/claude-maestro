@@ -127,7 +127,8 @@ class TestStateWrite(GuardTestCase):
     def test_subagents_cannot_write_anything_in_the_loop_folder(self):
         for relative in (".specs/project/loop/ANSWERS.md", ".specs/project/loop/VALIDATE.md", ".specs/project/loop/NOTICE.txt",
                          ".specs/project/loop/json/LOOP.json", ".specs/project/loop/json/SCOPE.json",
-                         ".specs/project/loop/internal/turns/001.json", ".specs/project/RULES.md", ".specs/project/ROADMAP.md"):
+                         ".specs/project/loop/internal/turns/001.json", ".specs/project/RULES.md", ".specs/project/ROADMAP.md",
+                         ".specs/project/FLOWS.md"):
             for profile in ("executor", "spec", "verifier"):
                 self.assertEqual(self.edit(relative, profile), BLOCKED, (relative, profile))
 
@@ -170,6 +171,7 @@ class TestRoadmapApproval(GuardTestCase):
     def test_reading_it_and_editing_the_roadmap_pass(self):
         self.assertEqual(self.run_guard("Read", {"file_path": self.specs("project", "loop", "json", "ROADMAP-APPROVED.json")}, "orchestrator"), PASSED)
         self.assertEqual(self.edit(".specs/project/ROADMAP.md", "orchestrator"), PASSED)
+        self.assertEqual(self.edit(".specs/project/FLOWS.md", "orchestrator"), PASSED)
 
 
 class TestStateScripts(GuardTestCase):

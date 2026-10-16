@@ -29,7 +29,7 @@ Curl alone **is not E2E**. A report with only curl says "routes validated", neve
 
 Two sources, and they can be combined:
 
-- **From what was implemented.** Read the spec (acceptance criteria, requirement IDs) and the feature's diff. Derive one flow per observable criterion.
+- **From what was implemented.** If the project has `.specs/project/FLOWS.md` with a `## [<slug>]` section for the feature, start from it: its numbered steps are the flow and its `Expected:` lines the expected results. Then read the spec (acceptance criteria, requirement IDs) and the feature's diff, and derive one flow per observable criterion the section does not cover.
 - **From what the user asks.** Free text ("log in, open flow X, filter by Y, check column Z"). Turn it into a script.
 
 The script follows `references/FLOW_FORMAT.md`. Save it in `.specs/features/<slug>/flows.md` when there is a feature; without a feature, in `.playwright-cli/flows/<name>.md` or at the path the user gives. If the flow came from the user and is ambiguous (no login data, no success criterion), ask before running. If it came from the spec, proceed without asking.

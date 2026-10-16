@@ -74,18 +74,22 @@ docs/                               ARCHITECTURE.md, API.md, HOW_TO_USE.md, MONI
 | Engine, infrastructure and CLI | `harness.py`, `engine/**`, `config/envload.py`, `infrastructure/process_runner.py`, `infrastructure/claude_client.py`, `infrastructure/git_client.py`, `services/app_diagnostics_service.py`, `api/controllers/app_controller.py`, `backend/tests/engine/**`, `backend/tests/infra/**`, `.env.example`, `docs/HOW_TO_USE.md` |
 | Loop read | `services/loop_read_module.py`, `services/loop_status_service.py`, `services/loop_panel_service.py`, `services/agent_history_service.py`, `services/guard_event_service.py`, `services/turn_service.py`, `services/roadmap_view_service.py`, `repositories/loop_file_repository.py`, `repositories/claude_transcript_repository.py`, `repositories/loop_read_formatting.py`, `api/controllers/loop_read_controller.py`, `backend/tests/api/test_read_*.py` |
 | Loop commands | `services/loop_commands_module.py`, `services/loop_control_service.py`, `services/chat_service.py`, `services/action_service.py`, `services/whiteboard_service.py`, `services/engine_script_service.py`, `services/loop_worktree_service.py`, `repositories/chat_repository.py`, `repositories/whiteboard_repository.py`, `repositories/answers_repository.py`, `repositories/loop_command_file_repository.py`, `repositories/agent_transcript_repository.py`, `api/controllers/loop_commands_controller.py`, `api/controllers/chat_controller.py`, `api/controllers/action_controller.py`, `backend/tests/api/test_commands_*.py` |
-| Projects, structure, roadmap and specs | `services/projects_module.py`, `services/project_service.py`, `services/specs_structure_service.py`, `services/project_progress_service.py`, `services/roadmap_service.py`, `services/spec_file_service.py`, `services/claude_job_service.py`, `services/folder_picker_service.py`, `repositories/project_repository.py`, `repositories/specs_file_repository.py`, `domain/project_errors.py`, `api/controllers/project_responses.py`, `api/controllers/project_controller.py`, `api/controllers/roadmap_controller.py`, `api/controllers/specs_controller.py`, `templates/**`, `backend/tests/api/test_projects_*.py` |
+| Projects, structure, roadmap and specs | `services/projects_module.py`, `services/project_service.py`, `services/specs_structure_service.py`, `services/project_progress_service.py`, `services/roadmap_service.py`, `services/spec_file_service.py`, `services/claude_job_service.py`, `services/folder_picker_service.py`, `services/planning_service.py`, `services/planning_gates.py`, `services/planning_requirement_service.py`, `repositories/project_repository.py`, `repositories/specs_file_repository.py`, `repositories/planning_thread_repository.py`, `infrastructure/workspace_file_guard.py`, `domain/flows_document.py`, `domain/project_errors.py`, `api/controllers/planning_controller.py`, `api/controllers/project_responses.py`, `api/controllers/project_controller.py`, `api/controllers/roadmap_controller.py`, `api/controllers/specs_controller.py`, `templates/**`, `backend/tests/api/test_projects_*.py` |
 | Core | `composition.py`, `config/app_config.py`, `config/skill_locator.py`, `domain/project.py`, `api/router.py`, `api/http_server.py`, `infrastructure/structured_log.py`, `infrastructure/activity_monitor.py` |
 | Front end | `frontend/**` |
 | Demo | `demo/**` (`harness.py demo`), `backend/tests/demo/**` |
 
 ## Contracts between modules (fixed signatures)
 `composition.py` calls:
-- `build_projects_module(config, log, get_app_url) -> obj` with `project_service`, `controllers`, `busy_providers`.
-- `build_loop_read_module(config, log, project_service, activity_monitor) -> obj` with `loop_status_service`,
+- `build_projects_module(config, log, get_app_url) -> obj` with `project_service`, `planning_requirement_service`,
   `controllers`, `busy_providers`.
-- `build_loop_commands_module(config, log, project_service, loop_status_service, activity_monitor, get_app_url) -> obj`
-  with `controllers`, `busy_providers`.
+- `build_loop_read_module(config, log, project_service, activity_monitor, planning_requirement_service) -> obj` with
+  `loop_status_service`, `controllers`, `busy_providers`.
+- `build_loop_commands_module(config, log, project_service, loop_status_service, activity_monitor, get_app_url,
+  planning_requirement_service) -> obj` with `controllers`, `busy_providers`.
+
+`IPlanningRequirementService` (the projects module implements it, the other modules consume it):
+`is_planning_required(context) -> bool`, `ensure_planning_done(context)` (raises `PlanningRequiredError`).
 - `AppController(config, log, server, activity_monitor, project_service)` with `register_routes(router)`.
 
 Every controller exposes `register_routes(router)`; every busy provider exposes `is_busy()` (a running loop or claude
@@ -115,10 +119,10 @@ re-evaluated on every call: a worktree created later is picked up without reopen
   item per project: `id, name, repo_path, opened_at, last_opened_at, favorite`), `app.json` of the live app (`pid, port,
   url, token, started_at, app_root_dir`), an optional `.env` and `logs/app.jsonl`.
 - In each project, under `.specs/` (layout of `engine/loop_state.py`): `project/` (`PROJECT.md`, `ROADMAP.md`,
-  `STATE.md`, `RULES.md`, `TEST-ENVIRONMENT.md`, `phases/stage-NN.md`), `project/loop/` (`ANSWERS.md`, `VALIDATE.md`,
+  `STATE.md`, `FLOWS.md`, `RULES.md`, `TEST-ENVIRONMENT.md`, `phases/stage-NN.md`), `project/loop/` (`ANSWERS.md`, `VALIDATE.md`,
   `DEPENDENCIES.md`, `GRAPH.md`, `NOTICE.txt`), `project/loop/json/` (`LOOP.json`, `LOOP-CMD.json`, `MONITOR.json`,
   `meta.json`, `ROADMAP-APPROVED.json`, ...) and `project/loop/internal/` (`LOOP.lock`, `PAUSE`, `turns/`, `snapshots/`,
-  `chat/`, `jobs/`, `whiteboard.json`, `roadmap-goal.md`, logs). Project ids are a short hash of the normalized folder
+  `chat/`, `jobs/`, `planning/thread.json`, `whiteboard.json`, `roadmap-goal.md`, logs). Project ids are a short hash of the normalized folder
   path: the same folder always gets the same id.
 
 ## HTTP API
@@ -150,30 +154,66 @@ Projects module routes:
 | Route | What it does |
 |---|---|
 | `GET progress` | project checklist (below) |
-| `POST structure/initialize` `{"conformance": "STANDARD\|LEGACY\|null"}` | creates `.specs/{project,codebase,features}`, `PROJECT.md`, `ROADMAP.md` (empty template), `STATE.md`, `RULES.md`, `loop/{json,internal}`, puts `.specs/` in `.gitignore`, imports `@.specs/project/RULES.md` in `CLAUDE.md`; never overwrites an existing file; writes `Conformance:` in `CLAUDE.md` when given; creates `TEST-ENVIRONMENT.md` when the ROADMAP asks for regression. Returns `{created, changed, existing, conformance, ok, progress}` |
+| `POST structure/initialize` `{"conformance": "STANDARD\|LEGACY\|null"}` | creates `.specs/{project,codebase,features}`, `PROJECT.md`, `ROADMAP.md` (empty template), `STATE.md`, `FLOWS.md` (empty template), `RULES.md`, `loop/{json,internal}`, puts `.specs/` in `.gitignore`, imports `@.specs/project/RULES.md` in `CLAUDE.md`; never overwrites an existing file; writes `Conformance:` in `CLAUDE.md` when given; creates `TEST-ENVIRONMENT.md` when the ROADMAP asks for regression. Returns `{created, changed, existing, conformance, ok, progress}` |
 | `POST conformance` `{"value": "STANDARD\|LEGACY"}` | writes the line in `CLAUDE.md` (through `engine/classify_structure.py`) -> `{ok, conformance}` |
 | `GET specs/tree` | `.specs/` tree grouped: `{exists, specs_dir, loop_running, project[], codebase[], features[{slug, status, stage, in_roadmap, files[]}], loop[], other[]}`; file item `{path, name, editable, not_editable_reason, size, modified_at}`; never `loop/json/` or `loop/internal/` |
 | `GET specs/file?path=` | text of a `.md` inside `.specs/` -> `{path, text, version, editable, not_editable_reason}` (`version` = sha1) |
-| `PUT specs/file` `{"path", "content", "version"}` | writes an editable `.md` (`features/**`, `codebase/**`, `project/PROJECT.md`, `project/RULES.md`, `project/TEST-ENVIRONMENT.md`; `ROADMAP.md`/`STATE.md` only with the loop stopped) -> `{path, version, created, ok}`; a different `version` = 409 with `current_version`; a new file needs an empty `version` |
+| `PUT specs/file` `{"path", "content", "version"}` | writes an editable `.md` (`features/**`, `codebase/**`, `project/PROJECT.md`, `project/FLOWS.md`, `project/RULES.md`, `project/TEST-ENVIRONMENT.md`; `ROADMAP.md`/`STATE.md` only with the loop stopped) -> `{path, version, created, ok}`; a different `version` = 409 with `current_version`; a new file needs an empty `version` |
 | `GET roadmap` | `{text, approved, not_approved_reason, approved_at, stages[{n, title, features}], features[{<ROADMAP fields>, slug}], errors, open_questions}` |
-| `POST roadmap/approve` `{"confirm": true}` | writes `ROADMAP-APPROVED.json` through `loop_state.approve_roadmap` -> `{ok, approval: {approved, reason, at, features}}`; 409 with the loop running or an invalid ROADMAP |
-| `POST roadmap/generate` `{"goal", "map_first": bool, "budget_usd"}` | job `claude -p "/orchestrator roadmap --headless --goal-file ..."` (see `SKILL_BRIDGE.md`) -> 202 `{ok, job, detail}` |
-| `POST roadmap/refine` `{"text", "budget_usd"}` | resumes the session of the last roadmap job (`--resume`) -> 202 |
+| `POST roadmap/approve` `{"confirm": true}` | writes `ROADMAP-APPROVED.json` through `loop_state.approve_roadmap` -> `{ok, approval: {approved, reason, at, features}}`; 409 with the loop running; 422 `{"ok": false, "error", "code": "planning_gates", "gates": [...]}` while a non-optional planning gate (below) is not ok (an invalid or empty ROADMAP fails the `features`/`fields` gates) |
+| `POST roadmap/generate` `{"goal", "map_first": bool, "budget_usd"}` | job `claude -p "/orchestrator roadmap --headless --goal-file ..."` (see `SKILL_BRIDGE.md`) -> 202 `{ok, job, detail}`; 409 `code: "planning_required"` in planning mode (the planning chat replaces it) |
+| `POST roadmap/refine` `{"text", "budget_usd"}` | resumes the session of the last roadmap job (`--resume`) -> 202; 409 `planning_required` in planning mode |
 | `POST codebase/map` `{"budget_usd"}` | job `claude -p "/orchestrator map"` -> 202 |
-| `GET jobs` / `GET jobs/<job>` | project jobs: `{id, type: "roadmap\|roadmap_refine\|map", state: "running\|ok\|error", started_at, finished_at, cost_usd, reply, error}` |
+| `GET jobs` / `GET jobs/<job>` | project jobs: `{id, type: "roadmap\|roadmap_refine\|map\|planning", state: "running\|ok\|error", started_at, finished_at, cost_usd, reply, error}` |
+| `GET planning` | planning screen (below) |
+| `POST planning/send` `{"text"}` | one message of the planning chat -> 202 `{ok, job_id}`. Refuses: 400 empty text or longer than 8000 characters; 409 `code: "loop_running"`; 409 (no code) when the loop worktree exists; 409 `code: "planning_prerequisites"` (+ `gates`) while the `git`, `structure`, `conformance` or non-optional `map` gate fails; 409 `code: "planning_busy"` while a reply (or any claude job of the project) runs |
+| `GET planning/job/<job>` | `{ok, state: "running\|ok\|error", cost_usd, reply (ok only), error (error only)}`; a job of another type = 404 |
+| `POST planning/reset` `{"confirm": true}` | clears the conversation (the next message starts a new claude session); the documents stay. 400 without `confirm: true`; 409 `planning_busy` during a reply -> `{ok}` |
 
 `progress`:
 ```json
 {"mode": "new|no_specs|planning|ready_for_loop|in_loop|done",
- "next_action": "structure|conformance|map|roadmap|approve|test_environment|check|start_loop|follow",
- "steps": [{"id": "folder|git|structure|conformance|map|roadmap|approval|test_environment|loop", "title": "...", "ok": true, "optional": false, "detail": "..."}],
+ "next_action": "structure|conformance|map|roadmap|flows|approve|test_environment|check|start_loop|follow",
+ "steps": [{"id": "folder|git|structure|conformance|map|roadmap|flows|approval|test_environment|loop", "title": "...", "ok": true, "optional": false, "detail": "..."}],
  "loop_status": "no_loop|running|stopped|error|continue|awaiting_user|done",
  "counts": {"total": 0, "verified": 0, "blocked": 0},
  "work_dir": "...", "loop_worktree": false,
  "running_job": {"id": "j-...", "type": "roadmap", "started_at": "ISO"}}
 ```
 `running_job` is `null` when no claude job runs. Errors of every route: `{"ok": false, "error": "<text>"}` (+ extras such
-as `current_version`).
+as `current_version`, and `code` on the planning refusals).
+`steps` has a `flows` step right after `roadmap` (ok when FLOWS.md has a flow for every ROADMAP feature; optional when the
+roadmap is already approved). While the roadmap is not approved, `next_action` is `approve` only when every planning gate
+passes; otherwise it is the action of the first failing gate (`structure`, `conformance`, `map`, `flows`, or `roadmap` for
+the goal, fields and open questions; a failing `git` gate shows only in its step).
+
+`planning` (planning mode: roadmap never approved AND no loop ever ran; see `services/planning_requirement_service.py`):
+```json
+{"required": true,
+ "thread": {"messages": [{"role": "user|ai", "text": "...", "at": "ISO", "cost_usd": 0.42}], "busy": false, "job_id": "j-...|null", "session": true},
+ "docs": {"project": "PROJECT.md text|null", "roadmap": "ROADMAP.md text|null", "flows": "FLOWS.md text|null"},
+ "gates": [{"id": "git|structure|conformance|map|goal|features|fields|open_questions|flows", "label": "...", "ok": true, "optional": false, "detail": "...|null", "items": ["..."]}],
+ "can_approve": false, "approved": false}
+```
+Gates, in this order: `git`; `structure` (`.specs/project/` exists; items = missing files); `conformance`; `map`
+(`.specs/codebase/*.md`; `optional` when the repo has no code, same rule as the checklist); `goal` (PROJECT.md exists with
+no `FILL_IN`; items = those lines); `features` (ROADMAP.md with at least 1 feature and no grammar error); `fields`
+(`loop_state.check_fields` errors); `open_questions` (the ROADMAP `## Open questions` section is `- none`; items = the
+questions; HTML comments ignored); `flows` (a `## [slug]` section with 2+ numbered steps in `.specs/project/FLOWS.md` for
+EVERY feature; items = slugs without one; flows of unknown slugs are a warning in `detail`). `can_approve` = every
+non-optional gate ok and the loop not running. The first four are the chat prerequisites.
+
+The chat reply is a claude job (type `planning`, one per project with the other jobs): cwd = the repo; stdin =
+`/orchestrator plan --headless` + newline + the text on the first message, only the text on the next ones (`--resume
+<session>`); the account's default model; `--max-budget-usd 2`; 600 s; no MCP; `--permission-mode dontAsk`;
+`--allowedTools Read Grep Glob Skill Edit(/.specs/project/PROJECT.md) Edit(/.specs/project/ROADMAP.md)
+Edit(/.specs/project/FLOWS.md)` (an `Edit` rule covers Write too; `/path` in a CLI rule = the working directory);
+`--disallowedTools Bash NotebookEdit Agent`; environment without secrets. Because the user's own settings can widen the
+allow rules, a file guard snapshots the repo before the reply (except `.git`, `node_modules`, `loop/internal` and
+`MONITOR.json`; in-memory copy of files up to 1 MB, 64 MB in total) and afterwards undoes every change outside the three
+documents (created = deleted, changed/deleted = restored, larger files only reported), logs `planning_guard_reverted` and
+appends a note to the reply. Thread: `.specs/project/loop/internal/planning/thread.json` (messages + the `session_id`,
+which never leaves through the API). The chat never approves.
 
 ## Bridge with the skill
 `SKILL_BRIDGE.md`: how the plugin skill finds the app (`LOOP_APP_HOME`, else `~/.loop-harness/config.json` ->

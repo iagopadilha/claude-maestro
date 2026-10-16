@@ -51,7 +51,7 @@ SECRET_HINT = re.compile(
 # state only the orchestrator writes: the project files it owns and the WHOLE loop folder (.specs/project/loop/).
 # The flat names after `loop` are the old plugin layout (read until migrated). PROJECT.md and TEST-ENVIRONMENT.md stay editable.
 STATE_FILE = re.compile(
-    r"\.specs[\\/]project[\\/](ROADMAP\.md|STATE\.md|RULES\.md|phases[\\/]|archive[\\/]|loop(?:[\\/]|$)|"
+    r"\.specs[\\/]project[\\/](ROADMAP\.md|FLOWS\.md|STATE\.md|RULES\.md|phases[\\/]|archive[\\/]|loop(?:[\\/]|$)|"
     r"VALIDATE\.md|DEPENDENCIES\.md|GRAPH\.md|ANSWERS\.md|NOTICE\.txt|rules\.tests\.json|SCOPE\.json|LOOP\.json|LOOP\.lock|"
     r"PERMISSIONS\.json|ROADMAP-APPROVED\.json|delivery\.json)", re.I
 )

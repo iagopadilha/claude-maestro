@@ -1,17 +1,19 @@
 """Project roadmap: structured read, approval (only by the user's click) and the headless `/orchestrator` jobs that
 generate and refine the roadmap and map the codebase.
 
-Approval requires `confirm:true`, refuses with the loop running and writes through the engine function
+Approval requires `confirm:true`, refuses with the loop running or with a planning gate not ok (422 `planning_gates`,
+see planning_gates.py) and writes through the engine function
 (`loop_state.approve_roadmap`), the same signature `run_loop.py --check` verifies.
-The app never approves on its own: a job only generates; the user's POST approves.
+The app never approves on its own: a job only generates; the user's POST approves. In planning mode (never approved, never
+looped) the one-shot generate/refine jobs are refused (`planning_required`): the planning chat replaces them.
 """
 import datetime
 import os
 import re
 from typing import Protocol
 
-from ..domain.project_errors import (InvalidRequestError, InvalidRoadmapError, JobInProgressError, LoopRunningError,
-                                     LoopWorktreeExistsError, RoadmapSessionMissingError)
+from ..domain.project_errors import (PLANNING_GATES_CODE, InvalidRequestError, InvalidRoadmapError, JobInProgressError,
+                                     LoopRunningError, LoopWorktreeExistsError, PlanningGatesError, RoadmapSessionMissingError)
 from ..repositories.specs_file_repository import loop_state
 from .claude_job_service import JOB_TYPE_MAP, JOB_TYPE_ROADMAP, JOB_TYPE_ROADMAP_REFINE, ROADMAP_JOB_TYPES, ClaudeJobCommand
 
@@ -21,7 +23,7 @@ GENERATE_ROADMAP_PROMPT = "/orchestrator roadmap --headless --goal-file " + GOAL
 MAP_FIRST_FLAG = "--map-first"
 MAP_CODEBASE_PROMPT = "/orchestrator map"
 REFINE_ROADMAP_PREFIX = ("Continue in this session's `/orchestrator roadmap --headless` mode: adjust .specs/project/ROADMAP.md "
-                         "(and PROJECT.md if needed) following the request below, in the grammar of references/state.md. Do not ask "
+                         "and .specs/project/FLOWS.md (one flow per feature), and PROJECT.md if needed, following the request below, in the grammar of references/state.md. Do not ask "
                          "(doubts go to the `## Open questions` section of the ROADMAP), never approve the roadmap, and finish.\n\n"
                          "User request:\n")
 JOB_PERMISSION_MODE = "auto"  # the same default as run_loop (--permission-mode auto)
@@ -33,6 +35,7 @@ STAGE_TITLE_PATTERN = re.compile(r"^#{1,6}\s*Stage\s+(\S+)\s*(?:[—–:-]+\s*)?
 SECTION_TITLE_PATTERN = re.compile(r"^#{1,6}\s+(.*)$")
 OPEN_QUESTIONS_TITLE = "open questions"
 NO_QUESTION_ANSWERS = ("none", "none.", "-")
+HTML_COMMENT_PATTERN = re.compile(r"<!--.*?-->", re.S)
 
 
 def now_iso():
@@ -56,7 +59,7 @@ def list_roadmap_stages(text, features):
 def extract_open_questions(text):
     """Items of the `## Open questions` section (the headless /orchestrator mode puts there what it cannot ask)."""
     questions, inside = [], False
-    for line in (text or "").splitlines():
+    for line in HTML_COMMENT_PATTERN.sub("", text or "").splitlines():  # a (multi-line) comment is never a question
         title = SECTION_TITLE_PATTERN.match(line.strip())
         if title:
             inside = title.group(1).strip().lower().startswith(OPEN_QUESTIONS_TITLE)
@@ -76,11 +79,13 @@ class IRoadmapService(Protocol):
 
 
 class RoadmapService:
-    def __init__(self, specs_file_repository, project_progress_service, claude_job_service, claude_client, log):
+    def __init__(self, specs_file_repository, project_progress_service, claude_job_service, claude_client, planning_requirement_service,
+                 log):
         self.specs_file_repository = specs_file_repository
         self.project_progress_service = project_progress_service
         self.claude_job_service = claude_job_service
         self.claude_client = claude_client
+        self.planning_requirement_service = planning_requirement_service
         self.log = log
 
     # ------------------------------------------------ read
@@ -100,6 +105,7 @@ class RoadmapService:
             raise InvalidRequestError("confirm must be true")
         if self.project_progress_service.is_loop_running(context):
             raise LoopRunningError("loop running: the roadmap was already approved")
+        self.ensure_planning_gates_ok(context)
         try:
             approval = loop_state.approve_roadmap(context.work_dir, now_iso())
         except ValueError as failure:
@@ -107,8 +113,18 @@ class RoadmapService:
         self.log.info("roadmap_approved", project=context.project.id, features=approval["features"])
         return approval
 
+    def ensure_planning_gates_ok(self, context):
+        gates = self.project_progress_service.build_planning_gates(context)
+        failing = [gate for gate in gates if not gate["ok"] and not gate["optional"]]
+        if failing:
+            self.log.info("roadmap_approval_refused", project=context.project.id, gates=[gate["id"] for gate in failing])
+            raise PlanningGatesError("the roadmap cannot be approved yet: %s" % "; ".join(
+                "%s (%s)" % (gate["label"], gate["detail"]) if gate["detail"] else gate["label"] for gate in failing),
+                gates, PLANNING_GATES_CODE)
+
     # ------------------------------------------------ jobs
     def generate_roadmap(self, context, goal, map_first=False, budget_usd=None):
+        self.planning_requirement_service.ensure_planning_done(context)
         goal_text = self.validate_text(goal, "goal")
         budget = self.validate_budget(budget_usd)
         self.ensure_repo_free_for_job(context)
@@ -119,6 +135,7 @@ class RoadmapService:
         return self.claude_job_service.start_job(context.repo_path, JOB_TYPE_ROADMAP, ClaudeJobCommand(argv))
 
     def refine_roadmap(self, context, text, budget_usd=None):
+        self.planning_requirement_service.ensure_planning_done(context)
         request = self.validate_text(text, "text")
         budget = self.validate_budget(budget_usd)
         self.ensure_repo_free_for_job(context)

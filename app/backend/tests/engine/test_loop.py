@@ -785,6 +785,24 @@ class TestStateUnit(unittest.TestCase):
         open(roadmap, "w", encoding="utf-8").write("## Stage 1\n- [a] status=pending\n- [b] status=pending\n")
         self.assertIn("changed after the approval", loop_state.roadmap_approval(tmp)["reason"])
 
+    def test_an_answer_skips_the_signature_but_not_the_approval(self):
+        """--answer/--option: rows may change mid-run (no signature match), but a roadmap NEVER approved is still refused."""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        roadmap = os.path.join(tmp, ".specs", "project", "ROADMAP.md")
+        os.makedirs(os.path.dirname(roadmap))
+        open(roadmap, "w", encoding="utf-8").write("## Stage 1\n- [a] status=pending\n")
+        for answering in (False, True):
+            problems = run_loop.approval_problems(tmp, answering=answering)
+            self.assertEqual(len(problems), 1, answering)
+        self.assertIn("never approved", run_loop.approval_problems(tmp, answering=True)[0])
+        loop_state.approve_roadmap(tmp, "2026-01-01T00:00:00")
+        self.assertEqual(run_loop.approval_problems(tmp), [])
+        self.assertEqual(run_loop.approval_problems(tmp, answering=True), [])
+        open(roadmap, "w", encoding="utf-8").write("## Stage 1\n- [a] status=pending\n- [b] status=pending\n")
+        self.assertIn("changed after the approval", run_loop.approval_problems(tmp)[0])
+        self.assertEqual(run_loop.approval_problems(tmp, answering=True), [], "the loop may change rows while it runs")
+
 
 class TestGuard(unittest.TestCase):
     def setUp(self):

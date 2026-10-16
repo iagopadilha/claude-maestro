@@ -111,4 +111,4 @@ LAYERS_NOT_COVERED: <e.g. "UI e2e">, or "-"
 
 ## `Plan` (native agent, phase 2)
 
-No fixed contract. The orchestrator reads the output and converts it to the `ROADMAP.md` format defined in `state.md`. Every feature is born `pending`, without `PATHS` — the `spec-writer` fills `PATHS`.
+No fixed contract. The orchestrator reads the output and converts it to the `ROADMAP.md` format defined in `state.md`, plus one flow per feature in `FLOWS.md` (same reference). Every feature is born `pending`, without `PATHS` — the `spec-writer` fills `PATHS`.

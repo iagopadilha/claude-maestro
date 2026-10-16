@@ -1,5 +1,5 @@
-"""`claude -p` jobs launched by the app (generate/refine the roadmap, map the codebase): they run in a thread, one per
-project at a time, and are written to `<repo>/.specs/project/loop/internal/jobs/<id>.json`.
+"""`claude -p` jobs launched by the app (generate/refine the roadmap, map the codebase, a planning chat reply): they run in a
+thread, one per project at a time, and are written to `<repo>/.specs/project/loop/internal/jobs/<id>.json`.
 
 The claude `session_id` stays in the file (so that `refine` continues the same conversation) and NEVER leaves through the
 API. A job that was `running` when the app went down shows up as `error` (interrupted) when read.
@@ -18,6 +18,7 @@ from ..repositories.specs_file_repository import loop_state
 JOB_TYPE_ROADMAP = "roadmap"
 JOB_TYPE_ROADMAP_REFINE = "roadmap_refine"
 JOB_TYPE_MAP = "map"
+JOB_TYPE_PLANNING = "planning"
 ROADMAP_JOB_TYPES = (JOB_TYPE_ROADMAP, JOB_TYPE_ROADMAP_REFINE)
 JOB_STATE_RUNNING = "running"
 JOB_STATE_OK = "ok"
@@ -49,12 +50,17 @@ class IClaudeJobService(Protocol):
 
 
 class ClaudeJobCommand:
-    """What to run: ready argv (built by the ClaudeClient) and the stdin text."""
+    """What to run: ready argv (built by the ClaudeClient) and the stdin text.
 
-    def __init__(self, argv, stdin_text="", resumed_session=""):
+    `timeout_seconds` (optional) replaces the service timeout for this job. `finalize(result) -> result` (optional) runs in
+    the job thread after claude ends and before the job is recorded as finished (e.g. the planning file guard and thread)."""
+
+    def __init__(self, argv, stdin_text="", resumed_session="", timeout_seconds=None, finalize=None):
         self.argv = list(argv)
         self.stdin_text = stdin_text
         self.resumed_session = resumed_session
+        self.timeout_seconds = timeout_seconds
+        self.finalize = finalize
 
 
 class ClaudeJobService:
@@ -89,10 +95,17 @@ class ClaudeJobService:
         return self.to_public(record)
 
     def run_job(self, record, command):
+        timeout_seconds = min(command.timeout_seconds or self.timeout_seconds, self.timeout_seconds)
         try:
-            result = self.claude_client.run_prompt(command.argv, record["dir"], command.stdin_text, self.timeout_seconds)
+            result = self.claude_client.run_prompt(command.argv, record["dir"], command.stdin_text, timeout_seconds)
         except Exception as failure:  # a job never takes the app down
             result = {"ok": False, "reply": "", "cost_usd": None, "session_id": "", "error": "internal failure: %s" % type(failure).__name__}
+        if command.finalize is not None:
+            try:
+                result = command.finalize(result)
+            except Exception as failure:  # the finalization never leaves the job running forever
+                self.log.error("claude_job_finalize_failed", job=record["id"], type=type(failure).__name__, message=str(failure)[:200])
+                result = dict(result, ok=False, error="internal failure while finishing the job: %s" % type(failure).__name__)
         record.update(state=JOB_STATE_OK if result.get("ok") else JOB_STATE_ERROR, finished_at=now_iso(),
                       cost_usd=result.get("cost_usd"), reply=str(result.get("reply") or "")[:JOB_REPLY_LIMIT],
                       error=str(result.get("error") or ""), session_id=result.get("session_id") or record.get("session_id") or "")

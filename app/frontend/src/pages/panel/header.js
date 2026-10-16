@@ -17,7 +17,7 @@ function limitColor(l) {
 }
 
 const meta = () => (ctx.state && ctx.state.meta) || {};
-const statusInfo = () => STATUS[status()] || STATUS.no_loop;
+const statusInfo = () => (ctx.state && ctx.state.planning_required ? STATUS.planning : STATUS[status()] || STATUS.no_loop);
 const turnNow = () => { const t = loop().turn; return isNum(t) ? t : null; };
 
 /** Content of #brand-sub: project · branch. */

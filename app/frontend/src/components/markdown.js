@@ -57,9 +57,14 @@ function listItem(text, sub) {
     <span class="md-box" aria-hidden="true">${checked ? '✓' : ''}</span><span class="sr-only">${checked ? 'done: ' : 'pending: '}</span><span>${inlineNodes(m[2])}</span>${sub}</li>`;
 }
 
+/** Drops HTML comments (template notes) outside ``` fences, the way a markdown viewer hides them. */
+function stripComments(text) {
+  return text.split(/(^```[^\n]*\n[\s\S]*?^```)/m).map((part, i) => (i % 2 ? part : part.replace(/<!--[\s\S]*?-->/g, ''))).join('');
+}
+
 /** Block: returns a list of vnodes. `options.headingId(text)` may generate ids for the headings. */
 export function markdownNodes(source, options = {}) {
-  const lines = String(source == null ? '' : source).replace(/\r/g, '').split('\n');
+  const lines = stripComments(String(source == null ? '' : source).replace(/\r/g, '')).split('\n');
   const out = [];
   let i = 0;
   while (i < lines.length) {

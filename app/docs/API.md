@@ -45,6 +45,15 @@ No CORS header. JSON body up to 64 KB unless a route says otherwise. Never retur
 Every route returns UTF-8 JSON. Error: `{"ok": false, "error": "text"}` with a 4xx/5xx status. An unknown project is
 404 `{"ok": false, "error": "project not found"}`.
 
+**Planning mode.** `planning_required` (in `GET state`, and `required` in `GET planning`, see `ARCHITECTURE.md`) is true
+when the roadmap was never approved AND the project never ran a loop (no loop worktree, no LOOP.json status, no
+`meta.json` turns, no turn file, no live `LOOP.lock`; a project opened on the loop worktree itself counts as looped).
+While it is true, every POST of this file that acts on the loop or on the AI is refused with 409
+`{"ok": false, "error": "planning mode: ...", "code": "planning_required"}` and runs nothing: `answer`, `resume`, `note`,
+`pause`, `loop/check`, `loop/start`, `instruction`, `POST whiteboard`, `chat/send`, `action/propose` and `action/run`.
+Reads (`state`, `history`, `whiteboard`, `chat/*` GETs, `actions`...) and the legacy `shutdown` stay open. A project that
+already ran loops and lost the approval (rows changed) is NOT in planning mode (the old banner applies).
+
 ### GET health
 `{"ok": true, "repo": "...", "work": "...", "pid": 123}`
 
@@ -85,6 +94,7 @@ Every route returns UTF-8 JSON. Error: `{"ok": false, "error": "text"}` with a 4
   "validate": ["- [slug] doubt | chose: ... | revert: ..."],
   "recent_actions": [{"action": "deliver", "t": "ISO", "ok": true, "summary": "..."}],
   "roadmap_approval": {"approved": true, "reason": null, "at": "ISO", "features": 12},
+  "planning_required": false,
   "answers": [{"date": "ISO", "question": "...", "answer": "...", "state": "pending|applied|automatic"}],
   "turns": [{"n": 12, "cost_usd": 0.61, "duration_s": 1394, "status": "continue|awaiting_user|done|error|running", "feature": ["a"], "commits": 1, "has_snapshot": true}],
   "quarantine": [{"id": "slug", "reason": "<note> (2 failures)", "stuck": ["other-feature"], "options": ["try again", "skip and continue"]}],
