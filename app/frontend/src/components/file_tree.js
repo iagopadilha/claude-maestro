@@ -1,6 +1,6 @@
 /* Accessible file tree (role=tree): arrows move, Right/Left open/close a folder, Enter opens the file.
    Accepts the back-end tree in close formats (groups[] or one key per group). */
-import { h, fill } from '../util/dom.js';
+import { html, useState, useLayoutEffect, useMemo } from '../util/preact.js';
 
 const STATUS_COLOR = {
   pending: '#7D838C', speccing: '#8AA4FF', specced: '#A58BFF', approved: '#5CC8D6',
@@ -49,105 +49,147 @@ export function walkTree(groups, fn) {
   for (const g of groups) go(g.items, null, g, []);
 }
 
-export function createFileTree({ onOpen, label = '.specs files' }) {
-  const st = { groups: [], open: new Set(['g:project', 'g:features']), selected: null, filter: '', focus: null };
-  const list = h('div', { class: 'tree', role: 'tree', 'aria-label': label });
-  const filter = h('input', { type: 'search', class: 'tree-filter', placeholder: 'filter files…', 'aria-label': 'Filter files', autocomplete: 'off', spellcheck: 'false' });
-  filter.addEventListener('input', () => { st.filter = filter.value.trim().toLowerCase(); draw(); });
-  const element = h('div', { class: 'tree-wrap' }, filter, list);
-  let visible = [];
+/** State and actions of one tree; `core.draw` is set by the mounted <FileTree>. */
+function treeCore({ onOpen }) {
+  const st = { groups: [], open: new Set(['g:project', 'g:features']), selected: null, filter: '', filterText: '', focus: null };
+  const core = { st, visible: [], els: new Map(), list: null, hadFocus: false, draw: () => {} };
+  const redraw = () => { core.hadFocus = !!(core.list && core.list.contains(document.activeElement)); core.draw(); };
+  const elOf = (v) => core.els.get(v.key);
 
-  const keyOf = (n, group) => (n.kind === 'file' ? 'f:' + n.path : 'd:' + group.id + ':' + (n.slug || n.name));
-  const matches = (n) => !st.filter || (n.kind === 'file' ? (n.path + ' ' + n.name).toLowerCase().includes(st.filter) : n.items.some(matches) || String(n.name).toLowerCase().includes(st.filter));
-
-  function row(n, level, group, key, parent) {
-    const isDir = n.kind !== 'file';
-    const isOpen = isDir && (st.filter ? true : st.open.has(key));
-    const sel = !isDir && st.selected === n.path;
-    const kids = [h('span', { class: 'tree-chev', 'aria-hidden': 'true', text: isDir ? (isOpen ? '▾' : '▸') : '' })];
-    if (n.status) {
-      const c = STATUS_COLOR[n.status] || '#7D838C';
-      const dot = h('span', { class: 'dot', 'aria-hidden': 'true' }); dot.style.background = c;
-      kids.push(dot);
-    }
-    kids.push(h('span', { class: 'tree-name', text: n.name }));
-    if (n.status) { const chip = h('span', { class: 'tree-st', text: n.status }); chip.style.color = STATUS_COLOR[n.status] || '#7D838C'; kids.push(chip); }
-    if (n.outsideRoadmap) kids.push(h('span', { class: 'tree-n', title: 'feature folder that is not in the ROADMAP', text: 'not in roadmap' }));
-    if (!isDir && n.editable === false) kids.push(h('span', { class: 'tree-ro', title: n.reason || 'read-only', 'aria-label': 'read-only', text: 'read' }));
-    if (isDir && !n.status && group.id !== 'root' && level === 1) kids.push(h('span', { class: 'tree-n', text: String(n.items.length) }));
-    const el = h('div', { class: 'tree-row' + (isDir ? ' dir' : ' file') + (sel ? ' sel' : '') + (level === 0 ? ' group' : ''), role: 'treeitem', 'aria-level': String(level + 1),
-      'aria-expanded': isDir ? String(isOpen) : null, 'aria-selected': isDir ? null : String(sel), tabindex: '-1', title: n.path || n.name }, kids);
-    el.style.paddingLeft = (6 + level * 14) + 'px';
-    el.addEventListener('click', () => activate(key));
-    visible.push({ key, n, el, isDir, isOpen, parent, group });
-    return el;
-  }
   function activate(key) {
-    const v = visible.find((x) => x.key === key); if (!v) return;
+    const v = core.visible.find((x) => x.key === key); if (!v) return;
     st.focus = key;
-    if (v.isDir) { if (st.open.has(key)) st.open.delete(key); else st.open.add(key); draw(); return; }
-    st.selected = v.n.path; draw();
+    if (v.isDir) { if (st.open.has(key)) st.open.delete(key); else st.open.add(key); redraw(); return; }
+    st.selected = v.n.path; redraw();
     if (onOpen) onOpen(v.n);
   }
-  function draw() {
-    visible = [];
-    const rows = [];
-    const go = (items, level, group, parent) => {
-      for (const n of items) {
-        if (!matches(n)) continue;
-        const key = keyOf(n, group);
-        rows.push(row(n, level, group, key, parent));
-        const isOpen = n.kind !== 'file' && (st.filter ? true : st.open.has(key));
-        if (isOpen) go(n.items, level + 1, group, key);
-      }
-    };
-    for (const g of st.groups) {
-      const node = { kind: 'dir', name: g.title, items: g.items, slug: 'g' };
-      if (!matches(node) && st.filter) continue;
-      const key = 'g:' + g.id;
-      rows.push(row(node, 0, { id: 'root' }, key, null));
-      if (st.filter || st.open.has(key)) {
-        if (!g.items.length) rows.push(h('div', { class: 'tree-empty', text: 'empty' }));
-        go(g.items, 1, g, key);
-      }
-    }
-    if (!rows.length) rows.push(h('div', { class: 'tree-empty', text: st.filter ? 'no file with that name' : 'no file in .specs' }));
-    const hadFocus = list.contains(document.activeElement);
-    fill(list, rows);
-    const target = visible.find((v) => v.key === st.focus) || visible.find((v) => !v.isDir && v.n.path === st.selected) || visible[0];
-    if (target) { target.el.tabIndex = 0; if (hadFocus) target.el.focus(); }
-  }
-  list.addEventListener('keydown', (e) => {
-    const i = visible.findIndex((v) => v.el === document.activeElement);
+  function onKeyDown(e) {
+    const visible = core.visible;
+    const i = visible.findIndex((v) => elOf(v) === document.activeElement);
     if (i < 0) return;
     const v = visible[i];
-    const go = (j) => { const target = visible[Math.max(0, Math.min(visible.length - 1, j))]; if (!target) return; for (const x of visible) x.el.tabIndex = -1; target.el.tabIndex = 0; target.el.focus(); st.focus = target.key; };
+    const go = (j) => {
+      const target = visible[Math.max(0, Math.min(visible.length - 1, j))]; if (!target) return;
+      st.focus = target.key; redraw();
+      const el = elOf(target); if (el && el !== document.activeElement) el.focus();
+    };
     if (e.key === 'ArrowDown') go(i + 1);
     else if (e.key === 'ArrowUp') go(i - 1);
     else if (e.key === 'Home') go(0);
     else if (e.key === 'End') go(visible.length - 1);
-    else if (e.key === 'ArrowRight') { if (v.isDir && !v.isOpen) { st.open.add(v.key); st.focus = v.key; draw(); } else if (v.isDir) go(i + 1); }
-    else if (e.key === 'ArrowLeft') { if (v.isDir && v.isOpen && !st.filter) { st.open.delete(v.key); st.focus = v.key; draw(); } else if (v.parent) { const j = visible.findIndex((x) => x.key === v.parent); if (j >= 0) go(j); } }
+    else if (e.key === 'ArrowRight') { if (v.isDir && !v.isOpen) { st.open.add(v.key); st.focus = v.key; redraw(); } else if (v.isDir) go(i + 1); }
+    else if (e.key === 'ArrowLeft') { if (v.isDir && v.isOpen && !st.filter) { st.open.delete(v.key); st.focus = v.key; redraw(); } else if (v.parent) { const j = visible.findIndex((x) => x.key === v.parent); if (j >= 0) go(j); } }
     else if (e.key === 'Enter' || e.key === ' ') activate(v.key);
     else return;
     e.preventDefault();
-  });
-
-  return {
-    element,
-    set(groups) { st.groups = groups || []; draw(); },
-    /** Marks a file as selected and opens the folders down to it. */
-    select(path) {
-      st.selected = path;
-      walkTree(st.groups, (n, parent, group, anc) => {
-        if (n.kind === 'file' && n.path === path) {
-          st.open.add('g:' + group.id);
-          for (const a of anc) st.open.add('d:' + group.id + ':' + (a.slug || a.name));
-          st.focus = 'f:' + path;
-        }
-      });
-      draw();
+  }
+  Object.assign(core, {
+    redraw, activate, onKeyDown,
+    setFilter(value) { st.filterText = value; st.filter = value.trim().toLowerCase(); redraw(); },
+    handle: {
+      set(groups) { st.groups = groups || []; redraw(); },
+      /** Marks a file as selected and opens the folders down to it. */
+      select(path) {
+        st.selected = path;
+        walkTree(st.groups, (n, parent, group, anc) => {
+          if (n.kind === 'file' && n.path === path) {
+            st.open.add('g:' + group.id);
+            for (const a of anc) st.open.add('d:' + group.id + ':' + (a.slug || a.name));
+            st.focus = 'f:' + path;
+          }
+        });
+        redraw();
+      },
+      groups: () => st.groups,
     },
-    groups: () => st.groups,
+  });
+  return core;
+}
+
+const keyOf = (n, group) => (n.kind === 'file' ? 'f:' + n.path : 'd:' + group.id + ':' + (n.slug || n.name));
+
+/** Flat list of the visible rows (and the "empty" notes between them), in order. */
+function visibleRows(st) {
+  const matches = (n) => !st.filter || (n.kind === 'file' ? (n.path + ' ' + n.name).toLowerCase().includes(st.filter) : n.items.some(matches) || String(n.name).toLowerCase().includes(st.filter));
+  const rows = [];
+  const push = (n, level, group, key, parent) => {
+    const isDir = n.kind !== 'file';
+    const isOpen = isDir && (st.filter ? true : st.open.has(key));
+    rows.push({ key, n, level, group, parent, isDir, isOpen });
+    return isOpen;
   };
+  const go = (items, level, group, parent) => {
+    for (const n of items) {
+      if (!matches(n)) continue;
+      const key = keyOf(n, group);
+      if (push(n, level, group, key, parent)) go(n.items, level + 1, group, key);
+    }
+  };
+  for (const g of st.groups) {
+    const node = { kind: 'dir', name: g.title, items: g.items, slug: 'g' };
+    if (!matches(node) && st.filter) continue;
+    const key = 'g:' + g.id;
+    if (push(node, 0, { id: 'root' }, key, null)) {
+      if (!g.items.length) rows.push({ key: 'e:' + g.id, empty: 'empty' });
+      go(g.items, 1, g, key);
+    }
+  }
+  if (!rows.length) rows.push({ key: 'e:none', empty: st.filter ? 'no file with that name' : 'no file in .specs' });
+  return rows;
+}
+
+function TreeRow({ core, v, tab }) {
+  const { n, level, group, isDir, isOpen } = v;
+  const sel = !isDir && core.st.selected === n.path;
+  const c = n.status ? STATUS_COLOR[n.status] || '#7D838C' : null;
+  return html`<div ref=${(el) => { if (el) core.els.set(v.key, el); }} class=${'tree-row' + (isDir ? ' dir' : ' file') + (sel ? ' sel' : '') + (level === 0 ? ' group' : '')}
+      role="treeitem" aria-level=${String(level + 1)} aria-expanded=${isDir ? String(isOpen) : null} aria-selected=${isDir ? null : String(sel)}
+      tabindex=${tab ? '0' : '-1'} title=${n.path || n.name} style=${{ paddingLeft: (6 + level * 14) + 'px' }} onClick=${() => core.activate(v.key)}>
+    <span class="tree-chev" aria-hidden="true">${isDir ? (isOpen ? '▾' : '▸') : ''}</span>
+    ${n.status ? html`<span class="dot" aria-hidden="true" style=${{ background: c }}></span>` : null}
+    <span class="tree-name">${n.name}</span>
+    ${n.status ? html`<span class="tree-st" style=${{ color: c }}>${n.status}</span>` : null}
+    ${n.outsideRoadmap ? html`<span class="tree-n" title="feature folder that is not in the ROADMAP">not in roadmap</span>` : null}
+    ${!isDir && n.editable === false ? html`<span class="tree-ro" title=${n.reason || 'read-only'} aria-label="read-only">read</span>` : null}
+    ${isDir && !n.status && group.id !== 'root' && level === 1 ? html`<span class="tree-n">${String(n.items.length)}</span>` : null}
+  </div>`;
+}
+
+/** Content of div.tree-wrap: filter + role=tree list. */
+function TreeView({ core, label }) {
+  const { st } = core;
+  const rows = visibleRows(st);
+  const visible = rows.filter((r) => !r.empty);
+  core.visible = visible;
+  const target = visible.find((v) => v.key === st.focus) || visible.find((v) => !v.isDir && v.n.path === st.selected) || visible[0];
+  // rows are kept by key: if the focus was in the list, it lands on the target row
+  useLayoutEffect(() => {
+    if (!core.hadFocus || !target) return;
+    core.hadFocus = false;
+    const el = core.els.get(target.key);
+    if (el && el !== document.activeElement) el.focus();
+  });
+  return html`
+    <input type="search" class="tree-filter" placeholder="filter files…" aria-label="Filter files" autocomplete="off" spellcheck=${false}
+      value=${st.filterText} onInput=${(e) => core.setFilter(e.currentTarget.value)} />
+    <div class="tree" role="tree" aria-label=${label} ref=${(el) => { core.list = el; }} onKeyDown=${core.onKeyDown}>
+      ${rows.map((r) => (r.empty ? html`<div key=${r.key} class="tree-empty">${r.empty}</div>` : html`<${TreeRow} key=${r.key} core=${core} v=${r} tab=${r === target} />`))}
+    </div>`;
+}
+
+/** Tree state that outlives the component (e.g. across tab switches): <FileTree store=${s} />; s.set/select/groups.
+    While no <FileTree> is mounted, changes only update the state (draw is a no-op on an unmounted component). */
+export function fileTreeStore({ onOpen }) {
+  const core = treeCore({ onOpen });
+  return { ...core.handle, core };
+}
+
+/** <FileTree onOpen label groups treeRef store /> -> treeRef.current = { set, select, groups }. */
+export function FileTree({ onOpen, label = '.specs files', groups, treeRef, store }) {
+  const [, tick] = useState(0);
+  const core = useMemo(() => (store ? store.core : treeCore({ onOpen })), []);
+  core.draw = () => tick((n) => n + 1);
+  if (groups && groups !== core.st.groups) core.st.groups = groups;
+  if (treeRef) treeRef.current = core.handle;
+  return html`<div class="tree-wrap"><${TreeView} core=${core} label=${label} /></div>`;
 }

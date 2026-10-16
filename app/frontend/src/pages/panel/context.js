@@ -43,19 +43,11 @@ export const ui = {
   hist: { data: null, key: undefined, loading: false, err: null, ver: 0 }, logLoading: null,
   pausePending: false, confirmShutdown: false, freeText: '', resuming: null, busy: {},
   qSent: {}, agentLog: null, showNew: false, hov: null, attach: [], chatGeneral: false,
+  closed: null, // full-screen notice over the panel: { kind: 'notfound', message } | { kind: 'shutdown' }
 };
 
-/** ctx.state = last /state; ctx.api = project client; ctx.progress = last GET progress. */
-export const ctx = { state: null, api: null, projectId: null, progress: null, offline: false };
-
-// ---------- regions with a signature (no DOM rebuild without a change) ----------
-export const sigs = {};
-export function region(key, data, fn) {
-  const sig = JSON.stringify(data);
-  if (sigs[key] === sig) return;
-  sigs[key] = sig;
-  fn();
-}
+/** ctx.state = last /state; ctx.api = project client; ctx.progress = last GET progress; offline/offlineMsg = polling lost. */
+export const ctx = { state: null, api: null, projectId: null, progress: null, offline: false, offlineMsg: null };
 
 // ---------- derived ----------
 export const loop = () => (ctx.state && ctx.state.loop) || {};

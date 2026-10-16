@@ -1,6 +1,8 @@
 /* "Current turn" view: pipeline per feature (one lane per feature). Pixel layout on a stage scaled
-   to fit the screen; nodes and edges are reconciled by key, so a poll without changes does not touch the DOM. */
-import { $, h, sv, fill, setAttr, setText, setStyle } from '../../util/dom.js';
+   to fit the screen; Preact reconciles lanes, nodes and edges by key, so a poll without changes does not touch the DOM.
+   Pan/zoom stays imperative on the .dg-wrap host (transform on .dg-stage, label in #zoom-val). */
+import { $, setStyle } from '../../util/dom.js';
+import { html, useRef, useLayoutEffect } from '../../util/preact.js';
 import { dur, tok, cost, txt } from '../../util/format.js';
 import { ui, pal, agents, features, featById, projectName } from './context.js';
 import { selectAgent } from './roadmap_sidebar.js';
@@ -9,97 +11,71 @@ const PIPE = { NW: 182, NH: 80, ORCHW: 132, GAPY: 10, GAPX: 26, PADX: 12, PADY: 
 const SCALE_MAX = 1.2;
 const MARKERS = { gray: '#4A4F57', amber: '#F2B544', red: '#F06A5E', green: '#5BD38A', white: '#E6E6E3' };
 const STAGE_COL = { 'spec-writer': 1, 'spec-reviewer': 2, 'executor-back': 3, 'executor-front': 3, 'executor-generic': 3, verifier: 4, 'verifier-flow': 4 };
-const dg = { view: { s: 1, x: 0, y: 0 }, manual: false, mode: null, wrap: null, stage: null, svg: null, nodes: new Map(), edges: new Map(), lanes: new Map(), w: 0, h: 0 };
+const dg = { view: { s: 1, x: 0, y: 0 }, manual: false, wrap: null, stage: null, w: 0, h: 0 };
 export const retColor = (r) => (/^(APPROVED|PASS|DONE)$/i.test(r) ? '#5BD38A' : /^(BLOCKED|FAIL|TOO_BIG)$/i.test(r) ? '#F06A5E' : '#F2B544');
 export const isBad = (a) => a.state === 'failed' || a.state === 'blocked' || /^(BLOCKED|FAIL)$/i.test(String(a.return_status || ''));
 export const actText = (a) => (a.last_action && a.last_action.text ? '› ' + a.last_action.text : a.summary ? '› ' + a.summary : '');
+const orNull = (s) => (s == null || s === '' ? null : String(s));
 
-function dgBuild(mode) {
-  const cv = $('canvas');
-  cv.className = 'canvas dg'; cv.style.minHeight = ''; cv.style.minWidth = '';
-  const svg = sv('svg', { class: 'dg-svg', 'aria-hidden': 'true' });
-  const defs = sv('defs');
-  for (const [k, c] of Object.entries(MARKERS)) {
-    const m = sv('marker', { id: 'arr-' + k, viewBox: '0 0 8 8', refX: 7, refY: 4, markerWidth: 8, markerHeight: 8, orient: 'auto', markerUnits: 'userSpaceOnUse' });
-    m.appendChild(sv('path', { d: 'M0 0 L8 4 L0 8 z', fill: c }));
-    defs.appendChild(m);
-  }
-  svg.appendChild(defs);
-  const stage = h('div', { class: 'dg-stage' }, svg), wrap = h('div', { class: 'dg-wrap' }, stage);
-  fill(cv, wrap);
-  const box = document.querySelector('.canvas-wrap'); if (box) { box.classList.add('dgmode'); box.classList.remove('fullmode'); }
-  bindPanZoom(wrap);
-  dg.manual = false;
-  dg.mode = mode; dg.wrap = wrap; dg.stage = stage; dg.svg = svg;
-  dg.nodes = new Map(); dg.edges = new Map(); dg.lanes = new Map();
+/** Empty message in #canvas (plain mode). */
+export const EmptyMsg = ({ text }) => html`<div class="empty-canvas">${text}</div>`;
+
+/** #zoom-val is rendered once by the Panel with a constant text; pan/zoom rewrites that text node in place
+    (no render per wheel tick, and Preact never diffs it back). */
+export function showZoom(scale) {
+  const z = $('zoom-val'), t = Math.round(scale * 100) + '%';
+  if (z && z.firstChild && z.firstChild.data !== t) z.firstChild.data = t;
 }
-function syncKeyed(map, items, mk, patch, parent) {
-  const seen = new Set();
-  for (const it of items) {
-    seen.add(it.key);
-    let el = map.get(it.key);
-    if (!el) { el = mk(); map.set(it.key, el); parent.appendChild(el); }
-    patch(el, it);
-  }
-  for (const [k, el] of [...map]) if (!seen.has(k)) { el.remove(); map.delete(k); }
+
+// ----- diagram markup -----
+function Lane({ l }) {
+  return html`<div class=${'dg-lane' + (l.alt ? ' alt' : '') + (l.col ? ' col' : '')} style=${{ left: l.x + 'px', top: l.y + 'px', width: l.w + 'px', height: l.h + 'px' }}>
+    <span class="dg-lane-label">${l.label}</span><span class="dg-lane-sub" style=${{ color: l.subColor || '' }}>${orNull(l.sub)}</span>
+  </div>`;
 }
-const mkEdge = () => sv('path', { fill: 'none', 'stroke-linecap': 'round' });
-function patchEdge(el, e) {
-  setAttr(el, 'd', e.d); setAttr(el, 'stroke', MARKERS[e.color] || MARKERS.gray); setAttr(el, 'stroke-width', e.w); setAttr(el, 'opacity', e.op);
-  setAttr(el, 'stroke-dasharray', e.dash || null); setAttr(el, 'marker-end', `url(#arr-${e.color})`);
-  setAttr(el, 'class', 'edge' + (e.flow ? ' flow' : ''));
-}
-function mkLane() {
-  const label = h('span', { class: 'dg-lane-label' }), sub = h('span', { class: 'dg-lane-sub' });
-  const el = h('div', { class: 'dg-lane' }, label, sub);
-  el._r = { label, sub };
-  return el;
-}
-function patchLane(el, l) {
-  el.className = 'dg-lane' + (l.alt ? ' alt' : '') + (l.col ? ' col' : '');
-  setStyle(el, 'left', l.x + 'px'); setStyle(el, 'top', l.y + 'px'); setStyle(el, 'width', l.w + 'px'); setStyle(el, 'height', l.h + 'px');
-  setText(el._r.label, l.label); setText(el._r.sub, l.sub || ''); setStyle(el._r.sub, 'color', l.subColor || '');
-}
-function mkNode() {
-  const dot = h('span', { class: 'dot' }), title = h('span', { class: 'dn-title' }), badge = h('span', { class: 'dn-badge' });
-  const sub = h('span', { class: 'dn-subtxt' }), chip = h('span', { class: 'dn-chip' });
-  const act = h('span', { class: 'dn-act' }), meta = h('span', { class: 'dn-meta' }), chips = h('span', { class: 'dn-chips' });
-  const el = h('button', { type: 'button', class: 'dnode' }, h('span', { class: 'dn-top' }, dot, title, badge), h('span', { class: 'dn-sub' }, sub, chip), act, meta, chips);
-  el._r = { dot, title, badge, sub, chip, act, meta, chips, chipsSig: '' };
-  el.addEventListener('click', () => { if (el._n && el._n.select) el._n.select(); });
-  return el;
-}
-function patchNode(el, n) {
-  el._n = n;
-  const r = el._r;
-  setStyle(el, 'left', n.x + 'px'); setStyle(el, 'top', n.y + 'px'); setStyle(el, 'width', n.w + 'px'); setStyle(el, 'height', n.h + 'px');
+function DNode({ n }) {
   const cls = 'dnode' + (n.pulse ? ' run' : '') + (n.fail ? ' fail' : '') + (n.on ? ' on' : '') + (n.small ? ' small' : '');
-  if (el.className !== cls) el.className = cls;
-  el.style.setProperty('--c', n.color); el.style.setProperty('--cg', n.color + '33');
-  setStyle(el, 'opacity', String(n.opacity)); setAttr(el, 'title', n.tip); setAttr(el, 'aria-pressed', n.on ? 'true' : 'false');
-  setText(r.title, n.title); setText(r.badge, n.badge); setStyle(r.badge, 'color', n.color); setStyle(r.dot, 'background', n.color);
-  setText(r.sub, n.sub); setText(r.chip, n.chip); setStyle(r.chip, 'color', n.chipColor || ''); setStyle(r.chip, 'borderColor', n.chipColor || '');
-  setText(r.act, n.act); setStyle(r.act, 'color', n.actColor || ''); setText(r.meta, n.meta);
-  const sig = (n.chips || []).join('\u0001');
-  if (sig !== r.chipsSig) { r.chipsSig = sig; r.chips.replaceChildren(...(n.chips || []).map((c) => h('span', { class: 'dn-pill', text: c }))); }
+  const style = { left: n.x + 'px', top: n.y + 'px', width: n.w + 'px', height: n.h + 'px', '--c': n.color, '--cg': n.color + '33', opacity: String(n.opacity) };
+  return html`<button type="button" class=${cls} style=${style} title=${n.tip} aria-pressed=${n.on ? 'true' : 'false'} onClick=${() => { if (n.select) n.select(); }}>
+    <span class="dn-top"><span class="dot" style=${{ background: n.color }} /><span class="dn-title">${orNull(n.title)}</span><span class="dn-badge" style=${{ color: n.color }}>${orNull(n.badge)}</span></span>
+    <span class="dn-sub"><span class="dn-subtxt">${orNull(n.sub)}</span><span class="dn-chip" style=${{ color: n.chipColor || '', borderColor: n.chipColor || '' }}>${orNull(n.chip)}</span></span>
+    <span class="dn-act" style=${{ color: n.actColor || '' }}>${orNull(n.act)}</span>
+    <span class="dn-meta">${orNull(n.meta)}</span>
+    <span class="dn-chips">${(n.chips || []).map((c, i) => html`<span key=${i} class="dn-pill">${c}</span>`)}</span>
+  </button>`;
 }
-export function dgRender(m) {
-  const cv = $('canvas');
-  if (!dg.wrap || dg.wrap.parentNode !== cv || dg.mode !== m.mode) dgBuild(m.mode);
-  dg.w = m.w; dg.h = m.h;
-  setStyle(dg.stage, 'width', m.w + 'px'); setStyle(dg.stage, 'height', m.h + 'px');
-  setAttr(dg.svg, 'width', m.w); setAttr(dg.svg, 'height', m.h); setAttr(dg.svg, 'viewBox', `0 0 ${m.w} ${m.h}`);
-  syncKeyed(dg.lanes, m.lanes, mkLane, patchLane, dg.stage);
-  syncKeyed(dg.edges, m.edges, mkEdge, patchEdge, dg.svg);
-  syncKeyed(dg.nodes, m.nodes, mkNode, patchNode, dg.stage);
-  dgScale();
+const setStage = (el) => { dg.stage = el; };
+/** Content of .dg-wrap: the stage with the edges (SVG), the lanes and the agent nodes. */
+export function TurnDiagram({ model: m }) {
+  return html`<div class="dg-stage" ref=${setStage} style=${{ width: m.w + 'px', height: m.h + 'px' }}>
+    <svg class="dg-svg" aria-hidden="true" width=${m.w} height=${m.h} viewBox=${`0 0 ${m.w} ${m.h}`}>
+      <defs>${Object.entries(MARKERS).map(([k, c]) => html`<marker key=${k} id=${'arr-' + k} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L8 4 L0 8 z" fill=${c} /></marker>`)}</defs>
+      ${m.edges.map((e) => html`<path key=${e.key} class=${'edge' + (e.flow ? ' flow' : '')} fill="none" stroke-linecap="round" d=${e.d} stroke=${MARKERS[e.color] || MARKERS.gray}
+        stroke-width=${e.w} opacity=${e.op} stroke-dasharray=${e.dash || null} marker-end=${`url(#arr-${e.color})`} />`)}
+    </svg>
+    ${m.lanes.map((l) => html`<${Lane} key=${l.key} l=${l} />`)}
+    ${m.nodes.map((n) => html`<${DNode} key=${n.key} n=${n} />`)}
+  </div>`;
+}
+
+/** Content of #canvas in the turn view with agents: the pan/zoom host and the diagram. Mounting it (turn tab shown
+    again, first agents of the turn) goes back to automatic fit; only the user panning/zooming leaves it. */
+export function TurnView({ model }) {
+  const ref = useRef(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    dg.wrap = el; dg.manual = false; bindPanZoom(el);
+    return () => { if (dg.wrap === el) dg.wrap = null; };
+  }, []);
+  useLayoutEffect(() => { dg.w = model.w; dg.h = model.h; dgScale(); });
+  return html`<div class="dg-wrap" ref=${ref}><${TurnDiagram} model=${model} /></div>`;
 }
 function vpSize() { const b = document.querySelector('.canvas-wrap'); return b ? { w: b.clientWidth, h: b.clientHeight } : { w: 0, h: 0 }; }
 function dgApply() {
   if (!dg.stage) return;
   const v = dg.view;
   setStyle(dg.stage, 'transform', `translate(${Math.round(v.x * 10) / 10}px,${Math.round(v.y * 10) / 10}px) scale(${Math.round(v.s * 1000) / 1000})`);
-  const z = $('zoom-val'); if (z) setText(z, Math.round(v.s * 100) + '%');
+  showZoom(v.s);
 }
 // fits the pane and centers (default); only the user panning/zooming takes it out of automatic mode
 export function dgFit() {
@@ -139,21 +115,6 @@ function bindPanZoom(wrap) {
   }, { passive: false });
 }
 export const bez = (x1, y1, x2, y2) => { const mx = (x1 + x2) / 2; return `M${x1} ${y1} C${mx} ${y1},${mx} ${y2},${x2} ${y2}`; };
-
-/** Center in text mode (history, empty messages). */
-export function plainCanvas(...kids) {
-  const cv = $('canvas'); const bx = document.querySelector('.canvas-wrap');
-  if (bx) { bx.classList.remove('dgmode'); bx.classList.remove('fullmode'); }
-  cv.className = 'canvas plain'; cv.style.minHeight = ''; cv.style.minWidth = ''; fill(cv, ...kids);
-}
-/** Center filling everything (graph, files, whiteboard): the content handles its own scrolling. */
-export function fullCanvas(node) {
-  const cv = $('canvas'); const bx = document.querySelector('.canvas-wrap');
-  if (bx) { bx.classList.remove('dgmode'); bx.classList.add('fullmode'); }
-  cv.className = 'canvas full'; cv.style.minHeight = ''; cv.style.minWidth = '';
-  if (cv.firstChild !== node || cv.childNodes.length !== 1) fill(cv, node);
-}
-export const emptyMsg = (t) => h('div', { class: 'empty-canvas', text: t });
 
 // ----- 'Current turn' view: pipeline per feature -----
 function agentNode(a, x, y, w, selId, extra) {

@@ -1,8 +1,10 @@
 /* Whiteboard: free drawing board persisted on the server (GET/POST whiteboard with a version; 409 = another tab saved).
    Drawn in plain SVG. The scene follows the Excalidraw scene format (type/elements/appState, elements
    rectangle/ellipse/arrow/line/freedraw/text/diamond with x, y, width, height, points), so a JSON exported
-   from Excalidraw opens here and one from here opens there. Autosave with a 1.5 s debounce, only when it changed. */
-import { h, sv, fill } from '../util/dom.js';
+   from Excalidraw opens here and one from here opens there. Autosave with a 1.5 s debounce, only when it changed.
+   Toolbar and notices are Preact; the SVG scene and the pointer gestures stay imperative (they repaint on every move). */
+import { sv } from '../util/dom.js';
+import { html, useState, useEffect, useLayoutEffect, useMemo, useRef } from '../util/preact.js';
 import { fmtHour } from '../util/format.js';
 import { toast } from './toast.js';
 import { confirmDialog } from './dialog.js';
@@ -60,60 +62,34 @@ function bounds(e) {
 }
 function download(name, blob) {
   const url = URL.createObjectURL(blob);
-  const a = h('a', { href: url, download: name });
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
-/** createWhiteboard({ api }) -> { element, open(), checkRemote(), isDirty(), fit() } */
-export function createWhiteboard({ api }) {
+/** State, SVG scene and actions of one board; `core.draw` (toolbar/notices) is set by the mounted <Whiteboard>. */
+function boardCore({ api }) {
   const st = { scene: emptyScene(), version: 0, updatedAt: null, dirty: false, saving: false, error: null, conflict: null, loaded: false, loading: false,
     tool: 'pen', color: COLORS[1], sel: null, view: { x: 0, y: 0, s: 1 }, undoStack: [], redoStack: [], timer: null };
+  const core = { st, draw: () => {}, area: null, fileInput: null };
+  const draw = () => core.draw();
   const defs = sv('defs', {}, COLORS.map((c, i) => sv('marker', { id: 'wb-arrow-' + i, viewBox: '0 0 10 10', refX: 8, refY: 5, markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse' }, sv('path', { d: 'M0 0 L10 5 L0 10 z', fill: c }))));
   const layer = sv('g', { class: 'wb-scene' });
   const selLayer = sv('g', { class: 'wb-sel' });
   const vp = sv('g', {}, layer, selLayer);
   const svg = sv('svg', { class: 'wb-svg', role: 'img', 'aria-label': 'Free drawing board. Use the toolbar or the keys V, P, R, O, A, T, E.' }, defs, vp);
-  const indicator = h('span', { class: 'wb-ind', role: 'status', 'aria-live': 'polite' });
-  const notice = h('div', { class: 'wb-notice', role: 'alert', hidden: true });
-  const fileInput = h('input', { type: 'file', accept: '.json,.excalidraw,application/json', hidden: true });
-  const toolButtons = TOOLS.map((f) => h('button', { type: 'button', class: 'wb-btn', title: `${f.label} (${f.key})`, 'aria-label': f.label, 'aria-pressed': 'false', 'data-f': f.id, onclick: () => pickTool(f.id) }, f.icon));
-  const colorButtons = COLORS.map((c) => { const b = h('button', { type: 'button', class: 'wb-color', title: 'color ' + c, 'aria-label': 'color ' + c, 'aria-pressed': 'false', onclick: () => { st.color = c; if (st.sel) recolorSelected(c); toolbar(); } }); b.style.background = c; return b; });
-  const btn = (text, title, fn, cls = '') => h('button', { type: 'button', class: 'btn btn-sm btn-ghost ' + cls, title, onclick: fn }, text);
-  const tools = h('div', { class: 'wb-bar', role: 'toolbar', 'aria-label': 'Board tools' },
-    h('div', { class: 'wb-group' }, toolButtons), h('div', { class: 'wb-group' }, colorButtons),
-    h('div', { class: 'wb-group' }, btn('Undo', 'Ctrl+Z', undo), btn('Redo', 'Ctrl+Y', redo), btn('Delete selection', 'Delete', deleteSelected)),
-    h('span', { class: 'spacer' }), indicator,
-    h('div', { class: 'wb-group' }, btn('PNG', 'export a PNG image', () => exportAs('png')), btn('SVG', 'export SVG', () => exportAs('svg')),
-      btn('Download JSON', 'downloads the scene (Excalidraw format)', downloadJson), btn('Import JSON', 'opens a scene JSON (from this board or from Excalidraw)', () => fileInput.click()),
-      btn('Clear', 'erases everything on the board', clear, 'wb-danger')));
-  const area = h('div', { class: 'wb-area' }, svg);
-  const element = h('section', { class: 'wb', 'aria-label': 'Whiteboard' }, tools, notice, area, fileInput);
 
   // ---------- drawing ----------
-  function render() {
+  function paint() {
     layer.replaceChildren(...st.scene.elements.map(drawElement));
     selLayer.replaceChildren();
     const e = st.sel && st.scene.elements.find((x) => x.id === st.sel);
     if (e) { const b = bounds(e); selLayer.appendChild(sv('rect', { x: b.x - 6, y: b.y - 6, width: b.w + 12, height: b.h + 12, rx: 4, class: 'wb-sel-box' })); }
     vp.setAttribute('transform', `translate(${st.view.x} ${st.view.y}) scale(${st.view.s})`);
   }
-  function toolbar() {
-    for (const b of toolButtons) b.setAttribute('aria-pressed', String(b.dataset.f === st.tool));
-    colorButtons.forEach((b, i) => b.setAttribute('aria-pressed', String(COLORS[i] === st.color)));
-    area.dataset.tool = st.tool;
-  }
-  function indicatorText() {
-    indicator.className = 'wb-ind' + (st.error ? ' err' : st.saving || st.dirty ? ' busy' : '');
-    indicator.textContent = st.loading ? 'loading…' : st.error ? 'save failed' : st.saving ? 'saving…' : st.dirty ? 'changed…' : st.loaded ? `saved${st.updatedAt ? ' · ' + fmtHour(st.updatedAt) : ''}` : '';
-    const notices = [];
-    if (st.conflict) notices.push(h('div', { class: 'ed-av ed-av-warn' }, h('strong', { text: 'Another tab saved the board first. ' }), 'Choose which version stays.',
-      h('div', { class: 'card-row' }, h('button', { type: 'button', class: 'btn btn-sm', onclick: () => open(true) }, 'Reload (lose my changes)'),
-        h('button', { type: 'button', class: 'btn btn-sm btn-danger', onclick: overwrite }, 'Overwrite with mine'))));
-    if (st.error && !st.conflict) notices.push(h('div', { class: 'ed-av ed-av-bad' }, h('strong', { text: 'Not saved: ' }), st.error, ' ', h('button', { type: 'button', class: 'btn btn-sm', onclick: () => save() }, 'try again')));
-    fill(notice, notices); notice.hidden = !notices.length;
-  }
-  function pickTool(f) { st.tool = f; if (f !== 'select') st.sel = null; toolbar(); render(); }
+  function pickTool(f) { st.tool = f; if (f !== 'select') st.sel = null; draw(); paint(); }
+  function pickColor(c) { st.color = c; if (st.sel) recolorSelected(c); draw(); }
 
   // ---------- history ----------
   function remember() { st.undoStack.push(JSON.stringify(st.scene.elements)); if (st.undoStack.length > 100) st.undoStack.shift(); st.redoStack = []; }
@@ -127,7 +103,7 @@ export function createWhiteboard({ api }) {
     if (!ok) return;
     remember(); st.scene.elements = []; st.sel = null; changed();
   }
-  function changed() { st.dirty = true; render(); indicatorText(); clearTimeout(st.timer); st.timer = setTimeout(save, AUTOSAVE_MS); }
+  function changed() { st.dirty = true; paint(); draw(); clearTimeout(st.timer); st.timer = setTimeout(save, AUTOSAVE_MS); }
 
   // ---------- pointer ----------
   const toScene = (ev) => { const r = svg.getBoundingClientRect(); return { x: (ev.clientX - r.left - st.view.x) / st.view.s, y: (ev.clientY - r.top - st.view.y) / st.view.s }; };
@@ -141,7 +117,7 @@ export function createWhiteboard({ api }) {
     const p = toScene(ev);
     if (st.tool === 'eraser') { const id = idUnder(ev); if (id) { remember(); st.scene.elements = st.scene.elements.filter((e) => e.id !== id); changed(); } gesture = { kind: 'eraser' }; svg.setPointerCapture(ev.pointerId); return; }
     if (st.tool === 'select') {
-      const id = idUnder(ev); st.sel = id; render();
+      const id = idUnder(ev); st.sel = id; paint();
       if (id) { remember(); const e = st.scene.elements.find((x) => x.id === id); gesture = { kind: 'move', e, x0: p.x, y0: p.y, ex: e.x, ey: e.y, moved: false }; svg.setPointerCapture(ev.pointerId); }
       else { gesture = { kind: 'pan', x: ev.clientX, y: ev.clientY, vx: st.view.x, vy: st.view.y }; svg.setPointerCapture(ev.pointerId); }
       return;
@@ -153,28 +129,28 @@ export function createWhiteboard({ api }) {
     st.scene.elements.push(e);
     gesture = { kind: 'draw', e, x0: p.x, y0: p.y };
     svg.setPointerCapture(ev.pointerId);
-    render();
+    paint();
   });
   svg.addEventListener('pointermove', (ev) => {
     if (!gesture) return;
-    if (gesture.kind === 'pan') { st.view = { ...st.view, x: gesture.vx + ev.clientX - gesture.x, y: gesture.vy + ev.clientY - gesture.y }; render(); return; }
+    if (gesture.kind === 'pan') { st.view = { ...st.view, x: gesture.vx + ev.clientX - gesture.x, y: gesture.vy + ev.clientY - gesture.y }; paint(); return; }
     if (gesture.kind === 'eraser') { const id = idUnder(ev); if (id) { st.scene.elements = st.scene.elements.filter((e) => e.id !== id); changed(); } return; }
     const p = toScene(ev);
-    if (gesture.kind === 'move') { gesture.e.x = r1(gesture.ex + p.x - gesture.x0); gesture.e.y = r1(gesture.ey + p.y - gesture.y0); gesture.moved = true; render(); return; }
+    if (gesture.kind === 'move') { gesture.e.x = r1(gesture.ex + p.x - gesture.x0); gesture.e.y = r1(gesture.ey + p.y - gesture.y0); gesture.moved = true; paint(); return; }
     const e = gesture.e;
     if (e.type === 'freedraw') {
       const last = e.points[e.points.length - 1], dx = p.x - e.x, dy = p.y - e.y;
       if (Math.hypot(dx - last[0], dy - last[1]) >= 2 / st.view.s) e.points.push([r1(dx), r1(dy)]);
     } else if (e.type === 'arrow') { e.points[1] = [r1(p.x - e.x), r1(p.y - e.y)]; e.width = e.points[1][0]; e.height = e.points[1][1]; }
     else { e.width = r1(p.x - gesture.x0); e.height = r1(p.y - gesture.y0); }
-    render();
+    paint();
   });
   const release = () => {
     if (!gesture) return;
     const g = gesture; gesture = null;
     if (g.kind === 'draw') {
       const e = g.e, b = bounds(e);
-      if (b.w < 2 && b.h < 2 && e.type !== 'freedraw') { st.scene.elements = st.scene.elements.filter((x) => x !== e); st.undoStack.pop(); render(); return; }
+      if (b.w < 2 && b.h < 2 && e.type !== 'freedraw') { st.scene.elements = st.scene.elements.filter((x) => x !== e); st.undoStack.pop(); paint(); return; }
       if (e.type === 'rectangle' || e.type === 'ellipse') { if (e.width < 0) { e.x = r1(e.x + e.width); e.width = -e.width; } if (e.height < 0) { e.y = r1(e.y + e.height); e.height = -e.height; } }
       if (e.type === 'freedraw') { e.width = r1(b.w); e.height = r1(b.h); }
       changed();
@@ -188,12 +164,16 @@ export function createWhiteboard({ api }) {
       const s = Math.max(0.2, Math.min(4, v.s * (ev.deltaY < 0 ? 1.1 : 1 / 1.1))), k = s / v.s;
       st.view = { s, x: px - (px - v.x) * k, y: py - (py - v.y) * k };
     } else st.view = { ...st.view, x: st.view.x - ev.deltaX, y: st.view.y - ev.deltaY };
-    render();
+    paint();
   }, { passive: false });
 
+  // floating textarea over the area (outside the Preact tree, removed when it closes)
   function askText(p, ev) {
+    const area = core.area;
     const r = area.getBoundingClientRect();
-    const ta = h('textarea', { class: 'wb-text', rows: 1, 'aria-label': 'Board text (Enter confirms, Shift+Enter breaks the line, Esc cancels)' });
+    const ta = document.createElement('textarea');
+    ta.className = 'wb-text'; ta.rows = 1;
+    ta.setAttribute('aria-label', 'Board text (Enter confirms, Shift+Enter breaks the line, Esc cancels)');
     ta.style.left = (ev.clientX - r.left) + 'px'; ta.style.top = (ev.clientY - r.top - 10) + 'px'; ta.style.color = st.color;
     area.appendChild(ta);
     setTimeout(() => ta.focus(), 0);
@@ -210,9 +190,8 @@ export function createWhiteboard({ api }) {
   }
 
   let spacePressed = false;
-  area.tabIndex = 0;
-  area.addEventListener('keydown', (e) => {
-    if (e.target !== area) return;
+  function areaKeyDown(e) {
+    if (e.target !== core.area) return;
     const k = e.key.toLowerCase();
     if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
     if ((e.ctrlKey || e.metaKey) && k === 'y') { e.preventDefault(); redo(); return; }
@@ -220,9 +199,9 @@ export function createWhiteboard({ api }) {
     if (e.key === ' ') { spacePressed = true; e.preventDefault(); return; }
     const f = TOOLS.find((x) => x.key.toLowerCase() === k);
     if (f && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); pickTool(f.id); }
-  });
-  area.addEventListener('keyup', (e) => { if (e.key === ' ') spacePressed = false; });
-  area.addEventListener('pointerdown', () => { if (document.activeElement !== area && !area.contains(document.activeElement)) area.focus({ preventScroll: true }); });
+  }
+  function areaKeyUp(e) { if (e.key === ' ') spacePressed = false; }
+  function areaPointerDown() { const area = core.area; if (area && document.activeElement !== area && !area.contains(document.activeElement)) area.focus({ preventScroll: true }); }
 
   // ---------- export / import ----------
   function exportableSvg() {
@@ -250,7 +229,8 @@ export function createWhiteboard({ api }) {
     img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(text);
   }
   function downloadJson() { download('whiteboard.excalidraw.json', new Blob([JSON.stringify(st.scene, null, 2)], { type: 'application/json' })); }
-  fileInput.addEventListener('change', async () => {
+  async function importFile() {
+    const fileInput = core.fileInput;
     const f = fileInput.files && fileInput.files[0];
     fileInput.value = '';
     if (!f) return;
@@ -260,22 +240,22 @@ export function createWhiteboard({ api }) {
       if (!ok) return;
       remember(); st.scene = scene; st.sel = null; changed(); fitView();
     } catch (_) { toast('That file is not a valid scene JSON.', 'err'); }
-  });
+  }
 
   // ---------- server ----------
   function fitView() {
     const r = svg.getBoundingClientRect();
-    if (!st.scene.elements.length || !r.width) { st.view = { x: 0, y: 0, s: 1 }; render(); return; }
+    if (!st.scene.elements.length || !r.width) { st.view = { x: 0, y: 0, s: 1 }; paint(); return; }
     const bs = st.scene.elements.map(bounds);
     const minX = Math.min(...bs.map((b) => b.x)), minY = Math.min(...bs.map((b) => b.y));
     const maxX = Math.max(...bs.map((b) => b.x + b.w)), maxY = Math.max(...bs.map((b) => b.y + b.h));
     const s = Math.max(0.2, Math.min(1.5, (r.width - 60) / Math.max(1, maxX - minX), (r.height - 60) / Math.max(1, maxY - minY)));
     st.view = { s, x: (r.width - (maxX - minX) * s) / 2 - minX * s, y: (r.height - (maxY - minY) * s) / 2 - minY * s };
-    render();
+    paint();
   }
   async function open(force) {
     if (st.loading || (st.loaded && !force)) return;
-    st.loading = true; indicatorText();
+    st.loading = true; draw();
     try {
       const r = await api.get('whiteboard', 20000);
       st.scene = normalizeScene(r.data); st.version = typeof r.version === 'number' ? r.version : 0; st.updatedAt = r.updated_at || null;
@@ -283,14 +263,14 @@ export function createWhiteboard({ api }) {
       clearTimeout(st.timer);
       requestAnimationFrame(fitView);
     } catch (e) { st.error = e.status === 404 ? 'the server does not offer the board yet' : e.message; }
-    finally { st.loading = false; render(); toolbar(); indicatorText(); }
+    finally { st.loading = false; paint(); draw(); }
   }
   async function save(baseVersion) {
     if (st.saving || (!st.dirty && baseVersion == null)) return;
     const data = JSON.parse(JSON.stringify(st.scene));
     const body = JSON.stringify(data);
-    if (body.length > MAX_BYTES) { st.error = 'the board went over 8 MB; delete large freehand drawings'; indicatorText(); return; }
-    st.saving = true; st.error = null; indicatorText();
+    if (body.length > MAX_BYTES) { st.error = 'the board went over 8 MB; delete large freehand drawings'; draw(); return; }
+    st.saving = true; st.error = null; draw();
     const sent = JSON.stringify(st.scene.elements);
     try {
       const r = await api.post('whiteboard', { data, base_version: baseVersion != null ? baseVersion : st.version }, 30000);
@@ -300,13 +280,13 @@ export function createWhiteboard({ api }) {
       if (e.status === 409) { const b = e.body || {}; const v = typeof b.version === 'number' ? b.version : null; st.conflict = { version: v }; }
       else st.error = e.message;
     } finally {
-      st.saving = false; indicatorText();
+      st.saving = false; draw();
       if (st.dirty && !st.conflict && !st.error) { clearTimeout(st.timer); st.timer = setTimeout(save, AUTOSAVE_MS); }
     }
   }
   async function overwrite() {
     let v = st.conflict && st.conflict.version;
-    if (v == null) { try { v = (await api.get('whiteboard', 20000)).version; } catch (e) { st.error = e.message; indicatorText(); return; } }
+    if (v == null) { try { v = (await api.get('whiteboard', 20000)).version; } catch (e) { st.error = e.message; draw(); return; } }
     st.conflict = null; st.dirty = true; await save(v);
   }
   /** Called by the panel while the board tab is visible: detects a newer version saved by another tab. */
@@ -315,13 +295,71 @@ export function createWhiteboard({ api }) {
     try {
       const r = await api.get('whiteboard', 15000);
       if (typeof r.version !== 'number' || r.version <= st.version) return;
-      if (st.dirty) { st.conflict = { version: r.version }; indicatorText(); return; }
+      if (st.dirty) { st.conflict = { version: r.version }; draw(); return; }
       st.scene = normalizeScene(r.data); st.version = r.version; st.updatedAt = r.updated_at || null; st.sel = null;
-      render(); indicatorText();
+      paint(); draw();
       toast('The board was updated by another tab.', 'ok');
     } catch (_) { /* silent: the disconnected banner already covers network failures */ }
   }
 
-  toolbar(); render(); indicatorText();
-  return { element, open, checkRemote, isDirty: () => st.dirty, fit: fitView };
+  Object.assign(core, {
+    svg, paint, pickTool, pickColor, undo, redo, deleteSelected, clear, exportAs, downloadJson, importFile, open, save, overwrite,
+    areaKeyDown, areaKeyUp, areaPointerDown,
+    handle: { open, checkRemote, isDirty: () => st.dirty, fit: fitView },
+  });
+  return core;
+}
+
+/** Content of section.wb: toolbar, notices, drawing area (the SVG is mounted into it once) and the import input. */
+function BoardView({ core }) {
+  const { st } = core;
+  const area = useRef(null), file = useRef(null);
+  useLayoutEffect(() => {
+    core.area = area.current; core.fileInput = file.current;
+    if (core.svg.parentNode !== area.current) area.current.appendChild(core.svg);
+  }, []);
+  const btn = (text, title, fn, cls = '') => html`<button type="button" class=${'btn btn-sm btn-ghost ' + cls} title=${title} onClick=${fn}>${text}</button>`;
+  const ind = st.loading ? 'loading…' : st.error ? 'save failed' : st.saving ? 'saving…' : st.dirty ? 'changed…' : st.loaded ? `saved${st.updatedAt ? ' · ' + fmtHour(st.updatedAt) : ''}` : '';
+  const notices = [];
+  if (st.conflict) {
+    notices.push(html`<div class="ed-av ed-av-warn"><strong>Another tab saved the board first. </strong>Choose which version stays.<div class="card-row">
+      <button type="button" class="btn btn-sm" onClick=${() => core.open(true)}>Reload (lose my changes)</button>
+      <button type="button" class="btn btn-sm btn-danger" onClick=${core.overwrite}>Overwrite with mine</button>
+    </div></div>`);
+  }
+  if (st.error && !st.conflict) notices.push(html`<div class="ed-av ed-av-bad"><strong>Not saved: </strong>${st.error} <button type="button" class="btn btn-sm" onClick=${() => core.save()}>try again</button></div>`);
+  return html`
+    <div class="wb-bar" role="toolbar" aria-label="Board tools">
+      <div class="wb-group">${TOOLS.map((f) => html`<button key=${f.id} type="button" class="wb-btn" title=${`${f.label} (${f.key})`} aria-label=${f.label}
+        aria-pressed=${String(f.id === st.tool)} data-f=${f.id} onClick=${() => core.pickTool(f.id)}>${f.icon}</button>`)}</div>
+      <div class="wb-group">${COLORS.map((c) => html`<button key=${c} type="button" class="wb-color" title=${'color ' + c} aria-label=${'color ' + c}
+        aria-pressed=${String(c === st.color)} style=${{ background: c }} onClick=${() => core.pickColor(c)}></button>`)}</div>
+      <div class="wb-group">${btn('Undo', 'Ctrl+Z', core.undo)}${btn('Redo', 'Ctrl+Y', core.redo)}${btn('Delete selection', 'Delete', core.deleteSelected)}</div>
+      <span class="spacer"></span>
+      <span class=${'wb-ind' + (st.error ? ' err' : st.saving || st.dirty ? ' busy' : '')} role="status" aria-live="polite">${ind}</span>
+      <div class="wb-group">${btn('PNG', 'export a PNG image', () => core.exportAs('png'))}${btn('SVG', 'export SVG', () => core.exportAs('svg'))}${
+        btn('Download JSON', 'downloads the scene (Excalidraw format)', core.downloadJson)}${btn('Import JSON', 'opens a scene JSON (from this board or from Excalidraw)', () => core.fileInput.click())}${
+        btn('Clear', 'erases everything on the board', core.clear, 'wb-danger')}</div>
+    </div>
+    <div class="wb-notice" role="alert" hidden=${!notices.length}>${notices}</div>
+    <div class="wb-area" ref=${area} tabindex="0" data-tool=${st.tool}
+      onKeyDown=${core.areaKeyDown} onKeyUp=${core.areaKeyUp} onPointerDown=${core.areaPointerDown}></div>
+    <input type="file" accept=".json,.excalidraw,application/json" hidden ref=${file} onChange=${core.importFile} />`;
+}
+
+/** Board state that outlives the component (e.g. across tab switches): <Whiteboard store=${s} />;
+    s.open/checkRemote/isDirty/fit. The SVG scene moves into each newly mounted drawing area. */
+export function whiteboardStore({ api }) {
+  const core = boardCore({ api });
+  return { ...core.handle, core };
+}
+
+/** <Whiteboard api boardRef store /> -> boardRef.current = { open, checkRemote, isDirty, fit }. */
+export function Whiteboard({ api, boardRef, store }) {
+  const [, tick] = useState(0);
+  const core = useMemo(() => (store ? store.core : boardCore({ api })), []);
+  core.draw = () => tick((n) => n + 1);
+  if (boardRef) boardRef.current = core.handle;
+  useEffect(() => { core.paint(); }, []);
+  return html`<section class="wb" aria-label="Whiteboard"><${BoardView} core=${core} /></section>`;
 }

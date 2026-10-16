@@ -82,11 +82,13 @@ export function createProjectClient(projectId) {
   return buildClient(`/p/${projectId}/api/`);
 }
 
-/** "Disconnected" banner: shows/hides it and writes the detail, without losing what is on screen. */
+/** Detail line of the "app disconnected" banner. */
+export const disconnectedDetail = (message) => `retrying every 5 s${message ? ' (' + message + ')' : ''}. The screen below is the last one received.`;
+/** "Disconnected" banner (hub): shows/hides it and writes the detail, without losing what is on screen. */
 export function showDisconnectedBanner(banner, detail, disconnected, message) {
   if (!banner) return;
   banner.hidden = !disconnected;
-  if (detail) detail.textContent = disconnected ? `retrying every 5 s${message ? ' (' + message + ')' : ''}. The screen below is the last one received.` : '';
+  if (detail) detail.textContent = disconnected ? disconnectedDetail(message) : '';
 }
 
 /**

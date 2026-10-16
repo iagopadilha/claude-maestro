@@ -1,29 +1,36 @@
 /* Panel of ONE project (/p/<id>/): port of the loop monitor with URLs relative to the project (/p/<id>/api/...),
-   plus the "Where this project stands" trail, the .specs explorer, the graph and the whiteboard. */
-import { $, h, bindTabKeys } from '../util/dom.js';
-import { createProjectClient, createPolling, showDisconnectedBanner } from '../api/api_client.js';
+   plus the "Where this project stands" trail, the .specs explorer, the graph and the whiteboard.
+   The whole page is one Preact tree (<Panel>, panel/app.js): handlers mutate ctx/ui and call renderAll(). */
+import { $, bindTabKeys } from '../util/dom.js';
+import { html, render } from '../util/preact.js';
+import { createProjectClient, createPolling } from '../api/api_client.js';
 import { toast } from '../components/toast.js';
-import { openWhyOnFirstVisit, whyButton } from '../components/why_panel.js';
+import { openWhyOnFirstVisit } from '../components/why_panel.js';
 import { ctx, ui, askKey, agentById } from './panel/context.js';
-import { renderHeader, updateTitle, cancelShutdown } from './panel/header.js';
-import { renderAlert, idleText } from './panel/alert.js';
-import { nlVisibility, nlOnLoopRunning } from './panel/new_loop.js';
-import { renderComposer, initComposer } from './panel/chat.js';
-import { renderLeft } from './panel/roadmap_sidebar.js';
-import { renderCenter, initCenter, checkRemoteBoard } from './panel/center.js';
-import { renderInspector, fetchAgentLog } from './panel/inspector.js';
-import { renderTimeline } from './panel/timeline.js';
-import { renderGuardFeed } from './panel/guard_feed.js';
+import { Panel } from './panel/app.js';
+import { updateTitle, cancelShutdown } from './panel/header.js';
+import { nlOnLoopRunning } from './panel/new_loop.js';
+import { checkRemoteBoard } from './panel/center.js';
+import { fetchAgentLog } from './panel/inspector.js';
 import { loadHist } from './panel/history.js';
 import { initLayout } from './panel/layout.js';
 import { dgScale } from './panel/turn_diagram.js';
-import { renderTrail, reloadProgress, maybeReloadProgress, initTrail } from './panel/progress_trail.js';
+import { reloadProgress, maybeReloadProgress } from './panel/progress_trail.js';
 
-let polling = null, pollCount = 0, prevStatus = null;
+let polling = null, pollCount = 0, prevStatus = null, root = null, queued = false;
 
+/** Renders the whole panel (Preact only touches what changed). */
 export function renderAll() {
-  if (!ctx.state) return;
-  renderHeader(); renderAlert(); nlVisibility(); renderComposer(); $('idle-note').textContent = idleText(); renderLeft(); renderCenter(); renderInspector(); renderGuardFeed(); renderTimeline();
+  if (!root) return;
+  render(html`<${Panel} />`, root);
+  updateTitle();
+}
+
+/** renderAll() after the current task (coalesced): for callers that may run inside a component effect. */
+export function requestRender() {
+  if (queued) return;
+  queued = true;
+  queueMicrotask(() => { queued = false; renderAll(); });
 }
 
 /** Stops the polling (app shut down or unknown project). */
@@ -55,31 +62,22 @@ function applyState(s) {
 }
 
 function showNotFound(message) {
-  const screen = $('closed');
-  screen.replaceChildren(h('div', { class: 'closed-card', role: 'alert' },
-    h('div', { class: 'closed-title', text: 'Project not found' }),
-    h('div', { class: 'muted', text: message || 'This address does not match a project registered in the app (it may have been forgotten).' }),
-    h('a', { class: 'btn btn-primary', href: '/' }, 'Back to the projects')));
-  screen.hidden = false;
-  document.title = 'project not found · Loop Harness';
+  ui.closed = { kind: 'notfound', message };
+  renderAll();
 }
 
-export function startPanel(root, projectId) {
-  const tpl = document.getElementById('tpl-panel');
-  root.replaceChildren(tpl.content.cloneNode(true));
+export function startPanel(rootEl, projectId) {
+  root = rootEl;
+  root.replaceChildren();
   ctx.projectId = projectId;
   ctx.api = createProjectClient(projectId);
-  $('header-extra').append(whyButton());
+  renderAll();
+  // one-time setup on the DOM of the first render (the Panel never re-creates these elements)
   for (const id of ['center-tabs', 'insp-tabs', 'cp-seg']) bindTabKeys($(id));
-  initCenter();
   initLayout();
   const cwrap = document.querySelector('.canvas-wrap');
   if (cwrap && typeof ResizeObserver === 'function') new ResizeObserver(() => dgScale()).observe(cwrap);
-  initComposer();
-  initTrail();
-  renderTrail();
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ui.confirmShutdown && !document.querySelector('dialog[open]')) cancelShutdown(); });
-  updateTitle();
 
   polling = createPolling({
     task: async () => {
@@ -92,9 +90,8 @@ export function startPanel(root, projectId) {
       }
     },
     onConnectionChange: (disconnected, msg) => {
-      ctx.offline = disconnected;
-      showDisconnectedBanner($('banner-offline'), $('banner-offline-detail'), disconnected, msg);
-      updateTitle();
+      ctx.offline = disconnected; ctx.offlineMsg = msg;
+      renderAll();
     },
   });
   polling.now(0);

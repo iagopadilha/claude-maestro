@@ -1,11 +1,13 @@
 /* Copy to the clipboard, with a fallback (textarea + execCommand) and a toast. */
-import { h } from '../util/dom.js';
+import { html } from '../util/preact.js';
 import { toast } from './toast.js';
 
 export async function copyText(text, okMessage = 'Copied.') {
   try { await navigator.clipboard.writeText(text); toast(okMessage, 'ok'); return true; } catch (_) { /* fallback */ }
   try {
-    const ta = h('textarea', { 'aria-hidden': 'true', style: 'position:fixed;left:-9999px;top:0' });
+    const ta = document.createElement('textarea');
+    ta.setAttribute('aria-hidden', 'true');
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0';
     ta.value = text;
     document.body.appendChild(ta); ta.select();
     const ok = document.execCommand('copy');
@@ -18,8 +20,12 @@ export async function copyText(text, okMessage = 'Copied.') {
   }
 }
 
+/** Button that copies `text` (children = label). */
+export function CopyButton({ text, okMessage, class: cls = 'btn btn-sm', children = 'Copy', ...rest }) {
+  return html`<button type="button" class=${cls} ...${rest} onClick=${() => copyText(text, okMessage)}>${children}</button>`;
+}
+
 /** <pre> block with a Copy button next to it. */
-export function copyableBlock(text, label = 'Copy', cls = 'cmd') {
-  return h('div', { class: 'cmd-row' }, h('pre', { class: cls, text }),
-    h('button', { type: 'button', class: 'btn btn-sm', onclick: () => copyText(text) }, label));
+export function CopyBlock({ text, label = 'Copy', cls = 'cmd' }) {
+  return html`<div class="cmd-row"><pre class=${cls}>${text}</pre><${CopyButton} text=${text}>${label}<//></div>`;
 }

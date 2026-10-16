@@ -1,32 +1,34 @@
 /* Footer: timeline of the turns; clicking one opens the snapshot of that turn (read-only). */
-import { $, h, fill } from '../../util/dom.js';
+import { $ } from '../../util/dom.js';
+import { html, useEffect } from '../../util/preact.js';
 import { DASH, isNum, cost, dur, list, featLabel } from '../../util/format.js';
 import { toast } from '../../components/toast.js';
-import { ctx, ui, region, TURN_COLOR, lastN } from './context.js';
+import { ctx, ui, TURN_COLOR, lastN } from './context.js';
 import { renderAll } from '../project_panel.js';
 import { loadHist } from './history.js';
 
-let lastTurnsLen = -1;
+function TurnButton({ v, isLast, on, maxC }) {
+  const barH = isNum(v.cost_usd) && maxC > 0 ? Math.max(10, (v.cost_usd / maxC) * 100) : 10;
+  const opacity = !isNum(v.cost_usd) ? '0.35' : on ? '1' : '0.75';
+  const tip = `turn ${v.n}${isLast ? ' (latest · live)' : ''} · ${cost(v.cost_usd)} · ${dur(v.duration_s)} · ${v.status || DASH}${featLabel(v.feature) ? ' · ' + featLabel(v.feature) : ''}${isNum(v.commits) ? ' · ' + v.commits + ' commit(s)' : ''}`;
+  return html`<button type="button" class=${'v' + (on ? ' on' : '') + (isLast ? ' last' : '')} title=${tip} aria-label=${tip}
+      aria-pressed=${on ? 'true' : 'false'} onClick=${() => pickTurn(v)}>
+    <span class="v-bar"><div style=${{ height: barH + '%', background: TURN_COLOR[v.status] || '#4A4F57', opacity }} /></span>
+    <span class="v-lab">${String(v.n) + (isLast ? ' ●' : '')}</span>
+  </button>`;
+}
 
-export function renderTimeline() {
-  const state = ctx.state;
-  if (!state) return;
-  const vs = list(state.turns), last = lastN();
-  const data = { vs, pn: ui.pastN, ld: ui.loadingN, last };
-  region('timeline', data, () => {
-    const maxC = Math.max(0, ...vs.map((v) => (isNum(v.cost_usd) ? v.cost_usd : 0)));
-    const shown = ui.loadingN != null ? ui.loadingN : ui.pastN;
-    const items = vs.map((v) => {
-      const isLast = v.n === last, on = shown != null ? shown === v.n : isLast;
-      const barH = isNum(v.cost_usd) && maxC > 0 ? Math.max(10, (v.cost_usd / maxC) * 100) : 10;
-      const inner = h('div', {}); inner.style.height = barH + '%'; inner.style.background = TURN_COLOR[v.status] || '#4A4F57'; inner.style.opacity = on ? '1' : '0.75';
-      if (!isNum(v.cost_usd)) inner.style.opacity = '0.35';
-      const tip = `turn ${v.n}${isLast ? ' (latest · live)' : ''} · ${cost(v.cost_usd)} · ${dur(v.duration_s)} · ${v.status || DASH}${featLabel(v.feature) ? ' · ' + featLabel(v.feature) : ''}${isNum(v.commits) ? ' · ' + v.commits + ' commit(s)' : ''}`;
-      return h('button', { type: 'button', class: 'v' + (on ? ' on' : '') + (isLast ? ' last' : ''), title: tip, 'aria-label': tip, 'aria-pressed': on ? 'true' : 'false', onclick: () => pickTurn(v) },
-        h('span', { class: 'v-bar' }, inner), h('span', { class: 'v-lab', text: String(v.n) + (isLast ? ' ●' : '') }));
-    });
-    fill($('timeline'), items.length ? items : [h('span', { class: 'empty-note', text: 'no turn recorded yet' })]);
-    if (vs.length !== lastTurnsLen) { lastTurnsLen = vs.length; const t = $('timeline'); t.scrollLeft = t.scrollWidth; }
+/** Content of #timeline: one button per turn (bar height = relative cost). */
+export function Timeline() {
+  const vs = list(ctx.state && ctx.state.turns), last = lastN();
+  // a new turn scrolls the strip to the end (the latest turn stays visible)
+  useEffect(() => { const t = $('timeline'); if (t) t.scrollLeft = t.scrollWidth; }, [vs.length]);
+  if (!vs.length) return html`<span class="empty-note">no turn recorded yet</span>`;
+  const maxC = Math.max(0, ...vs.map((v) => (isNum(v.cost_usd) ? v.cost_usd : 0)));
+  const shown = ui.loadingN != null ? ui.loadingN : ui.pastN;
+  return vs.map((v) => {
+    const isLast = v.n === last;
+    return html`<${TurnButton} key=${v.n} v=${v} isLast=${isLast} on=${shown != null ? shown === v.n : isLast} maxC=${maxC} />`;
   });
 }
 
@@ -48,7 +50,7 @@ export async function pickTurn(v) {
   if (ui.pastN == null) ui.pinLast = lastN();
   const seq = ++pickSeq;
   if (turnCache.has(v.n)) { commitPast(turnCache.get(v.n)); return; }
-  ui.loadingN = v.n; renderTimeline();
+  ui.loadingN = v.n; renderAll();
   try {
     const r = await ctx.api.get('turn/' + encodeURIComponent(v.n));
     if (seq !== pickSeq) return;

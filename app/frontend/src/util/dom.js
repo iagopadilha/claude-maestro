@@ -1,7 +1,8 @@
-/* DOM helpers without innerHTML: every external text goes in through textContent. */
+/* DOM helpers that never parse HTML strings: every external text goes in through textContent. The panel itself is Preact;
+   these serve the imperative widgets (whiteboard SVG scene, pan/zoom transforms) and the tablist keys. */
 
 export const $ = (id) => document.getElementById(id);
-export const SVGNS = 'http://www.w3.org/2000/svg';
+const SVGNS = 'http://www.w3.org/2000/svg';
 
 function applyProps(el, props) {
   for (const [k, v] of Object.entries(props || {})) {
@@ -14,43 +15,17 @@ function applyProps(el, props) {
   }
 }
 
-export function addKids(el, kids) {
+function addKids(el, kids) {
   for (const k of kids.flat(Infinity)) {
     if (k == null || k === false) continue;
     el.appendChild(typeof k === 'object' ? k : document.createTextNode(String(k)));
   }
 }
 
-/** Creates an HTML element: h('div', {class, text, onclick}, ...children). */
-export const h = (tag, props, ...kids) => { const el = document.createElement(tag); applyProps(el, props); addKids(el, kids); return el; };
-/** Creates an SVG element. */
+/** Creates an SVG element: sv('path', {d, class}, ...children). */
 export const sv = (tag, props, ...kids) => { const el = document.createElementNS(SVGNS, tag); applyProps(el, props); addKids(el, kids); return el; };
 
-export const setColors = (el, c, bg) => { if (c) el.style.color = c; if (bg) el.style.background = bg; };
-export function fill(container, ...kids) { container.replaceChildren(); addKids(container, kids); }
-
-export function setAttr(el, k, v) {
-  if (v == null || v === false) { if (el.hasAttribute(k)) el.removeAttribute(k); return; }
-  const s = String(v);
-  if (el.getAttribute(k) !== s) el.setAttribute(k, s);
-}
-export function setText(el, t) { t = t == null ? '' : String(t); if (el.textContent !== t) el.textContent = t; }
 export function setStyle(el, k, v) { if (el.style[k] !== v) el.style[k] = v; }
-
-/** Rebuilds the content keeping the focus (and the caret) of the element with an id. */
-export function keepFocus(fn) {
-  const a = document.activeElement;
-  const id = a && a.id;
-  const start = a && typeof a.selectionStart === 'number' ? a.selectionStart : null;
-  fn();
-  if (id) {
-    const n = document.getElementById(id);
-    if (n && n !== document.activeElement) {
-      n.focus();
-      if (start != null && n.setSelectionRange) try { n.setSelectionRange(start, start); } catch (_) { /* ok */ }
-    }
-  }
-}
 
 /** Binds arrows/Home/End to a role=tablist (roving focus between the role=tab elements). */
 export function bindTabKeys(tablist) {
