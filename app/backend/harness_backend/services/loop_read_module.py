@@ -3,6 +3,7 @@ from ..api.controllers.loop_read_controller import LoopReadController
 from ..repositories.claude_transcript_repository import ClaudeTranscriptRepository
 from ..repositories.loop_file_repository import LoopFileRepository
 from .agent_history_service import AgentHistoryService
+from .guard_event_service import GuardEventService
 from .loop_panel_service import LoopPanelService
 from .loop_status_service import LoopStatusService
 from .roadmap_view_service import RoadmapViewService
@@ -29,7 +30,7 @@ def build_loop_read_module(config, log, project_service, activity_monitor):
     turn_service = TurnService(loop_file_repository, roadmap_view_service)
     agent_history_service = AgentHistoryService(loop_file_repository, claude_transcript_repository, log)
     loop_panel_service = LoopPanelService(loop_status_service, loop_file_repository, roadmap_view_service, turn_service,
-                                          agent_history_service, activity_monitor)
+                                          agent_history_service, activity_monitor, GuardEventService(loop_file_repository))
     controller = LoopReadController(project_service, loop_panel_service, agent_history_service, turn_service, log)
     return LoopReadModule(loop_status_service, loop_panel_service, agent_history_service, turn_service, claude_transcript_repository,
                           [controller], [loop_status_service])

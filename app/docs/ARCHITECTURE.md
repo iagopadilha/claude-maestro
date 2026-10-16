@@ -45,8 +45,8 @@ Why a panel (base text of the front's "Why use the panel?" dialog):
 
 ## Layout
 ```
-harness.py                          single CLI: serve | loop | check | state | notify | summary | deliver | rules | audit |
-                                    graph | classify | scale | doctor | install
+harness.py                          single CLI: serve | demo | loop | check | state | notify | summary | deliver | rules |
+                                    audit | graph | classify | scale | doctor | install
 backend/harness_backend/
   composition.py                    composition root (wires the three modules and the app controller)
   config/app_config.py              AppConfig + load_app_config (data folder, ports, engine, templates)
@@ -60,7 +60,9 @@ backend/harness_backend/
   infrastructure/                   structured_log, activity_monitor, process_runner, claude_client, git_client
   engine/                           run_loop, loop_state, notify, delivery, loop_summary, graph_view, audit_deps,
                                     rules, scale, monitor_proc, classify_structure, app_paths
-backend/tests/                      engine/, infra/, api/test_read_*.py, api/test_commands_*.py, api/test_projects_*.py
+  demo/                             `harness.py demo`: story catalog, workspace, seeder, story player, transcript writer,
+                                    animator, runner and the `claude`/engine stubs (never runs a real loop)
+backend/tests/                      engine/, infra/, demo/, api/test_read_*.py, api/test_commands_*.py, api/test_projects_*.py
 frontend/                           index.html, src/**/*.js, styles/*.css
 templates/                          .specs templates (PROJECT_RULES.md, TEST_ENVIRONMENT.md, specs/*.md)
 docs/                               ARCHITECTURE.md, API.md, HOW_TO_USE.md, MONITOR.md, SKILL_BRIDGE.md
@@ -70,11 +72,12 @@ docs/                               ARCHITECTURE.md, API.md, HOW_TO_USE.md, MONI
 | Module | Files |
 |---|---|
 | Engine, infrastructure and CLI | `harness.py`, `engine/**`, `config/envload.py`, `infrastructure/process_runner.py`, `infrastructure/claude_client.py`, `infrastructure/git_client.py`, `services/app_diagnostics_service.py`, `api/controllers/app_controller.py`, `backend/tests/engine/**`, `backend/tests/infra/**`, `.env.example`, `docs/HOW_TO_USE.md` |
-| Loop read | `services/loop_read_module.py`, `services/loop_status_service.py`, `services/loop_panel_service.py`, `services/agent_history_service.py`, `services/turn_service.py`, `services/roadmap_view_service.py`, `repositories/loop_file_repository.py`, `repositories/claude_transcript_repository.py`, `repositories/loop_read_formatting.py`, `api/controllers/loop_read_controller.py`, `backend/tests/api/test_read_*.py` |
+| Loop read | `services/loop_read_module.py`, `services/loop_status_service.py`, `services/loop_panel_service.py`, `services/agent_history_service.py`, `services/guard_event_service.py`, `services/turn_service.py`, `services/roadmap_view_service.py`, `repositories/loop_file_repository.py`, `repositories/claude_transcript_repository.py`, `repositories/loop_read_formatting.py`, `api/controllers/loop_read_controller.py`, `backend/tests/api/test_read_*.py` |
 | Loop commands | `services/loop_commands_module.py`, `services/loop_control_service.py`, `services/chat_service.py`, `services/action_service.py`, `services/whiteboard_service.py`, `services/engine_script_service.py`, `services/loop_worktree_service.py`, `repositories/chat_repository.py`, `repositories/whiteboard_repository.py`, `repositories/answers_repository.py`, `repositories/loop_command_file_repository.py`, `repositories/agent_transcript_repository.py`, `api/controllers/loop_commands_controller.py`, `api/controllers/chat_controller.py`, `api/controllers/action_controller.py`, `backend/tests/api/test_commands_*.py` |
 | Projects, structure, roadmap and specs | `services/projects_module.py`, `services/project_service.py`, `services/specs_structure_service.py`, `services/project_progress_service.py`, `services/roadmap_service.py`, `services/spec_file_service.py`, `services/claude_job_service.py`, `services/folder_picker_service.py`, `repositories/project_repository.py`, `repositories/specs_file_repository.py`, `domain/project_errors.py`, `api/controllers/project_responses.py`, `api/controllers/project_controller.py`, `api/controllers/roadmap_controller.py`, `api/controllers/specs_controller.py`, `templates/**`, `backend/tests/api/test_projects_*.py` |
 | Core | `composition.py`, `config/app_config.py`, `config/skill_locator.py`, `domain/project.py`, `api/router.py`, `api/http_server.py`, `infrastructure/structured_log.py`, `infrastructure/activity_monitor.py` |
 | Front end | `frontend/**` |
+| Demo | `demo/**` (`harness.py demo`), `backend/tests/demo/**` |
 
 ## Contracts between modules (fixed signatures)
 `composition.py` calls:

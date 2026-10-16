@@ -19,7 +19,7 @@ export async function fetchAgentLog(id) {
 }
 function logEntry(m, agentName) {
   const k = LOG_KIND[m.type] || LOG_KIND.sys;
-  const label = k[0] || agentName;
+  const label = m.type === 'guard' ? `blocked by the guard${m.rule ? ' · ' + m.rule : ''} · exit 2` : k[0] || agentName;
   const box = h('div', { class: 'msg' },
     h('div', { class: 'msg-h' }, h('span', { text: label }), h('span', { class: 't', text: txt(m.t) })),
     h('div', { class: 'msg-b' + (k[4] ? ' m' : ''), text: txt(m.text) }),

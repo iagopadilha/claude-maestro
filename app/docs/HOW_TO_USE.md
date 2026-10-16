@@ -57,6 +57,9 @@ The loop also ensures the panel on its own: when it starts, `run_loop` reuses th
 
 ### In the panel
 - **Follow:** loop status, features, agents, cost and limits.
+- **Guard:** the **Guard · PreToolUse** feed under the inspector lists the last tool calls the guard blocked (time, profile, rule,
+  detail, `exit 2`) with a count per rule, and the header shows a red `guard · N blocked` badge when there are any. In an
+  agent's log, a blocked call shows up as a red `blocked by the guard · <rule>` item with the reason.
 - **Check / Start loop:** **Check** = `harness.py check`; **Start loop** is you starting the loop (Claude never starts it through the panel).
 - **Answer:** when the loop stops at `awaiting_user`, click an option or write the answer. The panel relaunches the loop with your answer (the same as `--answer`). **Resume** / **Try again** relaunch without an answer (`error`, `stopped` or pause). **Add note** leaves a note for the next turn to apply without stopping the loop. **Pause** makes the loop stop before the next turn (the turn in progress finishes first).
 - **Act (deliver and summary):** pick `Deliver` (push of the feature branch only + PR to the integration branch, `LOOP_INTEGRATION_BRANCH`) or `Summary`, or describe it in free text; the panel shows what it will do and only runs it after you **confirm**. Only with the loop stopped and no open feature; a protected branch, force and the guard rules still refuse. Your click is the authorization; Claude never triggers it.
@@ -68,6 +71,21 @@ The loop also ensures the panel on its own: when it starts, `run_loop` reuses th
 - **Shut down:** button in the hub (`POST /api/app/shutdown`). On its own the app only shuts down after `--idle-hours` without use and with **no** loop running (nor chat/roadmap in progress). It **does not die when the loop ends**, on purpose. Without a live app, `harness.py serve --project <repo>` brings the panel back.
 - **Do not want the panel:** `--no-monitor` on the loop command (or `LOOP_MONITOR=off` in the `.env` for every loop). `LOOP_MONITOR_OPEN=off` only avoids opening the browser. If the panel does not start, the loop carries on normally and says so in the console.
 - Security: only `127.0.0.1`, Host checked and a token on every method that changes state (the token is in `app.json`, readable only by your user).
+
+### Demo mode (see the panel before wiring a real repo)
+```
+python <app>/harness.py demo [--port N] [--no-browser] [--speed S] [--data-dir D] [--loop] [--keep]
+```
+- Creates a fake project, `acme-checkout` (a real git repo with a few commits, a full `.specs/` with an approved 3-stage
+  ROADMAP of 9 features and `deps=` edges, turns, snapshots and Claude Code style transcripts), starts the app on an
+  **isolated** data folder and opens that project's panel. It never calls `claude` and never touches `~/.loop-harness`:
+  everything lives in a temporary folder (or `<data-dir>/demo/`) that is removed on Ctrl+C unless `--keep`.
+- An animator moves the story every few seconds: the loop shows `running`, features go pending -> speccing -> specced ->
+  approved -> building -> verified in waves that respect the dependencies, agent logs fill up, the guard blocks an executor
+  that edits `infra/prod/terraform.tfvars`, the loop stops on a question for about 10 s (click an option to answer it
+  sooner) and the story ends `done`. One cycle takes about 2 minutes at `--speed 1` (`DEMO_CYCLE_SECONDS` is printed);
+  `--speed 2` is twice as fast; `--loop` restarts the story forever (for screen recorders).
+- The panel buttons stay safe: chat, Check, Start, Act and answer reach stubs that only print a demo notice.
 
 ## Part 3 - the loop from the terminal
 Run it in a terminal **separate** from the conversation, outside Claude.

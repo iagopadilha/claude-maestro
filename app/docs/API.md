@@ -80,7 +80,7 @@ Every route returns UTF-8 JSON. Error: `{"ok": false, "error": "text"}` with a 4
     "id": "orch|<slug>:<role>", "role": "orchestrator|spec-writer|spec-reviewer|executor-back|executor-front|executor-generic|verifier|verifier-flow",
     "feature": "slug|null", "state": "running|done|idle|queued|blocked|failed", "summary": "short text",
     "tokens": 38200, "cost_usd": 0.61, "duration_s": 1394,
-    "log": [{"type": "sys|tool|ai|user", "text": "...", "result": "", "t": "00:04"}]
+    "log": [{"type": "sys|tool|ai|user|guard", "text": "...", "result": "", "t": "00:04"}]
   }],
   "validate": ["- [slug] doubt | chose: ... | revert: ..."],
   "recent_actions": [{"action": "deliver", "t": "ISO", "ok": true, "summary": "..."}],
@@ -88,6 +88,8 @@ Every route returns UTF-8 JSON. Error: `{"ok": false, "error": "text"}` with a 4
   "answers": [{"date": "ISO", "question": "...", "answer": "...", "state": "pending|applied|automatic"}],
   "turns": [{"n": 12, "cost_usd": 0.61, "duration_s": 1394, "status": "continue|awaiting_user|done|error|running", "feature": ["a"], "commits": 1, "has_snapshot": true}],
   "quarantine": [{"id": "slug", "reason": "<note> (2 failures)", "stuck": ["other-feature"], "options": ["try again", "skip and continue"]}],
+  "guard_events": [{"t": "ISO", "profile": "executor|spec|verifier|orchestrator", "rule": "path-scope", "detail": "outside the feature's PATHS (src/a)..."}],
+  "guard_counts": {"path-scope": 2, "git-push": 1},
   "monitor": {"url": "http://127.0.0.1:47801/p/<id>/", "idle_in_s": null, "shutdown_in_s": null}
 }
 ```
@@ -105,6 +107,12 @@ Derivation rules (server):
 - `quarantine`: `blocked` features; `stuck` = features whose `deps` contain the blocked one; fixed `options` above.
 - `answers`: parse of the `## Answer <date> [marker]` blocks of `ANSWERS.md`; `[automatic answer from the loop...]` =
   `automatic`.
+- `guard_events`: the last 20 `blocked` decisions of `internal/guard.log` (written by the plugin's `PreToolUse` guard),
+  newest first, as `{t, profile, rule, detail}`; `detail` clipped to 200 characters and credential-redacted. Info and
+  `allowed-by-user` lines are left out and the raw file is never returned. `guard_counts` = blocks per rule over the whole
+  log. No `guard.log` = `[]` and `{}`.
+- `agents[].log` items read from `turns/NNN.events.jsonl` come from the turn in progress when its file exists (the turn after
+  the last finished one), otherwise from the last finished turn. An event of `type: "guard"` keeps its `rule` and `reason`.
 - A field missing at the source = `null` or an empty list, never a 500.
 
 ### GET agent/<id>/log
@@ -130,8 +138,10 @@ even after the loop ended: it is the real history.
   first to the last timestamp. **Never invent**: what cannot be extracted = `null`. Missing transcript = `agents` with
   only the orchestrator (data of `turns/NNN.json`) and `"transcript": false`.
 - **GET agent/<id>/log** also accepts these ids (`v016:a0dc...` and `v016:orch`): returns the full transcript log as
-  `[{"type": "sys|tool|ai|user", "text": "...", "result": "...", "t": "HH:MM:SS"}]` (initial prompt = `sys`, tool calls =
-  `tool` with the command summary and the start of the result, model text = `ai`). Each `text`/`result` is clipped to
+  `[{"type": "sys|tool|ai|user|guard", "text": "...", "result": "...", "t": "HH:MM:SS"}]` (initial prompt = `sys`, tool calls =
+  `tool` with the command summary and the start of the result, model text = `ai`; a tool call whose error result carries
+  the guard's `BLOCKED by the orchestrator guard [<rules>]: <reason>` stderr = `guard`, with `rule`, `reason` and
+  `result` = `exit 2 · [<rules>] <reason>`). Each `text`/`result` is clipped to
   2000 characters and the log to 400 items (`"truncated": true`). **Credentials are redacted** (tokens, passwords, keys)
   with the same filter used for `result` (mark `[redacted]`).
 - Cache per file (mtime) so large transcripts are not re-read on every poll; `history` is never part of the 2 s polling

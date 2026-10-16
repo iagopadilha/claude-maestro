@@ -30,6 +30,12 @@ TOOL_SUMMARY_KEYS = ("command", "file_path", "pattern", "url", "query", "descrip
 SUBAGENT_RETURN_TOOL = "SubagentHandback"
 END_TURN_REASON = "end_turn"
 SYSTEM_REMINDER_PREFIX = "<system-reminder>"
+# a PreToolUse hook that exits 2 has its stderr put in the tool_result (is_error true); the orchestrator guard starts it with this marker
+GUARD_BLOCK_PATTERN = re.compile(r"BLOCKED by the orchestrator guard \[([^\]\n]{1,200})\]:\s*(.*)", re.S)
+GUARD_ADVICE_PATTERN = re.compile(r"\.?\s*Do not try to work around it\b.*$", re.S)
+GUARD_LOG_TYPE = "guard"
+GUARD_EXIT_LABEL = "exit 2"
+GUARD_REASON_LIMIT = 400
 
 
 def list_project_slug_variants(work_dir):
@@ -60,6 +66,18 @@ def summarize_tool_call(name, tool_input):
         return "%s %s" % (name, json.dumps(tool_input, ensure_ascii=False))
     except (TypeError, ValueError):
         return str(name)
+
+
+def parse_guard_block(result_text, is_error):
+    """(rule, reason) when the tool result is a block by the orchestrator guard; None otherwise. Only an error result counts:
+    a tool that merely READ the guard source or its log also contains the marker."""
+    if not is_error:
+        return None
+    found = GUARD_BLOCK_PATTERN.search(result_text or "")
+    if not found:
+        return None
+    reason = GUARD_ADVICE_PATTERN.sub("", found.group(2)).strip()
+    return found.group(1).strip(), redact_credentials(" ".join(reason.split()), GUARD_REASON_LIMIT)
 
 
 def list_message_blocks(content):
@@ -185,7 +203,12 @@ class TranscriptReader:
                 self.last_result_was_error = bool(block.get("is_error"))
                 item = self.pending_tools.pop(block.get("tool_use_id"), None)
                 if item is not None:
-                    item["result"] = redact_credentials(extract_block_text(block.get("content")), TRANSCRIPT_TEXT_LIMIT)
+                    result_text = extract_block_text(block.get("content"))
+                    item["result"] = redact_credentials(result_text, TRANSCRIPT_TEXT_LIMIT)
+                    guard_block = parse_guard_block(result_text, block.get("is_error"))
+                    if guard_block:  # blocked by the PreToolUse guard: a `guard` item with the rule and the reason
+                        item["type"], item["rule"], item["reason"] = GUARD_LOG_TYPE, guard_block[0], guard_block[1]
+                        item["result"] = "%s · [%s] %s" % (GUARD_EXIT_LABEL, guard_block[0], guard_block[1])
             elif (block.get("type") == "text" and str(block.get("text") or "").strip()
                   and not str(block["text"]).lstrip().startswith(SYSTEM_REMINDER_PREFIX)):
                 text = str(block["text"])

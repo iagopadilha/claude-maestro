@@ -4,6 +4,9 @@
   python harness.py serve [--project <repo>] [--port N] [--idle-hours H] [--no-browser] [--data-dir D]
       starts the app (multi-project panel). If an app is already alive (app.json), it only registers the project in it,
       prints MONITOR_URL=<project url> and exits 0.
+  python harness.py demo [--port N] [--no-browser] [--speed S] [--data-dir D] [--loop] [--keep]
+      opens the panel on a fake project ("acme-checkout") with mocked, moving loop data; never calls claude and never touches
+      your data folder (everything lives in a temporary folder, or in <data-dir>/demo/). Ctrl+C stops it and removes the files.
   python harness.py loop <repo> [run_loop flags...]   runs the loop (engine/run_loop.py): --wave, --check, --answer, --option, --rewind...
   python harness.py check <repo> [flags...]           shortcut for `loop <repo> --check`
   python harness.py state|notify|summary|deliver|rules|audit|graph|classify|scale [args...]   passed on to the engine scripts
@@ -107,6 +110,15 @@ def run_serve(args):
     return EXIT_OK
 
 
+def run_demo(args):
+    try:
+        from harness_backend.demo.demo_runner import run_demo as run_demo_mode
+    except ImportError as failure:
+        print("the app is not complete in this folder (%s): %s" % (type(failure).__name__, failure), file=sys.stderr)
+        return EXIT_FAILURE
+    return run_demo_mode(args)
+
+
 def build_diagnostics():
     from harness_backend.config.app_config import load_app_config
     from harness_backend.services.app_diagnostics_service import build_app_diagnostics_service
@@ -193,6 +205,8 @@ def main(argv=None):
     command, args = argv[0], argv[1:]
     if command == "serve":
         return run_serve(args)
+    if command == "demo":
+        return run_demo(args)
     if command == "check":
         if not args:
             print("usage: harness.py check <repo> [run_loop flags...]", file=sys.stderr)

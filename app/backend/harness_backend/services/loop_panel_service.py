@@ -94,13 +94,15 @@ def parse_answers(text):
 
 
 class LoopPanelService:
-    def __init__(self, loop_status_service, loop_file_repository, roadmap_view_service, turn_service, agent_history_service, activity_monitor):
+    def __init__(self, loop_status_service, loop_file_repository, roadmap_view_service, turn_service, agent_history_service, activity_monitor,
+                 guard_event_service):
         self.loop_status_service = loop_status_service
         self.loop_file_repository = loop_file_repository
         self.roadmap_view_service = roadmap_view_service
         self.turn_service = turn_service
         self.agent_history_service = agent_history_service
         self.activity_monitor = activity_monitor
+        self.guard_event_service = guard_event_service
 
     def build_state(self, context, project_url):
         work_dir = context.work_dir
@@ -111,6 +113,7 @@ class LoopPanelService:
         roadmap_text = self.loop_file_repository.read_roadmap(work_dir)
         stages, features, counts, graph = self.roadmap_view_service.build_roadmap_view(work_dir, roadmap_text)
         turn = compute_current_turn(summary["json"], meta, numbers, running)
+        guard = self.guard_event_service.build_guard_summary(work_dir)
 
         return {
             "now": now_iso(), "project": get_project_name(meta, context), "repo": context.repo_path, "work": work_dir,
@@ -128,6 +131,7 @@ class LoopPanelService:
             "answers": parse_answers(self.loop_file_repository.read_state_file(work_dir, "ANSWERS.md")),
             "turns": self.turn_service.list_turns(work_dir, turn if running else None),
             "quarantine": self.build_quarantine(features),
+            "guard_events": guard["events"], "guard_counts": guard["counts"],
             "monitor": {"url": project_url, "idle_in_s": None, "shutdown_in_s": self.activity_monitor.seconds_until_shutdown()},
         }
 

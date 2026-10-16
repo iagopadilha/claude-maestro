@@ -1,15 +1,27 @@
-# loop-engineering-harness
+# Loop Harness
 
-A harness for **loop engineering** with Claude Code. It does two things:
+**A deterministic loop engine and visual graph monitor for Claude Code.** It runs 100% on your machine, uses your own Claude plan through the `claude` CLI, and installs zero Python packages.
 
-- **plans and runs the loop:** one chat becomes an orchestrator that maps the repo, plans a roadmap, and has subagents spec, review, implement and verify each feature, with all state on disk;
-- **shows you the whole loop:** a local control panel lets you see and steer it. You get the roadmap as a graph of nodes, the turns, the agents, the specs, the open questions, and the cost.
+![Loop Harness panel: a loop running, features moving through the graph, the guard blocking an out-of-scope edit](docs/media/demo.gif)
 
-It runs **locally** and drives everything through the `claude` CLI, so it uses **your own Claude subscription**. There is no API key, token or hosted service to set up.
+> Try it without wiring a real repo: `python app/harness.py demo` animates a whole loop on a throwaway project with mocked data.
 
-## Why it exists
+## The problem
 
-It is a visual orchestrator for software agents that runs on your machine. It keeps the whole loop state on disk, which lets a development loop run for hours across many features, stop, and resume where it left off. It drives Claude through the `claude` CLI you are already signed in to. The work runs on your own Claude plan, not on per-token API billing.
+Running autonomous coding agents through the API gets expensive fast. Running them with `claude -p` in a bash loop uses your subscription instead, but it leaves you blind in a sea of Markdown files, and nothing stops an agent from editing files outside its scope.
+
+## The answer
+
+Loop Harness separates the **brain** (skills and prompts, the `plugin/`) from the **runtime** (a deterministic Python engine plus a web UI, the `app/`). It turns Claude Code into a visual state machine:
+
+- **Graph execution.** Features are nodes with dependency edges. Each turn the engine picks a wave of features whose paths do not overlap and whose dependencies are done, fans them out to parallel Sonnet subagents, and fans them back in at verify and commit.
+- **Hard scope locks.** A `PreToolUse` hook (`guard.py`) blocks, with exit 2, every edit outside a feature's paths, pushes to protected branches, production writes and your own project rules. Each rule ships with tests that run against the real hook. You watch the blocks live in the panel.
+- **Human in the loop.** You approve the roadmap with a click. The loop stops when it needs you, you answer from the panel (or with `--answer`), and you can send an instruction to the next turn at any time.
+- **Deterministic state.** The LLM does not own the state. Python validates every transition, chooses the next wave, snapshots each turn so you can `--rewind`, and refuses an unapproved roadmap. The model writes specs and code; the engine decides what may happen next.
+- **Local and lean.** Python standard library only (**zero `pip install`**), ES modules served as-is (**no `npm`, no build step**), listening on `127.0.0.1` only. Nothing to break in your environment and no hosted service.
+- **Your own plan.** Every turn is a `claude -p` call through the CLI you are already signed in to. There is no API key to manage and no per-token API bill.
+
+![The panel: roadmap, current turn by lane, agent log, guard feed](docs/media/panel.jpg)
 
 Two honest notes:
 
@@ -80,7 +92,11 @@ Open the panel (back end + front end, opens your browser):
 ```
 python app/harness.py serve                      # hub: your projects, create or open a folder
 python app/harness.py serve --project <repo>     # straight to one project
+python app/harness.py demo                       # a fake project with moving loop data; no claude, nothing of yours touched
 ```
+
+`demo` creates a throwaway project (`acme-checkout`) in a temporary folder and animates a whole loop in about 2 minutes:
+waves of features, agent logs, a guard block and a question. `--speed 2` halves it and `--loop` repeats it for a recording.
 
 Or start from a chat. The skill opens the panel for you when it writes the roadmap:
 

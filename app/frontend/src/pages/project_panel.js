@@ -13,6 +13,7 @@ import { renderLeft } from './panel/roadmap_sidebar.js';
 import { renderCenter, initCenter, checkRemoteBoard } from './panel/center.js';
 import { renderInspector, fetchAgentLog } from './panel/inspector.js';
 import { renderTimeline } from './panel/timeline.js';
+import { renderGuardFeed } from './panel/guard_feed.js';
 import { loadHist } from './panel/history.js';
 import { initLayout } from './panel/layout.js';
 import { dgScale } from './panel/turn_diagram.js';
@@ -22,7 +23,7 @@ let polling = null, pollCount = 0, prevStatus = null;
 
 export function renderAll() {
   if (!ctx.state) return;
-  renderHeader(); renderAlert(); nlVisibility(); renderComposer(); $('idle-note').textContent = idleText(); renderLeft(); renderCenter(); renderInspector(); renderTimeline();
+  renderHeader(); renderAlert(); nlVisibility(); renderComposer(); $('idle-note').textContent = idleText(); renderLeft(); renderCenter(); renderInspector(); renderGuardFeed(); renderTimeline();
 }
 
 /** Stops the polling (app shut down or unknown project). */

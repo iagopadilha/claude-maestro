@@ -20,19 +20,25 @@ VERIFIER_ROLE = "verifier"
 VERIFIER_NOTE_MARK = "verif"
 WORKING_STATUSES = ("speccing", "building")
 LOOP_DONE_STATUS = "done"
-LOG_TYPES = ("sys", "tool", "ai", "user")
+LOG_TYPES = ("sys", "tool", "ai", "user", "guard")
 SUMMARY_LIMIT = 200
 ORCHESTRATOR_STATE_SUMMARY_LIMIT = 140
 ACTION_LIMIT = 160
 LOG_TEXT_LIMIT = 2000
 ORCHESTRATOR_RESULT_LIMIT = 4000
 LOG_ITEMS_IN_STATE = 8
+GUARD_LOG_TYPE = "guard"
+GUARD_RULE_LIMIT = 60
 
 
 def build_event_log_item(event):
-    return {"type": event.get("type") if event.get("type") in LOG_TYPES else "sys",
+    item = {"type": event.get("type") if event.get("type") in LOG_TYPES else "sys",
             "text": redact_credentials(event.get("text"), LOG_TEXT_LIMIT), "result": redact_credentials(event.get("result"), LOG_TEXT_LIMIT),
             "t": str(event.get("t") or "")}
+    if item["type"] == GUARD_LOG_TYPE:  # a live block by the PreToolUse guard keeps its rule and reason
+        item["rule"] = redact_credentials(event.get("rule"), GUARD_RULE_LIMIT)
+        item["reason"] = redact_credentials(event.get("reason"), LOG_TEXT_LIMIT)
+    return item
 
 
 def get_event_agent(event):
@@ -154,10 +160,13 @@ class AgentHistoryService:
 
     def list_event_log(self, work_dir, agent_id):
         numbers = self.loop_file_repository.list_turn_numbers(work_dir)
-        if not numbers:
+        events_turn = self.loop_file_repository.get_live_events_turn(work_dir, numbers)
+        if events_turn is None:
             return []
-        events = [build_event_log_item(event) for event in self.loop_file_repository.read_turn_events(work_dir, numbers[-1])
+        events = [build_event_log_item(event) for event in self.loop_file_repository.read_turn_events(work_dir, events_turn)
                   if get_event_agent(event) == agent_id]
+        if not numbers:
+            return events
         if agent_id == ORCHESTRATOR_ID:
             return self.build_orchestrator_log_head(self.loop_file_repository.read_turn(work_dir, numbers[-1])) + events
         return events
@@ -200,7 +209,8 @@ class AgentHistoryService:
         last_turn = self.loop_file_repository.read_turn(work_dir, numbers[-1]) if numbers else {}
         real = self.list_real_agents(work_dir, numbers, running)
         events_by_agent = {}
-        for event in (self.loop_file_repository.read_turn_events(work_dir, numbers[-1]) if numbers else []):
+        events_turn = self.loop_file_repository.get_live_events_turn(work_dir, numbers)
+        for event in (self.loop_file_repository.read_turn_events(work_dir, events_turn) if events_turn is not None else []):
             events_by_agent.setdefault(get_event_agent(event), []).append(event)
 
         def sum_totals(agent_id, default):

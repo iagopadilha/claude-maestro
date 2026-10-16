@@ -103,6 +103,7 @@
         <span class="mono" id="status-text">connecting…</span>
       </div>
       <div class="limits" id="limits" aria-label="Loop limits"></div>
+      <button type="button" class="guard-badge mono" id="guard-badge" hidden></button>
       <div class="spacer"></div>
       <div class="header-actions" id="header-actions"></div>
       <div class="header-actions" id="header-extra"></div>
@@ -146,6 +147,7 @@
         <div class="insp-head" id="insp-head"></div>
         <div class="insp-tabs" id="insp-tabs" role="tablist" aria-label="Inspector"></div>
         <div class="insp-body" id="insp-body"></div>
+        <section class="guard-feed" id="guard-feed" aria-label="Guard: tool calls blocked by the PreToolUse hook"></section>
         <form class="composer m-instruct" id="composer" aria-label="Composer: instruct the loop, act or ask">
           <div class="cp-band" id="cp-band"></div>
           <div class="cp-seg" id="cp-seg" role="tablist" aria-label="Intent"></div>

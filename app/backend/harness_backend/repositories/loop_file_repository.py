@@ -26,6 +26,7 @@ WINDOWS_STILL_ACTIVE_CODE = 259  # STILL_ACTIVE
 TURN_FILE_PATTERN = re.compile(r"\d+\.json")
 PAUSE_FILE_NAME = "PAUSE"
 ACTIONS_FILE_NAME = "actions.log"
+GUARD_LOG_FILE_NAME = "guard.log"
 STAGE_CLOSING_FILE_FORMAT = "stage-%02d.md"
 
 
@@ -240,6 +241,28 @@ class LoopFileRepository:
                 count = None
             self.commit_cache[key] = count
         return self.commit_cache[key]
+
+    def get_live_events_turn(self, work_dir, numbers):
+        """Turn whose `NNN.events.jsonl` holds the live agent events: the turn in progress (the one after the last finished
+        turn) when its file exists, else the last finished turn; None without turns or events."""
+        following = (numbers[-1] if numbers else 0) + 1
+        if os.path.isfile(os.path.join(loop_state.turns_dir(work_dir), "%03d.events.jsonl" % following)):
+            return following
+        return numbers[-1] if numbers else None
+
+    # ------------------------------------------------ guard (written by the plugin's PreToolUse hook)
+    def read_guard_lines(self, work_dir):
+        """JSON objects of `internal/guard.log` (`{t, profile, rule, decision, detail}` per line; unreadable lines are
+        skipped). Re-read only when the file changes. Missing file = []."""
+        items = []
+        for line in self.read_cached_text(loop_state.loop_path(work_dir, GUARD_LOG_FILE_NAME)).splitlines():
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(item, dict):
+                items.append(item)
+        return items
 
     # ------------------------------------------------ actions (written by the commands module)
     def read_action_lines(self, work_dir):
