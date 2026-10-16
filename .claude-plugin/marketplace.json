@@ -3,12 +3,13 @@
   "owner": {
     "name": "iagopadilha"
   },
-  "description": "Orchestrator, spec-driven engine, subagents, guard hook and unattended loop for Claude Code.",
+  "description": "Loop engineering for Claude Code: orchestrator, spec-driven engine, subagents and guard hook, plus a local control panel app (app/) that runs the unattended loop with a graph view, on your own Claude subscription through the claude CLI, no API token.",
   "plugins": [
     {
       "name": "loop-engineering-harness",
-      "source": "./",
-      "description": "Orchestrator skill, spec-driven engine, subagents, guard hook and unattended loop script."
+      "source": "./plugin",
+      "description": "Orchestrator skill, spec-driven engine, subagents and guard hook. Pairs with the local control panel app in app/ (python app/harness.py install), which runs the loop and shows it as a graph.",
+      "version": "0.2.0"
     }
   ]
 }

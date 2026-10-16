@@ -1,0 +1,20 @@
+{
+  "name": "loop-engineering-harness",
+  "version": "0.2.0",
+  "description": "Turns one Claude Code chat into an orchestrator for loop engineering: roadmap, spec, review gate, implement, verify, run by Sonnet-capped subagents with on-disk state and a PreToolUse guard hook. The unattended loop runs in the local control panel app in app/ of the same repo (graph view of the roadmap, approve, answer, instruct, deliver), on your own Claude subscription through the claude CLI, with no API token.",
+  "author": {
+    "name": "iagopadilha"
+  },
+  "homepage": "https://github.com/iagopadilha/loop-engineering-harness",
+  "repository": "https://github.com/iagopadilha/loop-engineering-harness",
+  "license": "MIT",
+  "keywords": [
+    "loop-engineering",
+    "orchestration",
+    "subagents",
+    "spec-driven",
+    "guard-hook",
+    "control-panel",
+    "graph-view"
+  ]
+}

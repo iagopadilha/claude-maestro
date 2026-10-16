@@ -1,0 +1,215 @@
+"""Checklist "where this project stands and what the next action is" (GET /p/<id>/api/progress).
+
+Reads everything from disk on each call (cheap: small files and one `git rev-parse`). The checks the engine makes in the
+preflight are NOT rewritten: approval = `loop_state.roadmap_approval` (the same as `run_loop.py --check`), test environment =
+`run_loop.test_environment_problems`, grammar = `loop_state.parse_roadmap` + `loop_state.check_fields`.
+"""
+import os
+from typing import Protocol
+
+from ..repositories.specs_file_repository import list_test_environment_problems, loop_state
+
+MODE_NEW = "new"
+MODE_NO_SPECS = "no_specs"
+MODE_PLANNING = "planning"
+MODE_READY_FOR_LOOP = "ready_for_loop"
+MODE_IN_LOOP = "in_loop"
+MODE_DONE = "done"
+ACTION_STRUCTURE = "structure"
+ACTION_CONFORMANCE = "conformance"
+ACTION_MAP = "map"
+ACTION_ROADMAP = "roadmap"
+ACTION_APPROVE = "approve"
+ACTION_TEST_ENVIRONMENT = "test_environment"
+ACTION_CHECK = "check"
+ACTION_START_LOOP = "start_loop"
+ACTION_FOLLOW = "follow"
+LOOP_STATUS_RUNNING = "running"
+LOOP_STATUS_STOPPED = "stopped"
+LOOP_STATUS_ERROR = "error"
+LOOP_STATUS_NO_LOOP = "no_loop"
+LOOP_STATUS_CONTINUE = "continue"
+LOOP_STATUS_DONE = "done"
+LOOP_STATUSES_IN_PROGRESS = (LOOP_STATUS_CONTINUE, "awaiting_user", LOOP_STATUS_STOPPED, LOOP_STATUS_ERROR)
+CLOSED_FEATURE_STATUSES = ("verified", "blocked")
+MAP_JOB_TYPE = "map"
+ROADMAP_JOB_TYPE_PREFIX = "roadmap"
+MISSING_ITEMS_SHOWN = 6
+NAMES_THAT_ARE_NOT_CODE = {".git", ".specs", ".claude", ".vscode", ".idea", "claude.md", "readme.md", ".gitignore",
+                           ".gitattributes", "license", "license.md"}
+
+
+class IProjectProgressService(Protocol):
+    def build_progress(self, context) -> dict: ...
+    def build_progress_summary(self, context) -> dict: ...
+    def get_loop_status(self, work_dir) -> dict: ...
+    def is_loop_running(self, context) -> bool: ...
+
+
+def create_step(step_id, title, ok, detail, optional=False):
+    return {"id": step_id, "title": title, "ok": bool(ok), "optional": bool(optional), "detail": detail}
+
+
+class ProjectProgressService:
+    def __init__(self, specs_structure_service, specs_file_repository, git_client, process_runner, claude_job_service, log):
+        self.specs_structure_service = specs_structure_service
+        self.specs_file_repository = specs_file_repository
+        self.git_client = git_client
+        self.process_runner = process_runner
+        self.claude_job_service = claude_job_service
+        self.log = log
+
+    # ------------------------------------------------ loop status (same derivation as the panel's loop status)
+    def get_loop_status(self, work_dir):
+        loop_json = self.specs_file_repository.read_json(loop_state.state_file(work_dir, "LOOP.json"))
+        meta = self.specs_file_repository.read_json(loop_state.loop_path(work_dir, "meta.json"))
+        pid = self.specs_file_repository.read_loop_lock_pid(work_dir)
+        running = self.process_runner.is_alive(pid)
+        status = loop_json.get("status") if loop_json.get("status") in loop_state.LOOP_STATUS else None
+        reason = loop_json.get("reason")
+        if running:
+            status = LOOP_STATUS_RUNNING
+        elif status == LOOP_STATUS_CONTINUE:
+            status = LOOP_STATUS_STOPPED  # the script died in the middle of the loop
+            if meta.get("stopped") == LOOP_STATUS_ERROR and str(meta.get("finished_at") or "") >= str(loop_json.get("at") or ""):
+                status, reason = LOOP_STATUS_ERROR, meta.get("reason")
+        elif status is None:
+            status = LOOP_STATUS_NO_LOOP
+        return {"status": status, "running": running, "pid": pid if running else None, "reason": reason}
+
+    def is_loop_running(self, context):
+        return self.process_runner.is_alive(self.specs_file_repository.read_loop_lock_pid(context.work_dir))
+
+    # ------------------------------------------------ checklist
+    def build_progress_summary(self, context):
+        progress = self.build_progress(context)
+        return {key: progress[key] for key in ("mode", "next_action", "loop_status", "counts")}
+
+    def build_progress(self, context):
+        facts = self.read_project_facts(context)
+        steps = self.build_steps(facts)
+        mode, next_action = self.decide_mode_and_next_action(facts)
+        return {"mode": mode, "next_action": next_action, "steps": steps, "loop_status": facts["loop"]["status"],
+                "counts": facts["counts"], "work_dir": context.work_dir,
+                "loop_worktree": context.work_dir != context.repo_path, "running_job": facts["running_job"]}
+
+    def read_project_facts(self, context):
+        """Reads (without deciding anything) everything the checklist needs."""
+        repo, work = context.repo_path, context.work_dir
+        folder_exists = os.path.isdir(repo)
+        roadmap_text = self.specs_file_repository.read_text(os.path.join(work, ".specs", "project", "ROADMAP.md"))
+        features, errors = loop_state.parse_roadmap(roadmap_text or "")
+        errors = errors + loop_state.check_fields(features)
+        job = self.claude_job_service.get_running_job(repo) if folder_exists else None
+        return {
+            "work_dir": work,
+            "folder_exists": folder_exists,
+            "is_git": folder_exists and self.git_client.is_git_repo(repo),
+            "has_specs": os.path.isdir(os.path.join(work, ".specs")),
+            "has_code": folder_exists and self.repo_has_code(repo),
+            "structure": self.specs_structure_service.check_structure(work),
+            "conformance": self.specs_structure_service.get_conformance(work),
+            "map_files": self.specs_file_repository.list_markdown_files(os.path.join(work, ".specs", "codebase")),
+            "roadmap_exists": roadmap_text is not None, "features": features, "roadmap_errors": errors,
+            "approval": loop_state.roadmap_approval(work),
+            "environment_problems": list_test_environment_problems(work) if roadmap_text else [],
+            "environment_exists": os.path.isfile(os.path.join(work, ".specs", "project", "TEST-ENVIRONMENT.md")),
+            "loop": self.get_loop_status(work),
+            "running_job": {"id": job["id"], "type": job["type"], "started_at": job["started_at"]} if job else None,
+            "counts": {"total": len(features), "verified": sum(1 for f in features.values() if f.get("status") == "verified"),
+                       "blocked": sum(1 for f in features.values() if f.get("status") == "blocked")},
+        }
+
+    def build_steps(self, facts):
+        structure, approval, loop = facts["structure"], facts["approval"], facts["loop"]
+        job = facts["running_job"]
+        conformance_detail = "Conformance: %s" % facts["conformance"] if facts["conformance"] else self.describe_conformance_suggestion(facts)
+        map_detail = ("%d document(s) in .specs/codebase" % len(facts["map_files"]) if facts["map_files"]
+                      else "repo with code and no map: map it before the roadmap" if facts["has_code"] else "repo without code: nothing to map")
+        if job and job["type"] == MAP_JOB_TYPE:
+            map_detail = "mapping (job %s)" % job["id"]
+        return [
+            create_step("folder", "Project folder", facts["folder_exists"], "exists" if facts["folder_exists"] else "the folder no longer exists"),
+            create_step("git", "Git repository", facts["is_git"], "ok" if facts["is_git"] else "the folder is not a git repository (the loop needs git)"),
+            create_step("structure", ".specs/ structure", structure["ok"],
+                        "complete" if structure["ok"] and not structure["missing"] else "missing: " + ", ".join(structure["missing"][:MISSING_ITEMS_SHOWN])),
+            create_step("conformance", "Conformance in CLAUDE.md", facts["conformance"], conformance_detail),
+            create_step("map", "Codebase map", facts["map_files"], map_detail,
+                        optional=not (facts["has_code"] and not facts["features"])),
+            create_step("roadmap", "Roadmap", facts["features"] and not facts["roadmap_errors"], self.describe_roadmap(facts)),
+            create_step("approval", "Approved roadmap", approval["approved"],
+                        "approved on %s" % approval["at"] if approval["approved"] else approval["reason"]),
+            create_step("test_environment", "Test environment", not facts["environment_problems"],
+                        facts["environment_problems"][0] if facts["environment_problems"]
+                        else "filled in" if facts["environment_exists"] else "not required (no feature asks for regression)",
+                        optional=not facts["environment_problems"]),
+            create_step("loop", "Loop", loop["status"] == LOOP_STATUS_DONE,
+                        loop["status"] + (": %s" % loop["reason"] if loop.get("reason") else "")),
+        ]
+
+    def decide_mode_and_next_action(self, facts):
+        loop_status = facts["loop"]["status"]
+        if loop_status == LOOP_STATUS_RUNNING or loop_status in LOOP_STATUSES_IN_PROGRESS:
+            return MODE_IN_LOOP, ACTION_FOLLOW
+        pending = self.find_first_pending_action(facts)
+        features = facts["features"]
+        all_closed = bool(features) and all(f.get("status") in CLOSED_FEATURE_STATUSES for f in features.values())
+        if loop_status == LOOP_STATUS_DONE and all_closed:
+            return MODE_DONE, ACTION_FOLLOW
+        if pending is None:
+            return MODE_READY_FOR_LOOP, ACTION_CHECK if loop_status == LOOP_STATUS_NO_LOOP else ACTION_START_LOOP
+        if not facts["has_code"] and not features:
+            return MODE_NEW, pending
+        if not facts["has_specs"]:
+            return MODE_NO_SPECS, pending
+        return MODE_PLANNING, pending
+
+    @staticmethod
+    def find_first_pending_action(facts):
+        """The flow order: structure -> conformance -> map (repo with code) -> roadmap -> approval -> test environment."""
+        if not facts["structure"]["ok"]:
+            return ACTION_STRUCTURE
+        if not facts["conformance"]:
+            return ACTION_CONFORMANCE
+        if facts["has_code"] and not facts["map_files"] and not facts["features"]:
+            return ACTION_MAP
+        if not facts["features"] or facts["roadmap_errors"]:
+            return ACTION_ROADMAP
+        if not facts["approval"]["approved"]:
+            return ACTION_APPROVE
+        if facts["environment_problems"]:
+            return ACTION_TEST_ENVIRONMENT
+        return None
+
+    # ------------------------------------------------ support
+    @staticmethod
+    def describe_roadmap(facts):
+        job = facts["running_job"]
+        if job and job["type"].startswith(ROADMAP_JOB_TYPE_PREFIX):
+            return "generating (job %s)" % job["id"]
+        if not facts["roadmap_exists"]:
+            return "ROADMAP.md missing"
+        if facts["roadmap_errors"]:
+            return "outside the grammar: " + facts["roadmap_errors"][0]
+        if not facts["features"]:
+            return "ROADMAP.md has no feature line"
+        stages = len(dict.fromkeys(f.get("stage", "") for f in facts["features"].values()))
+        return "%d feature(s) in %d stage(s)" % (len(facts["features"]), stages)
+
+    def describe_conformance_suggestion(self, facts):
+        if not facts["folder_exists"]:
+            return "no Conformance line"
+        try:
+            suggestion = self.specs_structure_service.suggest_conformance(facts["work_dir"])
+        except Exception as failure:  # the suggestion is only a help: it never takes the checklist down
+            self.log.warn("conformance_suggestion_failed", type=type(failure).__name__)
+            return "no Conformance line: choose STANDARD or LEGACY"
+        return "no Conformance line (script suggestion: %s, stack %s)" % (suggestion["suggestion"], suggestion["stack"])
+
+    @staticmethod
+    def repo_has_code(repo):
+        try:
+            names = os.listdir(repo)
+        except OSError:
+            return False
+        return any(name.lower() not in NAMES_THAT_ARE_NOT_CODE for name in names)
