@@ -58,6 +58,24 @@ Always use the **singular entity name as prefix**, followed by the layer suffix.
 - Depend on abstractions (interfaces), never on concrete implementations
 - Inject via constructor — never instantiate dependencies with `new` inside classes
 - DI container registration is part of every delivery
+- Splitting DI: one `ResolveDependencies` entry point that only calls `Add<Area>Dependencies()` per business area, each area in its own `Configuration/DependencyInjection/<Area>DependencyInjection.cs` (see `references/dotnet.md`, "Separate registration per area")
+
+### Configuration and per-environment URLs
+- Secrets, tokens and external API URLs come from `IConfiguration` (loaded from the project's secret manager in `Program.cs`), read in the **constructor** of the class that uses them, which is registered in DI.
+- To know the environment, use the stack's standard variable, never a key invented in the secret manager: .NET = `ASPNETCORE_ENVIRONMENT` through `IHostEnvironment` (`IsDevelopment()` uses dev, any other value uses production); Node = the build's `NODE_ENV`.
+- **Never** hard-code the production/development base URL of the portal (or of another app) in a `const`, a `static` class or a static helper when the link takes the user to a screen or calls a service. An injectable class receives `IHostEnvironment`, picks the base by environment and exposes the addresses. The base URLs live as constants in **one place** of the project. Anyone who needs a link asks that single builder; a new link becomes a method/property on it.
+- Before creating, look for the address class the project already has and add the link to it.
+- Accepted exception, commented in the code: a public static file that only exists in one environment (for example an e-mail icon served only in production).
+- Detail and example: `references/dotnet.md`, section "Per-environment URLs".
+
+### The project's generic first, then your own helper
+- Before creating a method, class or wrapper for a common task (save, log, handle an error, open a scope), use **the generic the project already has**: generic repository, `BaseService`, a base service or hook. If the generic does not cover it, **improve the generic** (everyone benefits) instead of opening a detour of your own.
+- **Saving and logging live in the generic.** The generic repository saves right away (`Add`, `Update`, `Remove` and the batch versions); the tracker and the save log stay inside the generic `SaveChanges`. No private `Save...Async` method with try/catch and log just to call `SaveChanges`.
+- **try/catch does not wrap every call.** It stays at the central point the project already uses to handle errors. If a spec says a failure must not bring the flow down (for example an e-mail after saving), that is a named step of the flow, not a generic wrapper.
+- **A private method exists only if it does something real**: a decision, a validation, a build with a rule. A private method that only forwards a call (with log or try/catch), or is ONLY filter/query logic, ONLY a try/catch or ONLY a save with a log, is noise: delete it. A short filter stays at the point of use; a reused query becomes a repository method.
+- **No invented log or context scope** (`BeginScope` in a helper of your own) when the rest of the project does not use it. An own scope only for real concurrency/parallelism, and only where the project already does it.
+- Conflict with what the project already has (LEGACY): rule N0 applies (minimal edit and a point of attention).
+- Detail, anti-patterns (Middle Man, tramp data) and checklist: `references/generic-repository-and-base-service.md`.
 
 ### SOLID
 - **S** — One responsibility per class
@@ -90,8 +108,12 @@ Code is reviewed by people, so it must be easy to read at a glance, not only cor
 - **A blank line between logical steps**: fetch / build / save / notify. A step that needs a paragraph of comment becomes a **named method** (`AwaitAllCollectingFailuresAsync`), not a dense block in the middle of the orchestrator
 - **Orchestrator reads like a table of contents**: the list of stages, each one line or one short block, no inline plumbing (error aggregation, scope creation, retry) in it
 - **Comments say why, not what**, short, and never a trailing comment glued to dense code
+- **Few comments.** No `/// <summary>` on every property or on what the name already says. Comment only a non-obvious decision, in one short line
+- **JSON in .NET: pick one library per flow** (when the project uses Newtonsoft.Json, do not mix it with System.Text.Json in the same flow). With Flurl, pass the object and let the client's serializer do it (`PostJsonAsync(obj)`); never serialize to a string first to bypass it. **Serializer/converter settings are always global**: before touching JSON in a project, check whether it already has a global config (for example `NewtonsoftJsonConfig` / `JsonConvert.DefaultSettings`, converters registered once); if not, create it globally and make callers inherit it. Never fix it per call with a private settings field (only a contract-specific add-on, like camelCase for one integration, stays on that call). Reading defaults, `JToken` and examples: `references/dotnet.md`, section "JSON"
+- **No blank line between plain properties** of a DTO; a blank line only separates groups or a property that carries an attribute or comment
 - **Same shape in sibling flows** (suspension/exemption, import/export): same method names, same signature, same layout. Never create a variant in one without aligning the other, and prefer one shared implementation over two copies
 - When pasting or reviewing code, reformat what you touch; do not leave a dense block just because it works
+- **DTOs (.NET): class with one property per line, attribute on the line above the property.** No positional `record` with `[property: ...]` attributes inside the parameter list. No `[JsonPropertyName]` when the serializer's naming policy already produces the contract name; keep it only when the JSON name cannot come from the property name
 
 ### YAGNI
 - Do not implement what was not asked for
@@ -123,7 +145,8 @@ See stack-specific structure and examples in:
 - `Design patterns` → `references/patterns.md`
 - `Splitting a big service (fetch → build → save, factories, no nested classes)` → `references/separate-build-and-save.md` (pair with the `refactoring-guru-techniques` skill)
 - `Proving a refactor or optimisation did not change behaviour (baseline x new, rows, call count, silent-loss traps)` → `references/behavior-regression.md`
-- `Concurrent stages that touch the DB (own scope per stage, isolated DbContext factory, sequential chain in the same scope)` → `references/concurrency-own-scope.md` (only when something runs in parallel)
+- `Generic repository that saves right away, BaseService, and what NOT to do (private method only to save with try/catch and log, try/catch around every call, invented log scope, pass-through private methods, Middle Man class that only delegates, tramp data)` → `references/generic-repository-and-base-service.md` (read before touching a repository, a service that saves, or any try/catch/log helper)
+- `Concurrent stages that touch the DB (own scope per stage, isolated DbContext factory, sequential chain in the same scope)` → `references/concurrency-own-scope.md` (only when something runs in parallel; it is the ONLY reason to open an own scope)
 
 ---
 
@@ -150,6 +173,9 @@ See stack-specific structure and examples in:
 - [ ] Service over ~150 lines or mixing fetch/map/save? Split fetch → build (factory, no DB) → save (`references/separate-build-and-save.md`)
 - [ ] Any class declared inside another class? Move it to its own file
 - [ ] Running things concurrently with DB access? Own scope per independent stage, dependent stages sequential in the same scope, no nested scopes (`references/concurrency-own-scope.md`)
+- [ ] Saving through the generic repository (`Add`/`Update`/`Remove` save right away; `...WithoutSaving` only for a justified multi-repository transaction), with the tracker/log inside the generic `SaveChanges`, no private `Save...Async` wrapper?
+- [ ] No try/catch around an ordinary call (central handling only), no private method that just forwards a call, no class that only delegates (Middle Man: remove it or give it a real job, e.g. token cache), no parameter that only travels through layers (tramp data), no invented log scope (`BeginScope` helper) outside real concurrency (`references/generic-repository-and-base-service.md`)?
+- [ ] No hard-coded portal/app base URL in a `const`/`static`; links come from the project's single address builder, environment read from `IHostEnvironment`?
 - [ ] Refactor, split or optimisation of working code? Regression stated: old x new compared (rows written, response, external call count, 2nd run no change), or offered (`references/behavior-regression.md`)
 - [ ] Readable at a glance: one statement per line, no `try { } catch { }` or dense one-liners, blank lines between steps, orchestrator without inline plumbing, same shape as the sibling flow?
 
@@ -168,6 +194,7 @@ Flag when you identify:
 | Duplicated logic | Point out and suggest extraction |
 | Big service mixing fetch, map and save, or a query/save inside a per-item loop | Suggest fetch → build (factory) → save; see `references/separate-build-and-save.md` |
 | Class declared inside another class | Move it to its own file (anti-pattern) |
+| Middle Man (class/repository whose methods only delegate) or tramp data (parameter that only travels through layers) | In code you are touching: refactor it now (remove the middleman and inject the real dependency, or give the class a real job). In code you are not touching, or in `LEGACY`: point it out with the fix. See `references/generic-repository-and-base-service.md` section 2.5 |
 | Vague name (`Resolve`, `Process`, `Handle`, `data`) in the piece being touched | Rename it to say what it does and on what; do not mass-rename |
 | Useful additional abstraction | Ask before creating |
 | Applicable design pattern | Suggest at the end with justification |

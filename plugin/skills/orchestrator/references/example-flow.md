@@ -31,7 +31,7 @@ It writes `~/.loop-harness/config.json` (`app_root_dir`, the orchestrator skill 
 ```
 /orchestrator map
 ```
-Phase 1 only. `brownfield-mapper` agents (how many depends on repo size) write `.specs/codebase/`: STACK, ARCHITECTURE, CONVENTIONS, STRUCTURE, TESTING, INTEGRATIONS, CONCERNS. No code is touched, nothing is committed. You can stop here and keep the docs. At the end the orchestrator opens the panel and gives you its link.
+Phase 1 only. `brownfield-mapper` agents (how many depends on repo size) write `docs/codebase/`: STACK, ARCHITECTURE, CONVENTIONS, STRUCTURE, TESTING, INTEGRATIONS, CONCERNS. No code is touched, nothing is committed. You can stop here and keep the docs. At the end the orchestrator opens the panel and gives you its link.
 
 ### 2. Answer the conformance question
 The orchestrator will not plan before the project's `CLAUDE.md` has a `Conformance:` line. It asks and explains why:
@@ -181,8 +181,8 @@ You get a summary file `loop-summary-<project>-<date>.md` in the app's output fo
 ```
 <project>/
 ├─ CLAUDE.md                       Conformance: STANDARD
+├─ docs/codebase/                  the 7 mapping documents + README.md (versioned, not the source of truth)
 └─ .specs/
-   ├─ codebase/                    the 7 mapping documents
    ├─ features/<slug>/             spec.md (and design.md, tasks.md when needed)
    └─ project/
       ├─ ROADMAP.md                the index, one line per feature

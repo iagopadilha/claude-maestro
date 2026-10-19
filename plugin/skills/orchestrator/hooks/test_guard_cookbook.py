@@ -112,6 +112,10 @@ class TestCookbook(CookbookCase):
                 self.assertIn("project-deny", stderr, "%s / %s blocked by another rule: %s -> %s" % (name, profile, value, stderr))
             for tool, value in group["pass"]:
                 code, stderr = self.run_guard(tool, value, profile)
+                if profile == "spec" and tool == "edit":
+                    # the spec profile may not edit code at all (built-in `specs-only`): the project rule must simply NOT be the reason
+                    self.assertNotIn("project-deny", stderr, "%s / %s: the project rule must not match: %s -> %s" % (name, profile, value, stderr))
+                    continue
                 self.assertEqual(code, PASSED, "%s / %s must pass: %s -> %s" % (name, profile, value, stderr))
 
     def test_destructive_sql(self):

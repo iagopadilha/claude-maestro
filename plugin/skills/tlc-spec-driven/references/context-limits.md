@@ -5,6 +5,7 @@
 | File            | Max Tokens | ~Words | Warning At  |
 | --------------- | ---------- | ------ | ----------- |
 | PROJECT.md      | 2,000      | 1,200  | 1,600 (80%) |
+| PROJECT.md (Loop Harness) | 450 | 300 | 400 |
 | ROADMAP.md      | 3,000      | 1,800  | 2,400       |
 | STATE.md        | 10,000     | 6,000  | 7,000 (70%) |
 | spec.md         | 5,000      | 3,000  | 4,000       |

@@ -14,7 +14,8 @@ You did not write this spec and must not trust any summary of it. Read the files
 ## What to read
 
 - `.specs/features/<slug>/spec.md` (mandatory) and, if they exist, `design.md`, `tasks.md`, `context.md`.
-- `.specs/codebase/CONVENTIONS.md` and `.specs/codebase/CONCERNS.md`, when they exist.
+- `docs/codebase/CONVENTIONS.md` and `docs/codebase/CONCERNS.md` (fallback `.specs/codebase/`), when they exist; guides, not the source of truth. Read only what the spec touches.
+- `.specs/project/PROJECT.md` (short: the vision, to judge whether the spec fits the product) and `docs/codebase/STACK.md` when the spec's stack assumptions need checking; it does not hold the stack.
 - `.specs/project/ROADMAP.md`, only to check whether the feature is within that stage's scope.
 
 Read-only. You edit nothing.

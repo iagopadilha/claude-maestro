@@ -1,0 +1,19 @@
+{
+  "_note": "Fictional example. The two apps do not exist.",
+  "sheets": {
+    "mailer-service": {
+      "purpose": "Sends transactional e-mail for other apps through one queue, from stored templates.",
+      "capabilities": [
+        { "id": "send-email", "description": "Queues and sends an e-mail rendered from a template", "evidence": "src/mail/mail.controller.ts" },
+        { "id": "manage-templates", "description": "Creates and edits e-mail templates", "evidence": "src/templates/templates.controller.ts" }
+      ]
+    },
+    "billing-api": {
+      "purpose": "Issues invoices and tracks their payment status for customer accounts.",
+      "capabilities": [
+        { "id": "issue-invoice", "description": "Creates an invoice for an account and returns its number", "evidence": "src/Invoices/InvoicesController.cs" },
+        { "id": "track-payment", "description": "Records and reads the payment status of an invoice", "evidence": "src/Payments/PaymentsController.cs" }
+      ]
+    }
+  }
+}

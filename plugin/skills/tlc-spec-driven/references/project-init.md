@@ -2,6 +2,8 @@
 
 **Trigger:** "Initialize project", "Setup project", "Start new project"
 
+> **Loop Harness projects:** do not use the long format below. `PROJECT.md` is born from the app's template as a SHORT context file for the loop's subagents (~300 words): one `**Vision:**` line (1-2 sentences, what is being built and for whom; the only `FILL_IN`) and a static `## Where to look` section pointing to `docs/codebase/` (stack, architecture, conventions, structure, tests, integrations, concerns), `RULES.md` (limits and "never X"), `STATE.md`, `ROADMAP.md`, `FLOWS.md` and `TEST-ENVIRONMENT.md`. Stack, goals, scope and constraints are not kept there; do not ask the user for them. The long format below stays valid for standalone greenfield use.
+
 ## Process
 
 Extract project vision via iterative Q&A (max 3-5 questions per message):

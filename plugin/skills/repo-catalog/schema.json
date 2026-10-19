@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Repo catalog sheet (what the AI returns for one repository)",
+  "type": "object",
+  "required": ["purpose", "capabilities"],
+  "additionalProperties": false,
+  "properties": {
+    "purpose": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "capabilities": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "required": ["id", "description", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+          "description": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "evidence": { "type": "string", "minLength": 1, "description": "Path relative to the repo root; the file must exist." }
+        }
+      }
+    }
+  }
+}

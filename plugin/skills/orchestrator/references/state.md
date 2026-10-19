@@ -6,13 +6,13 @@ The loop's state lives in `.specs/`, in the `tlc-spec-driven` format. This docum
 
 ```
 .specs/
-  codebase/              repo map (brownfield-mapper): the 7 documents
+  (the repo map is not here: it lives in docs/codebase/ at the project root, versioned; a project mapped before may still have .specs/codebase/, read as a fallback)
   features/<slug>/       spec.md (design.md, tasks.md) and, with regression, regression.md, regression-baseline.json, regression-new.json
-  project/               what belongs to the project and people edit: PROJECT.md ROADMAP.md FLOWS.md STATE.md RULES.md TEST-ENVIRONMENT.md phases/ archive/
+  project/               what belongs to the project and people edit: PROJECT.md ROADMAP.md FLOWS.md STATE.md RULES.md TEST-ENVIRONMENT.md REPOS.json phases/ archive/
     loop/                everything the loop owns. At its root only what a person reads:
       ANSWERS.md  VALIDATE.md  DEPENDENCIES.md  GRAPH.md  NOTICE.txt
       json/              machine state: LOOP.json LOOP-CMD.json MONITOR.json meta.json SCOPE.json PERMISSIONS.json
-                         ROADMAP-APPROVED.json rules.tests.json delivery.json
+                         ROADMAP-APPROVED.json rules.tests.json delivery.json last-run.json
       internal/          LOOP.lock PAUSE guard.log .guard-alert monitor.log actions.log whiteboard.json roadmap-goal.md
                          turns/NNN.json (output of each `claude -p`) snapshots/NNN/ (the `--rewind` return point) chat/ jobs/
 ```
@@ -25,25 +25,27 @@ A project on an old layout (the flat plugin files in `.specs/project/`, or the `
 
 | File | Writer |
 |---|---|
-| `.specs/project/PROJECT.md` | orchestrator |
+| `.specs/project/PROJECT.md` | the app creates it from the template; the orchestrator fills the `**Vision:**` line (the only `FILL_IN`). Short context for subagents (~300 words): vision plus `## Where to look` pointers (`docs/codebase/`, `RULES.md`, `STATE.md`, `ROADMAP.md`, `FLOWS.md`, `TEST-ENVIRONMENT.md`). No stack, goals, scope or constraints |
 | `.specs/project/ROADMAP.md` | **only** the orchestrator |
 | `.specs/project/FLOWS.md` | **only** the orchestrator (`plan` and `roadmap` modes, and whenever a feature enters or leaves the ROADMAP); the user may edit it. Read by the app (approval gate) and by `verifier-flow` |
 | `.specs/project/STATE.md` | **only** the orchestrator (only the "now", see State by phases) |
 | `.specs/project/phases/stage-NN.md` | **only** the orchestrator (stage closing summary) |
 | `.specs/project/archive/` | **only** the orchestrator (old state, never read on resume) |
-| `.specs/project/TEST-ENVIRONMENT.md` | the orchestrator (Phase 2b) and the user (directly or in the panel); `FILL_IN` where something is missing. Read by `spec-writer` and `verifier-flow`; the preflight refuses it missing or with `FILL_IN` when the loop needs it |
+| `.specs/project/TEST-ENVIRONMENT.md` | the orchestrator (Phase 2b) and the user (directly or in the panel); short (4 sections: where it runs, login, sample data, never); `FILL_IN` only where the user must decide (at most 3); NAMES only (`$NAME`), values live in the git-ignored `.specs/project/.env.test` or `~/.loop-harness/.env`. Read by `spec-writer` and `verifier-flow` (they run `testenv.py list` to see which names are defined, never the `.env` files); the preflight refuses it missing or with `FILL_IN` when the loop needs it |
 | `.specs/project/loop/json/LOOP.json` | **only** the orchestrator (last action of each headless turn, via `harness.py state loop`; contract in `loop.md`) |
 | `.specs/project/loop/` `NOTICE.txt`, `json/meta.json`, `json/delivery.json`, `json/LOOP-CMD.json`, `internal/LOOP.lock`, `internal/turns/NNN.json`, `internal/snapshots/NNN/` | **only** the engine (`run_loop.py`) |
 | `.specs/project/loop/json/ROADMAP-APPROVED.json` | **only** the app, on the user's click on **Approve roadmap** (signature of features and stages). Never the orchestrator nor a subagent (guard `approval-write`, hard rule) |
 | `.specs/project/loop/ANSWERS.md` | the engine (`--answer`) and the panel (answer, note, instruction) create `[pending]`; the orchestrator marks `[applied]` |
 | `.specs/project/loop/json/PERMISSIONS.json`, `json/SCOPE.json`, `internal/guard.log` | orchestrator (permissions and scope) and `guard.py` (log) |
+| `.specs/project/REPOS.json` | the app (Workspace area of the panel). The orchestrator and the agents only read it, never write it |
+| `.specs/project/loop/json/last-run.json` | the engine (Close loop). Read when the loop re-attaches a branch; Reset specs keeps it |
 | `.specs/project/loop/DEPENDENCIES.md` | the orchestrator, **via** `harness.py audit --write/--apply` (skill `orchestrator-audit-dependencies`): `deps=` suggestions with evidence; marks `[pending]`, `[applied]`, `[refused]`, `[cycle]`, `[review]`. Read in Phase 0 |
 | `.specs/project/loop/json/rules.tests.json` | the orchestrator, **via** `harness.py rules write` (skill `orchestrator-create-block-rule`): examples that must block/pass for each guard rule; `--check` re-runs the test |
 | `.specs/project/loop/GRAPH.md` | generated by `harness.py graph --write` (orchestrator at the checkpoint, `run_loop.py` every turn); do not edit |
 | `.specs/project/loop/json/MONITOR.json` | the app (absolute URL of the project's panel, `/p/<id>/`); deleted when the app shuts down |
 | `.specs/project/loop/internal/roadmap-goal.md`, `internal/jobs/<id>.json`, `internal/chat/`, `internal/actions.log`, `internal/PAUSE` | the app (goal of Generate roadmap, the `claude -p` jobs launched by the panel, panel chats, Act log, pause request) |
 | `.specs/project/loop/VALIDATE.md` | **only** the orchestrator (and the engine for automatic answers, gate tiebreaks and tolerated denials): one line per doubt that did not block (`- [<slug|general>] <doubt> \| chose: <what was done> \| revert: <how>`); goes in the final summary, the notification, the panel and the PR |
-| `.specs/codebase/*.md` | `brownfield-mapper`, one agent per file |
+| `docs/codebase/*.md` | `brownfield-mapper`, one agent per file |
 | `.specs/features/<slug>/*` | the `spec-writer` of that feature |
 | project code | executors, inside the `PATHS` |
 
@@ -88,6 +90,10 @@ The line is a **typed grammar**, checked by the engine's `loop_state.py` (enums 
 
 Optional field `deps=<slug|dir:folder,...>`: `slug` = a feature that must be `verified` before this one runs; `dir:<folder>` = a shared folder only imported (collides with whoever edits it, not with whoever also only imports). A nonexistent slug, self-dependency, cycle and `building` with a dep that is not `verified` are violations. Optional field `isolation=same-tree|worktree` (default `same-tree`, i.e. same tree): `worktree` marks a feature that collides on a shared folder; in headless it runs alone in the wave. E.g.: `- [checkout] status=approved scope=Small kind=front paths=apps/web/checkout deps=card-payment,dir:packages/ui`.
 
+Optional field `repo-order=<name,name>` (multi-repo only): the order in which the repos of ONE feature are built, producer first (`repo-order=api,web` builds the API before the web app). Without it the order is the order of the `paths=` entries.
+
+In a multi-repo project `paths=` entries may carry a repo prefix: `paths=<repo>:<path>,<repo>:<path>`, where `<repo>` is the `name` in `REPOS.json`. An entry with no prefix belongs to the primary repo, so today's lines stay valid. An unknown repo name is a grammar error naming the feature. Two features collide only when the same repo and an overlapping path are both declared. Example: `- [orders-api] status=approved scope=Medium kind=both paths=api:src/Orders,web:src/api/orders.ts repo-order=api,web`.
+
 Optional field `e2e=ok|failed|not-covered`: result of the final flow-validation phase (only with `--e2e`, see `loop.md`).
 
 `scope`, `kind` and `paths` are born empty and are filled when the `spec-writer` responds, or read from the spec when the feature is adopted from disk.
@@ -95,6 +101,14 @@ Optional field `e2e=ok|failed|not-covered`: result of the final flow-validation 
 `origin=adopted` marks a spec that already existed before this loop. It is the field Phase 4 consults: a feature with `origin=adopted` goes through the gate even with `scope=Small`. Without the field, the feature was born here and the `Small` exemption applies. The roadmap prose (stage objective, completion criterion) stays above the lines, in the tlc format.
 
 **`## Open questions`** closes the ROADMAP: one doubt per line, `- <question> | recommended: <option>`, and nothing else in the section; with no doubt left, the single line `- none`. Every non-empty line in it counts as an open question, and approval needs none.
+
+## Multi-repo projects: REPOS.json, SCOPE.json, last-run.json
+
+A project is multi-repo when `.specs/project/REPOS.json` has `multi: true`. The primary repo holds `.specs/` and is the loop's cwd; the other repos are extra worktrees of the same loop branch. Single-repo projects have no `REPOS.json` or one entry, and nothing below applies.
+
+- **`REPOS.json`** (`.specs/project/`, written by the app): `{ "multi": true, "repos": [ { "name", "path", "primary", "worktree_path"?, "copy"? } ] }`. `name` is the short name used in `paths=<repo>:` and `repo-order=`; the primary is listed first; `copy` lists git-ignored config files copied into the worktree so the build runs. What the loop actually created (worktree and branch per repo) is `meta.repos` in `json/meta.json`.
+- **`SCOPE.json`** (`json/`, written by the orchestrator before each dispatch): `{ "roots": [<every worktree root, primary first>], "features": { "<slug>": [<absolute path in a worktree>, ...] }, "copied": [<absolute path of each copied config file>] }`. Each `paths=<repo>:<path>` becomes `<that repo's worktree>/<path>`. The guard lets an executor edit only those entries and lets the orchestrator write only inside `roots`; it blocks any read of a `copied` file (they are local secrets; the build still reads them). An old file with no `roots` and relative entries still works: relative means relative to the primary root.
+- **`last-run.json`** (`json/`, written by the engine at Close loop): per repo the branch, base, head, PR link and whether the worktree was removed. The engine re-attaches an existing branch from it. The orchestrator does not write it.
 
 ## FLOWS.md: the flow that proves each feature
 
@@ -133,7 +147,7 @@ If the loop restarts and finds a feature in `speccing` or `building`, that dispa
 
 ## RULES.md: limits always read (outside phase, outside feature)
 
-`.specs/project/RULES.md` holds **only the application's limiting rules** (never/always), with ID `R-xx`, reason, how to apply and origin (the user's phrase and date). Template: `${CLAUDE_PLUGIN_ROOT}/shared/PROJECT_RULES.md` (same model as `<app>/templates/PROJECT_RULES.md`; the panel's Initialize structure button creates an empty `RULES.md` and adds `@.specs/project/RULES.md` to `CLAUDE.md`). The project's `CLAUDE.md` imports it with `@.specs/project/RULES.md`, so it is loaded in **every session, after compaction and in a new conversation**. Read first in Phase 0 and by every subagent (it is in the agents' prompts). **Only the orchestrator** writes it, and only with the user's explicit phrase; the guard blocks subagents. Each feature's spec lists `Applicable rules: R-xx`. A rule that can be blocked by command/path also goes into `PERMISSIONS.json` (`deny_*`), through the `orchestrator-create-block-rule` skill.
+`.specs/project/RULES.md` holds **only the application's limiting rules** (never/always), with ID `R-xx`, reason, how to apply and origin (the user's phrase and date). Template: `${CLAUDE_PLUGIN_ROOT}/shared/PROJECT_RULES.md` (same model as `<app>/templates/PROJECT_RULES.md`; the panel's Initialize structure button creates an empty `RULES.md` and adds `@.specs/project/RULES.md` to `CLAUDE.md`). The project's `CLAUDE.md` imports it with `@.specs/project/RULES.md`, so it is loaded in **every session, after compaction and in a new conversation**. Read first in Phase 0 and by every subagent (it is in the agents' prompts). **Only the orchestrator** writes it, and only with the user's explicit phrase (in planning mode too: what the user says cannot be done becomes a row here, never a line in PROJECT.md); the guard blocks subagents. Each feature's spec lists `Applicable rules: R-xx`. A rule that can be blocked by command/path also goes into `PERMISSIONS.json` (`deny_*`), through the `orchestrator-create-block-rule` skill.
 
 ## State by phases (lean STATE, history in phase files)
 
@@ -166,6 +180,7 @@ Besides what tlc already asks for (decisions, blockers, lessons, todos, deferred
 - **Open questions not yet taken to the user**, and the already answered ones with the user's answer.
 - **Unverified features** and why (`UNVERIFIED`).
 - **Live worktrees**, with path and branch, so no garbage is left.
+- **Codebase map**: a short `## Codebase map` pointer to `docs/codebase/` (legacy `.specs/codebase/`) naming the documents, so agents load only the one the task needs, never all of them.
 - **Brownfield gaps** (`GAPS` from the mappers).
 - **Adopted specs**: slug, path, and whether `scope`/`kind`/`paths` were deduced or assumed (`scope=Medium` for lack of data).
 - **Entry mode**: adopted standalone feature, or roadmap derived from ready-made material.

@@ -17,7 +17,7 @@ Conformance: STANDARD|LEGACY   (do not fill by hand: `python "${CLAUDE_PLUGIN_RO
 
 ## How to run and verify
 - Build/typecheck/lint/test: `python "${CLAUDE_PLUGIN_ROOT}/shared/verify.py"` (or: <project commands>)
-- Run locally: <command>, port <n> (https first, http if it does not answer)
+- Run locally: the harness app writes a generated `How to run` block (between `RUN:BEGIN` and `RUN:END`) from `launchSettings.json` and the front end's `package.json`: .NET with `--launch-profile https`, https first, http only if it does not answer. Do not hand-write a `dotnet run` line without the https profile.
 
 ## Reuse map (read BEFORE creating a method, function, hook, component or type)
 Look here; if you found it, **reuse or generalize**, do not create a twin. Created something reusable? Add the line.

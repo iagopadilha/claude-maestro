@@ -7,7 +7,7 @@ No contract includes file content. Specs, diffs and logs stay on disk; the retur
 ## `brownfield-mapper`
 
 ```
-DOC: .specs/codebase/<NAME>.md
+DOC: docs/codebase/<NAME>.md
 LINES: <n>
 SUMMARY: up to 3 lines
 GAPS: what could not be determined, or "-"
