@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Loop and orchestrator notifications: console, toast, file, email (SMTP) and webhook. Stdlib only.
+"""Loop and orchestrator notifications: console, toast, file, email (SMTP or HTTP provider) and webhook. Stdlib only.
 
 Configuration (.env read by harness_backend/config/envload.py: LOOP_ENV_FILE, then ~/.loop-harness/.env, then
 <plugin root>/shared/.env; a real environment variable wins):
   LOOP_NOTIFY_CHANNELS   console,toast,file,email,webhook   (a channel without configuration is skipped, never breaks the loop)
   LOOP_NOTIFY_TO         email recipients (comma-separated)
+  LOOP_EMAIL_PROVIDER    smtp (default) | http: who sends the email (providers in email_senders.py)
   LOOP_SMTP_HOST / LOOP_SMTP_PORT / LOOP_SMTP_USER / LOOP_SMTP_PASSWORD / LOOP_SMTP_FROM / LOOP_SMTP_SECURITY (starttls|ssl|none)
+  LOOP_EMAIL_HTTP_URL / LOOP_EMAIL_HTTP_TOKEN / LOOP_EMAIL_HTTP_FROM   (provider http: POST JSON {to, subject, html, from})
   LOOP_WEBHOOK_URL       URL that receives a POST with JSON {subject, body, event, project}
 
 Usage:
@@ -13,7 +15,8 @@ Usage:
   python notify.py --subject "..." --body-file msg.txt      # standalone notice (normal orchestrator, in a chat conversation)
   python notify.py --subject "..." --body "text"
 
-STANDARD MESSAGE (every channel): normal text + a "How to continue" section with the ways to answer, always:
+STANDARD MESSAGE (every channel): the REASON the loop stopped plus one line that sends you to the panel to continue (answer, resume or
+approve there). LOOP_NOTIFY_CONTINUE=commands brings back the long form, a "How to continue" section with the ways to answer:
   1) Loop via the script: run the `run_loop.py ... --answer "..."` command on the PC (highlighted: dark block in the email,
      line marked with >> in plain text);
   2) Normal conversation (Claude chat with /orchestrator): do NOT run the script; answer straight in the chat, the orchestrator
@@ -29,20 +32,19 @@ comes from LOOP.json, the ROADMAP and the git log, cut to a fixed size.
 import argparse
 import datetime
 import html
+import importlib.util
 import json
 import os
-import smtplib
-import ssl
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
-from email.mime.text import MIMEText
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from app_paths import envload  # noqa: E402  (app .env: LOOP_ENV_FILE > ~/.loop-harness/.env > <plugin>/shared/.env)
+import email_senders  # noqa: E402
 import loop_state  # noqa: E402
 
 IS_WIN = os.name == "nt"
@@ -55,6 +57,7 @@ TITLES = {
     "test": "test notice",
     "custom": "notice",
 }
+APP_HARNESS = os.path.abspath(os.path.join(HERE, "..", "..", "..", "harness.py"))
 CHAT_NOTE = ("If you are in a NORMAL CONVERSATION (Claude chat with /orchestrator): do NOT run the script. "
              "Answer straight in the chat; the orchestrator operates normally and carries on.")
 
@@ -72,6 +75,24 @@ def command_base(ctx):
 def numbered(options, limit=6):
     """Numbered options: "1) try again | 2) skip and continue"."""
     return " | ".join("%d) %s" % (number, option) for number, option in enumerate(options[:limit], 1))
+
+
+def continue_in_panel():
+    """The default: a notice says WHY the loop stopped and sends the reader to the panel to continue. LOOP_NOTIFY_CONTINUE=commands
+    brings back the long form (the resume commands, the chat way and the panel)."""
+    return (envload.get("LOOP_NOTIFY_CONTINUE") or "panel").strip().lower() != "commands"
+
+
+def needs_continue_block(ctx):
+    """Panel mode: only a stop that waits for the user (a question or an error) says how to continue; a test or a finish does not."""
+    return ctx.get("event") in ("awaiting_user", "error")
+
+
+def panel_instruction(ctx):
+    """One sentence: the panel address when it is up, otherwise the command that opens it."""
+    if ctx.get("monitor_url"):
+        return "Open the panel to continue (answer, resume or approve there): " + ctx["monitor_url"]
+    return 'Open the panel to continue (answer, resume or approve there): python "%s" serve --project "%s"' % (APP_HARNESS, ctx.get("repo", "<repo>"))
 
 
 def command_set(ctx):
@@ -138,7 +159,10 @@ def build(ctx):
     if ctx.get("validate") and event == "done":
         out += ["", "FOR YOU TO VALIDATE (decided without stopping you)"] + ["- " + clip(item, 200) for item in ctx["validate"][:8]]
     commands = command_set(ctx)
-    if commands:
+    if continue_in_panel():
+        if needs_continue_block(ctx):
+            out += ["", "HOW TO CONTINUE", panel_instruction(ctx)]
+    elif commands:
         out += ["", "HOW TO CONTINUE",
                 "1) Loop via the script (the case of this notice): run one of the commands marked with >> on your PC. The first answers by option "
                 "NUMBER (change the 1); the second takes free text (change the text in quotes)."]
@@ -202,7 +226,10 @@ def build_html(ctx):
         out.append('<p style="margin:10px 0 8px"><b>PR:</b> <a href="%s">%s</a>%s</p>' % (
             e(ctx["pr"]), e(clip(ctx["pr"], 300)), e(" (%s)" % ctx["pr_status"]) if ctx.get("pr_status") else ""))
     commands = command_set(ctx)
-    if commands:
+    if continue_in_panel():
+        if needs_continue_block(ctx):
+            out += [heading("How to continue"), para(panel_instruction(ctx))]
+    elif commands:
         out += [heading("How to continue"),
                 '<p style="margin:0 0 4px"><b>1) Loop via the script</b> (the case of this notice): run one of the commands on your PC. The first answers '
                 'by <b>option number</b> (change the 1); the second takes free text. The script records the answer and the loop carries on by itself.</p>', code(commands),
@@ -260,7 +287,10 @@ def build_short(ctx):
                 lines.append("To validate: " + clip("; ".join(ctx["validate"][:3]), 150))
         elif event == "test":
             lines += ["", "Loop notification test. Nothing to do."]
-        if event in ("awaiting_user", "error", "test"):
+        if continue_in_panel():
+            if needs_continue_block(ctx):
+                lines += ["", "*HOW TO CONTINUE*", panel_instruction(ctx)]
+        elif event in ("awaiting_user", "error", "test"):
             answer = ' --option 1' if (ctx.get("options") and event == "awaiting_user") else ' --answer "YOUR MESSAGE"'
             command = command_base(ctx) + ('' if event == "error" else answer)
             lines += ["", "*HOW TO CONTINUE*",
@@ -322,35 +352,11 @@ def channel_toast(subject, body, ctx, work):
 
 # ---------------------------------------------------------------- external services
 def channel_email(subject, body, ctx, work):
-    """Email through a generic SMTP server (LOOP_SMTP_*), structured HTML with the command in a code block."""
-    to = envload.get_list("LOOP_NOTIFY_TO")
-    host = envload.get("LOOP_SMTP_HOST")
-    port = int(envload.get("LOOP_SMTP_PORT") or 587)
-    user, password = envload.get("LOOP_SMTP_USER"), envload.get("LOOP_SMTP_PASSWORD")
-    sender = envload.get("LOOP_SMTP_FROM")
-    security = (envload.get("LOOP_SMTP_SECURITY") or "starttls").lower()
-    message = MIMEText(body, "html", "utf-8")
-    message["Subject"], message["From"], message["To"] = subject, sender, ", ".join(to)
-    last = ""
-    for _ in range(3):
-        try:
-            if security == "ssl":
-                server = smtplib.SMTP_SSL(host, port, timeout=30, context=ssl.create_default_context())
-            else:
-                server = smtplib.SMTP(host, port, timeout=30)
-            with server:
-                if security == "starttls":
-                    server.starttls(context=ssl.create_default_context())
-                if user:
-                    server.login(user, password)
-                server.sendmail(sender, to, message.as_string())
-            return True, "sent to %s" % ", ".join(to)
-        except smtplib.SMTPAuthenticationError as error:
-            return False, "SMTP authentication failed (%s)" % error.smtp_code  # retrying will not help
-        except (smtplib.SMTPException, OSError) as error:
-            last = str(error)[:150].replace(password, "***") if password else str(error)[:150]
-            time.sleep(3)
-    return False, "no response from the SMTP server: " + last
+    """Email as structured HTML with the command in a code block; the provider (SMTP or HTTP) is in email_senders.py."""
+    sender = email_senders.build_email_sender()
+    if sender is None:
+        return False, "unknown LOOP_EMAIL_PROVIDER: %s" % email_senders.chosen_provider()
+    return sender.send(email_senders.recipients(), subject, body)
 
 
 def channel_webhook(subject, body, ctx, work):
@@ -371,20 +377,49 @@ def channel_webhook(subject, body, ctx, work):
     return False, "no response from the webhook: " + last
 
 
-# name -> (function, message format, required variables)
+# name -> (function, message format, required variables: a list, or a function returning one)
 CHANNELS = {
     "console": (channel_console, "full", []),
     "toast": (channel_toast, "short", []),
     "file": (channel_file, "full", []),
-    "email": (channel_email, "html", ["LOOP_SMTP_HOST", "LOOP_SMTP_FROM", "LOOP_NOTIFY_TO"]),
+    "email": (channel_email, "html", email_senders.required_variables),
     "webhook": (channel_webhook, "full", ["LOOP_WEBHOOK_URL"]),
 }
+
+
+LOCAL_EXTENSIONS_DIR = os.path.join(HERE, "local_ext")
+
+
+def load_local_extensions():
+    """Loads every `engine/local_ext/*.py` (a folder git ignores, so a private channel or e-mail provider of one machine never
+    reaches the repository). Each module may define `register(channels, email_providers)` to add entries to CHANNELS and to
+    email_senders.PROVIDERS. A broken extension is skipped; it never breaks the loop. Returns the names loaded."""
+    loaded = []
+    if not os.path.isdir(LOCAL_EXTENSIONS_DIR):
+        return loaded
+    for name in sorted(os.listdir(LOCAL_EXTENSIONS_DIR)):
+        if not name.endswith(".py") or name.startswith("_"):
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location("local_ext_" + name[:-3], os.path.join(LOCAL_EXTENSIONS_DIR, name))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            module.register(CHANNELS, email_senders.PROVIDERS)
+            loaded.append(name)
+        except Exception as error:  # noqa: BLE001  (an extension of one machine must not stop the notices)
+            print("[notify] local extension %s skipped: %s" % (name, str(error)[:150]), file=sys.stderr)
+    return loaded
+
+
+load_local_extensions()
 
 
 def missing_config(name):
     """Variables the channel is missing to work (empty list = configured)."""
     entry = CHANNELS.get(name)
-    return [var for var in (entry[2] if entry else []) if not envload.get(var)]
+    required = entry[2] if entry else []
+    required = required() if callable(required) else required
+    return [var for var in required if not envload.get(var.split(" ")[0])]
 
 
 def dispatch(ctx, work="", only=None):

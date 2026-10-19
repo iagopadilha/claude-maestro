@@ -15,6 +15,11 @@ Rules (user decision; no flag turns them off):
 PR: `gh pr create` (or reuses the branch's already open PR). Without `gh`, or with LOOP_PR_MODE=link, returns only the compare link
 (https://github.com/<org>/<repo>/compare/<base>...<branch>?expand=1). LOOP_PR_MODE=off neither creates nor computes a PR.
 Output: JSON {"push": ..., "pr": <url|None>, "pr_status": ...} (also in .specs/project/loop/json/delivery.json).
+
+Multi-repo projects (meta.json has a `repos` map): `finalize_project()` runs `finalize()` once per repo worktree, each on its own
+`loop/*` branch, one PR each against the integration branch; a failure in one repo never stops the others. Each worktree keeps its
+own delivery.json; the primary's one is the aggregate (its top-level fields are the primary repo's, `repos` holds every result).
+Each PR body gets a "Related PRs" block with the sibling links. Single-repo behaviour is unchanged.
 """
 import argparse
 import datetime
@@ -96,9 +101,18 @@ def compare_url(remote_url, base, branch):
     return "https://github.com/%s/compare/%s...%s?expand=1" % (slug, base, branch) if slug else None
 
 
-def pr_body(root, branch, base):
+def related_prs_block(related_prs, own_name=""):
+    """The "Related PRs" section: the sibling repos' PR (or compare) links; empty when there is none."""
+    links = [(name, link) for name, link in (related_prs or {}).items() if link and name != own_name]
+    if not links:
+        return []
+    return ["", "## Related PRs", ""] + ["- %s: %s" % (name, link) for name, link in links]
+
+
+def pr_body(root, branch, base, roadmap_root="", related_prs=None, own_name=""):
+    roadmap_root = roadmap_root or root
     out = ["Orchestrator delivery: branch `%s` to `%s`." % (branch, base), ""]
-    feats = features_of(root)
+    feats = features_of(roadmap_root)
     verified = [s for s, f in feats.items() if f.get("status") == "verified"]
     blocked = [s for s, f in feats.items() if f.get("status") == "blocked"]
     out.append("**Verified features (%d):** %s" % (len(verified), ", ".join(verified) or "none"))
@@ -111,12 +125,13 @@ def pr_body(root, branch, base):
         out += ["", "## Progress", "", "```mermaid", graph_view.mermaid(feats), "```"]
     except Exception:
         pass
-    items = validate_items(root)
+    items = validate_items(roadmap_root)
     if items:
         out += ["", "## For you to validate", ""] + ["- " + item for item in items[:30]]
     _, log, _ = git(root, "log", "--oneline", "--no-decorate", "%s..%s" % ("origin/" + base, "HEAD"))
     if log:
         out += ["", "## Commits", "", "```", "\n".join(log.splitlines()[:30]), "```"]
+    out += related_prs_block(related_prs, own_name)
     out += ["", "Generated from .specs/ (ROADMAP, VALIDATE). Nothing was merged: the merge decision is yours."]
     return "\n".join(out)
 
@@ -132,8 +147,11 @@ def identity_problem(root):
     return ""
 
 
-def finalize(root, branch="", base="", draft=False, dry_run=False):
-    """Push of the feature branch + PR. Returns {"push", "pr", "pr_status"}; never raises; never forces or merges."""
+def finalize(root, branch="", base="", draft=False, dry_run=False, roadmap_root="", related_prs=None, own_name=""):
+    """Push of the feature branch + PR. Returns {"push", "pr", "pr_status"}; never raises; never forces or merges.
+
+    `roadmap_root` (multi-repo): where the ROADMAP lives (the primary worktree) when `root` is another repo's worktree."""
+    roadmap_root = roadmap_root or root
     notify.envload.load()
     result = {"push": "not done", "pr": None, "pr_status": "not created"}
     branch = branch or git(root, "branch", "--show-current")[1]
@@ -146,7 +164,7 @@ def finalize(root, branch="", base="", draft=False, dry_run=False):
     elif branch == base:
         result["push"] = "refused: the feature branch cannot be the PR base (%s)" % base
     else:
-        open_features = sorted(slug for slug, f in features_of(root).items() if f.get("status") in OPEN)
+        open_features = sorted(slug for slug, f in features_of(roadmap_root).items() if f.get("status") in OPEN)
         problem = identity_problem(root)
         origin = git(root, "remote", "get-url", "origin")[1]
         if open_features:
@@ -169,7 +187,7 @@ def finalize(root, branch="", base="", draft=False, dry_run=False):
                     result["pr"], result["pr_status"] = existing, "PR already existed"
                 else:
                     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as handle:
-                        handle.write(pr_body(root, branch, base))
+                        handle.write(pr_body(root, branch, base, roadmap_root, related_prs, own_name))
                         body_file = handle.name
                     title = "[orchestrator] %s" % branch
                     cmd = ["gh", "pr", "create", "--base", base, "--head", branch, "--title", title, "--body-file", body_file]
@@ -192,6 +210,73 @@ def finalize(root, branch="", base="", draft=False, dry_run=False):
     return result
 
 
+def timestamp():
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+def edit_pr_body(root, pr_url, branch, base, roadmap_root, related_prs, own_name):
+    """Rewrites the body of a PR THIS run created so it lists the siblings created after it. Best effort; True when edited."""
+    if not shutil.which("gh"):
+        return False
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as handle:
+        handle.write(pr_body(root, branch, base, roadmap_root, related_prs, own_name))
+        body_file = handle.name
+    try:
+        return run(["gh", "pr", "edit", pr_url, "--body-file", body_file], cwd=root, timeout=90)[0] == 0
+    finally:
+        os.unlink(body_file)
+
+
+def read_base(root):
+    """The PR base `finalize()` used, as it wrote it in that worktree's delivery.json (falls back to the integration branch)."""
+    try:
+        with open(loop_state.loop_path(root, "delivery.json"), encoding="utf-8") as handle:
+            return json.load(handle).get("base") or integration_branch()
+    except (OSError, ValueError):
+        return integration_branch()
+
+
+def finalize_project(primary_work, meta, draft=False, dry_run=False):
+    """Delivery of the whole project. `meta` = the primary worktree's meta.json (`repos`: name -> {worktree, branch, ...}).
+
+    Without a `repos` map this IS the single-repo delivery (same call as before). With it: one `finalize()` per repo, the primary
+    first, then the sibling links are written into the PR bodies this run created. Returns the aggregate (top-level fields =
+    the primary repo's, plus `repos`). The PR base is always the integration branch, never the branch of the user's folder."""
+    repos = meta.get("repos")
+    if not isinstance(repos, dict) or not repos:
+        return finalize(primary_work, meta.get("branch", ""), draft=draft, dry_run=dry_run)
+    names = sorted(repos, key=lambda name: not repos[name].get("primary"))
+    primary_name = names[0]
+    results, roots = {}, {}
+    for name in names:
+        entry = repos[name]
+        root = os.path.abspath(primary_work if name == primary_name else (entry.get("worktree") or ""))
+        roots[name] = root
+        if not os.path.isdir(root):
+            results[name] = {"push": "not done: worktree missing", "pr": None, "pr_status": "not created",
+                             "branch": entry.get("branch", ""), "base": integration_branch(), "at": timestamp()}
+            continue
+        try:
+            result = finalize(root, entry.get("branch", ""), draft=draft, dry_run=dry_run, roadmap_root=primary_work)
+        except Exception as error:  # one repo failing never stops the others
+            result = {"push": "FAILED: delivery.py: %s" % str(error)[:200], "pr": None, "pr_status": "not created"}
+        results[name] = dict(result, branch=entry.get("branch", ""), base=read_base(root), at=timestamp())
+    links = {name: result["pr"] for name, result in results.items() if result.get("pr")}
+    if len(links) > 1:
+        for name, result in results.items():
+            if result.get("pr_status") == "PR created":
+                edit_pr_body(roots[name], result["pr"], result["branch"], result["base"], primary_work, links, name)
+    aggregate = dict(results[primary_name], repos=results)
+    try:
+        target = loop_state.loop_path(primary_work, "delivery.json")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as handle:
+            json.dump(aggregate, handle, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+    return aggregate
+
+
 def main():
     parser = argparse.ArgumentParser(description="Push of the feature branch + PR to the integration branch (end of flow)")
     parser.add_argument("root")
@@ -203,7 +288,18 @@ def main():
     if os.environ.get("LOOP_HEADLESS") == "1":
         print(json.dumps({"push": "refused: in the headless loop the script delivers (run_loop.py)", "pr": None, "pr_status": "not created"}, ensure_ascii=False))
         return 2
-    result = finalize(os.path.abspath(opts.root), opts.branch, opts.base, opts.draft, opts.dry_run)
+    root = os.path.abspath(opts.root)
+    meta = {}
+    try:
+        with open(loop_state.loop_path(root, "meta.json"), encoding="utf-8") as handle:
+            meta = json.load(handle)
+    except (OSError, ValueError):
+        pass
+    if isinstance(meta.get("repos"), dict) and meta["repos"] and not opts.branch and not opts.base:
+        result = finalize_project(root, meta, opts.draft, opts.dry_run)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if all(item["push"].startswith(("done", "dry-run")) for item in result["repos"].values()) else 1
+    result = finalize(root, opts.branch, opts.base, opts.draft, opts.dry_run)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["push"].startswith(("done", "dry-run")) else 1
 
