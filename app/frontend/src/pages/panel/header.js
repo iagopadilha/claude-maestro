@@ -3,9 +3,10 @@
    The header frame lives in the Panel (app.js); each dynamic part is a small component here. */
 import { $ } from '../../util/dom.js';
 import { html } from '../../util/preact.js';
-import { DASH, isNum, num, txt, list, httpUrl } from '../../util/format.js';
+import { DASH, isNum, num, txt, list, httpUrl, midPath } from '../../util/format.js';
 import { appApi } from '../../api/api_client.js';
 import { toast } from '../../components/toast.js';
+import { copyText } from '../../components/copy.js';
 import { ctx, ui, STATUS, status, loop, pauseRequested, projectName } from './context.js';
 import { renderAll, schedulePoll, stopPanel } from '../project_panel.js';
 
@@ -24,6 +25,26 @@ const turnNow = () => { const t = loop().turn; return isNum(t) ? t : null; };
 export function BrandSub() {
   const state = ctx.state;
   return `${txt(projectName())} · ${txt((state && state.branch) || meta().branch)}`;
+}
+
+/** Repo folder the panel works on and, when a loop worktree exists, that folder + the branch (both from /state). */
+export function repoInfo() {
+  const state = ctx.state || {}, ref = state.project_ref || {};
+  const repo = ref.repo_path || state.repo || '', work = state.work || '';
+  const norm = (v) => String(v).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const same = (a, b) => norm(a) === norm(b);
+  return { repo, worktree: work && repo && !same(work, repo) ? work : '', branch: state.branch || meta().branch || '' };
+}
+
+/** Header line under the brand: "repo <path> [copy]" and, with a loop worktree, "worktree <path> · branch". */
+export function RepoLine() {
+  const r = repoInfo();
+  if (!r.repo) return null;
+  return html`<div class="repo-line mono" id="repo-line">
+    <span class="repo-tag">repo</span><span class="repo-path" title=${r.repo}>${midPath(r.repo)}</span>
+    <button type="button" class="repo-copy" title="copy the repo path" aria-label="copy the repo path" onClick=${() => copyText(r.repo, 'Repo path copied.')}>copy</button>
+    ${r.worktree ? html`<span class="repo-tag">worktree</span><span class="repo-path" title=${r.worktree}>${midPath(r.worktree)}</span>${r.branch ? html`<span class="repo-tag">branch</span><span class="repo-path" title=${r.branch}>${r.branch}</span>` : null}` : null}
+  </div>`;
 }
 
 /** Container flags of the header: #status-pill colors and the #brand-sub title (repo path). */
@@ -89,11 +110,11 @@ export function cancelShutdown() {
   const b = $('btn-shutdown'); if (b) b.focus();
 }
 
-const CLOSED_TITLE = { notfound: 'project not found · Loop Harness', shutdown: 'app shut down · Loop Harness' };
+const CLOSED_TITLE = { notfound: 'project not found · Claude Maestro', shutdown: 'app shut down · Claude Maestro' };
 export function updateTitle() {
   const state = ctx.state;
-  if (ui.closed) { document.title = CLOSED_TITLE[ui.closed.kind] || 'Loop Harness'; return; }
-  if (!state) { document.title = (ctx.offline ? 'disconnected' : 'loading') + ' · Loop Harness'; return; }
+  if (ui.closed) { document.title = CLOSED_TITLE[ui.closed.kind] || 'Claude Maestro'; return; }
+  if (!state) { document.title = (ctx.offline ? 'disconnected' : 'loading') + ' · Claude Maestro'; return; }
   const st = statusInfo(), v = loop().turn;
   document.title = `${ctx.offline ? 'disconnected · ' : ''}${st.label}${isNum(v) ? ' · turn ' + v : ''} · ${projectName() || 'project'}`;
 }

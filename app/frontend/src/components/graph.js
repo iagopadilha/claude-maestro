@@ -4,11 +4,11 @@
    Markup in Preact; pan/zoom/fit stay imperative (transform on g.gf-vp, ResizeObserver on div.gf). */
 import { html, useState, useEffect, useLayoutEffect, useRef, useMemo } from '../util/preact.js';
 
-const STATUS_COLOR = {
+export const STATUS_COLOR = {
   pending: '#7D838C', speccing: '#8AA4FF', specced: '#A58BFF', approved: '#5CC8D6',
   building: '#F2B544', verified: '#5BD38A', blocked: '#F06A5E',
 };
-const STATUS_BG = {
+export const STATUS_BG = {
   pending: '#1E2024', speccing: '#1A1F2B', specced: '#201B2C', approved: '#16252A',
   building: '#2A2416', verified: '#15251C', blocked: '#2A1716',
 };
@@ -116,8 +116,12 @@ function graphModel(fs, stages) {
   return { w: L.w, h: L.h, headers: L.headers, edges, nodes, byId, parents, children };
 }
 
+// text widths of the node (mono 12px title, mono 10px status, mono 10.5px sub line, sans 10.5px last line) inside the 184px box
+const TITLE_CHAR_WIDTH = 7.2, STATUS_CHAR_WIDTH = 6, SUB_CHARS = 25, LINE_CHARS = 30;
 function GraphNode({ n, cls, pressed, onSelect, setHover }) {
   const f = n.f, id = n.id;
+  const statusText = f.status || '—';
+  const titleChars = Math.max(8, Math.floor((G.NW - 16 - 8 - 8 - statusText.length * STATUS_CHAR_WIDTH) / TITLE_CHAR_WIDTH)); // the title never runs under the status
   const pick = () => { if (onSelect) onSelect(id); };
   const enter = () => setHover(id), leave = () => setHover((cur) => (cur === id ? null : cur));
   return html`<g class=${cls} transform=${`translate(${n.x} ${n.y})`} role="button" tabindex="0" aria-label=${n.label} aria-pressed=${pressed ? 'true' : 'false'}
@@ -126,10 +130,10 @@ function GraphNode({ n, cls, pressed, onSelect, setHover }) {
     <title>${n.tip}</title>
     <rect class="gf-box" width=${G.NW} height=${G.NH} rx="8" fill=${STATUS_BG[f.status] || '#15171A'} stroke=${n.c} />
     <rect class="gf-bar" width="4" height=${G.NH - 12} x="6" y="6" rx="2" fill=${n.c} />
-    <text class="gf-title" x="16" y="20">${clip(f.name || f.id, 24)}</text>
-    <text class="gf-status" x=${G.NW - 8} y="20" text-anchor="end" fill=${n.c}>${f.status || '—'}</text>
-    <text class="gf-sub" x="16" y="38">${clip(f.name && f.name !== f.id ? f.id : (f.kind ? 'kind ' + f.kind : ''), 30)}</text>
-    <text class="gf-line" x="16" y="55" fill=${f.status === 'blocked' ? '#F06A5E' : n.waiting.length ? '#F2B544' : '#8B9098'}>${clip(n.line2 + (n.dirs.length ? ` · ${n.dirs.length} folder(s)` : ''), 32)}</text>
+    <text class="gf-title" x="16" y="20">${clip(f.name || f.id, titleChars)}</text>
+    <text class="gf-status" x=${G.NW - 8} y="20" text-anchor="end" fill=${n.c}>${statusText}</text>
+    <text class="gf-sub" x="16" y="38">${clip(f.name && f.name !== f.id ? f.id : (f.kind ? 'kind ' + f.kind : ''), SUB_CHARS)}</text>
+    <text class="gf-line" x="16" y="55" fill=${f.status === 'blocked' ? '#F06A5E' : n.waiting.length ? '#F2B544' : '#8B9098'}>${clip(n.line2 + (n.dirs.length ? ` · ${n.dirs.length} folder(s)` : ''), LINE_CHARS)}</text>
   </g>`;
 }
 

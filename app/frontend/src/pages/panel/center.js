@@ -1,4 +1,4 @@
-/* Panel center: tabs Current turn | History | Dependencies | Files | Whiteboard, and the #canvas content of each view. */
+/* Panel center: tabs Current turn | History | Dependencies | Roadmap & specs | Files | Whiteboard, and the #canvas content of each view. */
 import { html, useEffect } from '../../util/preact.js';
 import { isNum } from '../../util/format.js';
 import { Whiteboard, whiteboardStore } from '../../components/whiteboard.js';
@@ -8,9 +8,10 @@ import { agentsModel, TurnView, EmptyMsg, dgFit, zoomAt, showZoom } from './turn
 import { History, loadHist, openHist } from './history.js';
 import { Dependencies, zoomDependencies, fitDependencies, dependenciesScale } from './dependencies.js';
 import { Files } from './files.js';
+import { RoadmapChat } from './roadmap_chat.js';
 import { backToLive } from './timeline.js';
 
-const TABS = [['turn', 'tab-turn', 'Current turn'], ['hist', 'tab-hist', 'History'], ['deps', 'tab-deps', 'Dependencies'], ['files', 'tab-files', 'Files'], ['board', 'tab-board', 'Whiteboard']];
+const TABS = [['turn', 'tab-turn', 'Current turn'], ['hist', 'tab-hist', 'History'], ['deps', 'tab-deps', 'Dependencies'], ['roadmap', 'tab-roadmap', 'Roadmap & specs'], ['files', 'tab-files', 'Files'], ['board', 'tab-board', 'Whiteboard']];
 const TURN_LEGEND = [['running', '#F2B544'], ['done', '#5BD38A'], ['queued', '#8AA4FF'], ['idle', '#7D838C'], ['blocked/failed', '#F06A5E']];
 let board = null;
 
@@ -26,6 +27,7 @@ const CAPTIONS = {
   turn: () => (ui.pastN != null ? `pipeline of turn ${ui.pastN}: one lane per feature` : 'pipeline of this turn: one lane per feature, left to right'),
   hist: () => 'every turn and its agents · click an agent to see its full log',
   deps: () => 'one column per stage; inside a stage, each feature sits to the right of what it waits on · hover to see the path, click to open',
+  roadmap: () => 'stages and features defined earlier · change a spec with the AI, then tell the loop to redo the affected work',
   files: () => 'everything the loop writes in .specs, in one place · read or edit what the app allows',
   board: () => 'free project board · saves itself on the server',
 };
@@ -84,6 +86,7 @@ function Board() {
 export function CenterCanvas({ cm }) {
   if (cm.view === 'hist') return html`<${History} />`;
   if (cm.view === 'deps') return html`<${Dependencies} />`;
+  if (cm.view === 'roadmap') return html`<${RoadmapChat} />`;
   if (cm.view === 'files') return html`<${Files} />`;
   if (cm.view === 'board') return html`<${Board} />`;
   if (cm.model.mode === 'plain') return html`<${EmptyMsg} text=${cm.model.msg} />`;

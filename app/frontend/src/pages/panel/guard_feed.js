@@ -38,10 +38,30 @@ function EventRow({ e }) {
   </li>`;
 }
 
-export const GUARD_BADGE_TITLE = 'tool calls the PreToolUse guard blocked (exit 2): click to open the feed';
-/** Content of #guard-badge. */
+// what each guard rule protects, in plain words (shown in the badge tooltip; an unknown rule shows only its name)
+const RULE_REASON = {
+  'specs-only': 'an agent tried to write outside .specs/ (planning and spec agents only write there; the codebase map goes to docs/codebase)',
+  'state-write': 'an agent tried to write the loop state, which only the orchestrator and the engine own',
+  'approval-write': 'something tried to write the roadmap approval, which only your click on Approve roadmap can write',
+  'git-write': 'an agent tried a git write command (the engine owns commits)',
+  'git-push': 'an agent tried git push (delivery is done by harness.py deliver, at the end)',
+  'push-protected': 'an agent tried to push the protected branch',
+  'pr-release': 'an agent tried to open a pull request or a release',
+  'prod-write': 'an agent tried to write in production (never allowed)',
+  secrets: 'an agent tried to read a credential file',
+  'outbound-msg': 'an agent tried to send a message outside the machine',
+  'panel-trigger': 'an agent tried to operate the panel itself',
+};
+/** Content of #guard-badge: the chip plus a styled tooltip (what the guard is, why it blocked per rule, that it is history). */
 export function GuardBadge({ total }) {
-  return html`<span class="gb-dot"></span>${`guard · ${total} blocked`}`;
+  const rows = Object.entries(counts()).filter(([, n]) => n > 0).sort((x, y) => y[1] - x[1]).slice(0, 4);
+  return html`<span class="gb-dot"></span>${`guard · ${total} blocked`}
+    <span class="gb-tip" id="guard-tip" role="tooltip">
+      <b class="gb-tip-t">Why something was blocked</b>
+      <span class="gb-tip-p">The guard stops agent actions that break a project rule. The agent is told and tries another way: nothing to fix unless the same block keeps repeating.</span>
+      <span class="gb-tip-l">${rows.map(([rule, n]) => html`<span class="gb-tip-r" key=${rule}><span class="gb-tip-n mono">${n}×</span><span><b class="mono">${rule}</b> ${RULE_REASON[rule] || 'open the feed for details'}</span></span>`)}</span>
+      <span class="gb-tip-f">Click to open the feed</span>
+    </span>`;
 }
 /** Click on the header badge: opens the feed and scrolls to it. */
 export function openGuardFeed() { setOpen(true); const feed = $('guard-feed'); if (feed) feed.scrollIntoView({ block: 'nearest' }); }

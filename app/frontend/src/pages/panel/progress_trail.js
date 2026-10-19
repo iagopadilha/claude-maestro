@@ -14,15 +14,16 @@ import { Markdown, extractSection } from '../../components/markdown.js';
 import { ctx, status, approval } from './context.js';
 import { renderAll, schedulePoll } from '../project_panel.js';
 import { openNewLoop } from './alert.js';
-import { approveRoadmap, APPROVAL_NOTICE } from './new_loop.js';
+import { approveRoadmap, APPROVAL_NOTICE, nlExpand } from './new_loop.js';
 import { openProjectFile, loadTree } from './files.js';
 import { planningRequired, approvePlan } from './planning.js';
+import { repoConfirmContent, RepoManager } from '../repo_manager.js';
 
 const DEFAULT_STEPS = [
   ['folder', 'Folder'], ['git', 'Git'], ['structure', '.specs structure'], ['conformance', 'Conformance'], ['map', 'Code map'],
   ['roadmap', 'Roadmap'], ['flows', 'Flows'], ['approval', 'Approval'], ['test_environment', 'Test environment'], ['loop', 'Loop'],
 ];
-const STEP_OF_ACTION = { structure: 'structure', conformance: 'conformance', map: 'map', roadmap: 'roadmap', flows: 'flows', approve: 'approval', test_environment: 'test_environment', check: 'loop', start_loop: 'loop', follow: 'loop' };
+const STEP_OF_ACTION = { structure: 'structure', conformance: 'conformance', map: 'map', repos: 'repos', roadmap: 'roadmap', flows: 'flows', approve: 'approval', test_environment: 'test_environment', check: 'loop', start_loop: 'loop', follow: 'loop' };
 const TYPE_ROADMAP = /roadmap/i, TYPE_MAP = /^map$|codebase/i;
 
 const tr = { loading: false, error: null, jobs: [], following: new Map(), dialog: null, lastRead: 0, roadmap: null };
@@ -76,6 +77,20 @@ const jobName = (type) => (TYPE_ROADMAP.test(type || '') ? 'Roadmap' : TYPE_MAP.
 const jobsOf = (re) => tr.jobs.filter((j) => re.test(j.type || ''));
 /** True while a code map job runs. */
 export const mapRunning = () => jobsOf(TYPE_MAP).some((j) => j.state === 'running');
+/** Under the "Map codebase" step: a spinner with the elapsed time while the job runs, and the last failure kept on screen. */
+export function MapStatus({ written = 0, total = 0 }) {
+  const [, tick] = useState(0);
+  const j = jobsOf(TYPE_MAP)[0], running = !!j && j.state === 'running';
+  useEffect(() => {
+    if (!running) return undefined;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  if (!j) return null;
+  if (running) return html`<div class="nl-msg" role="status"><div class="spinner" aria-hidden="true"></div><span>${`Mapping the code… ${elapsed(j)}. It takes 1 to 5 minutes; this screen updates by itself.${total ? ` ${written} of ${total} documents written.` : ''}`}</span></div>`;
+  if (j.state === 'error') return html`<div class="nl-box nl-bad" role="alert"><strong>The last map did not work</strong> (${elapsed(j)}). ${j.error || 'No details were returned.'}</div>`;
+  return null;
+}
 const elapsed = (j) => { const t0 = Date.parse(j.started_at), t1 = j.finished_at ? Date.parse(j.finished_at) : Date.now(); return Number.isFinite(t0) ? dur(Math.max(0, (t1 - t0) / 1000)) : ''; };
 
 // ---------- actions ----------
@@ -90,7 +105,7 @@ export async function initializeStructure() {
   openDialog({
     title: 'Initialize the .specs structure',
     content: [
-      html`<p class="dlg-text">${'Creates .specs/project (PROJECT.md, an empty ROADMAP.md, STATE.md, RULES.md), .specs/codebase, .specs/features and the loop folder, and adds .specs/ to .gitignore. Never overwrites a file that already exists.'}</p>`,
+      html`<p class="dlg-text">${'Creates .specs/project (PROJECT.md with the context for the subagents, an empty ROADMAP.md, STATE.md, FLOWS.md, RULES.md, TEST-ENVIRONMENT.md and .env.test), .specs/features and the loop folder, adds .specs/ to .gitignore and writes a generated "How to run" block in CLAUDE.md (https profile first). Never overwrites a file that already exists.'}</p>`,
       field.node,
     ],
     actions: [
@@ -108,7 +123,7 @@ export function chooseConformance() {
   const field = conformanceInput(false);
   openDialog({
     title: 'Code conformance',
-    content: [html`<p class="dlg-text">${'Writes the "Conformance:" line in the project CLAUDE.md. The loop uses it to decide how much it may touch the existing code.'}</p>`, field.node],
+    content: [html`<p class="dlg-text">${'Creates (or updates) the "Conformance:" line in the project CLAUDE.md. You can edit that file later to match the pattern your team uses. The loop reads it to decide how much of the existing code it may change.'}</p>`, field.node],
     actions: [
       { text: 'Cancel' },
       { text: 'Save', cls: 'btn-primary', onClick: async (d) => {
@@ -121,7 +136,7 @@ export function chooseConformance() {
 }
 /** Trail action (also used by the planning checklist): starts the code map job. */
 export async function mapCodebase() {
-  const ok = await confirmDialog({ title: 'Map the code?', text: 'Runs claude with the /orchestrator skill in map mode: it reads the project and writes .specs/codebase (stack, architecture, conventions). Spends tokens and may take a few minutes. It does not touch the code.', yesText: 'Map now' });
+  const ok = await confirmDialog({ title: 'Map the code?', text: 'Runs claude with the /orchestrator skill in map mode: it reads the project and writes 7 short documents in docs/codebase/ at the root (stack, architecture, conventions...), committed with the code so the team can reuse them. They are a guide, not the source of truth: the code wins. Spends tokens and may take a few minutes. It does not touch the code.', yesText: 'Map now' });
   if (!ok) return;
   try {
     const r = await ctx.api.post('codebase/map', {});
@@ -129,8 +144,18 @@ export async function mapCodebase() {
     toast('Mapping started' + (r.detail ? ': ' + r.detail : '.'), 'ok'); renderAll();
   } catch (e) { toast((e.status === 409 ? 'Cannot map right now: ' : 'Mapping not started: ') + e.message, 'err'); }
 }
+/** Trail action: the Repositories manager in a dialog (conformance and map of the other repos). */
+function openReposSetup() {
+  openDialog({
+    title: 'Other repositories',
+    width: 720,
+    content: html`<${RepoManager} projectId=${ctx.projectId} locked=${status() === 'running' ? 'A loop is running: the repository list is locked until it stops.' : ''} onChange=${() => { reloadProgress(); schedulePoll(300); }} />`,
+    actions: [{ text: 'Close' }],
+  });
+}
 async function approveWithNotice() {
-  const ok = await confirmDialog({ title: 'Approve the roadmap?', text: 'Unlocks the loop to run the features and stages that are in ROADMAP.md now. ' + APPROVAL_NOTICE, yesText: 'Approve roadmap' });
+  const extraContent = await repoConfirmContent(ctx.api, ctx.projectId);
+  const ok = await confirmDialog({ title: 'Approve the roadmap?', text: 'Unlocks the loop to run the features and stages that are in ROADMAP.md now. ' + APPROVAL_NOTICE, yesText: 'Approve roadmap', extraContent });
   if (ok) approveRoadmap(false);
 }
 
@@ -262,11 +287,12 @@ function actionButton(action) {
     case 'structure': return B('Initialize structure', initializeStructure);
     case 'conformance': return B('Choose conformance', chooseConformance);
     case 'map': return mapRunning() ? B('Mapping…', null, 'btn-pending') : B('Map codebase', mapCodebase);
+    case 'repos': return B('Set up repositories', openReposSetup);
     case 'roadmap': return planning ? null : B('Generate roadmap', openRoadmapDialog);
     case 'flows': return planning ? null : B('Open FLOWS.md', () => openProjectFile('FLOWS.md'));
     case 'approve': return B('Approve roadmap', planning ? approvePlan : approveWithNotice);
     case 'test_environment': return B('Describe the test environment', () => openProjectFile('TEST-ENVIRONMENT.md'));
-    case 'check': case 'start_loop': return B('Check and start loop', openNewLoop);
+    case 'check': case 'start_loop': return B('Go to Start loop', () => { nlExpand(); openNewLoop(); setTimeout(() => { const b = document.getElementById('btn-start'); if (b) b.focus(); }, 60); });
     default: return null;
   }
 }
@@ -276,6 +302,7 @@ const PLANNING_TEXT = {
 };
 const ACTION_TEXT = {
   structure: 'Create the .specs folder for the loop to keep its state.', conformance: 'Say whether the code follows the skill pattern or is legacy.',
+  repos: 'Give every other repository a Conformance line and a code map.',
   map: 'Map the existing code so the roadmap starts from what already exists.', roadmap: 'Generate the roadmap from the project goal.',
   flows: 'Write one flow per feature in FLOWS.md (what the verifier checks).',
   approve: 'Review and approve the roadmap: without approval the loop does not start.', test_environment: 'Optional: say how to start the app for flow tests.',
@@ -312,10 +339,10 @@ export function ProgressTrail() {
     <div class="tr-action">
       <span class="tr-next">${(planning && PLANNING_TEXT[pr.next_action]) || ACTION_TEXT[pr.next_action] || ''}</span>
       ${actionButton(pr.next_action)}
-      ${aiRoadmap ? html`<button type="button" id="tr-ai-roadmap" class="btn btn-sm btn-ghost" onClick=${openRoadmapDialog} title="generate or refine the roadmap with claude">AI roadmap</button>` : null}
+      ${aiRoadmap ? html`<button type="button" id="tr-ai-roadmap" class="btn btn-sm btn-ghost tr-ai-sep" onClick=${openRoadmapDialog} title="Refine the roadmap with Claude. Does not start the loop.">AI roadmap</button>` : null}
       ${runningJobs.map((j) => html`<button key=${j.id} type="button" id=${'tr-job-' + j.id} class="tr-job" onClick=${TYPE_ROADMAP.test(j.type || '') ? openRoadmapDialog : null} title="claude job running">
         <span class="spinner sm" aria-hidden="true"></span><${JobTimer} j=${j} /></button>`)}
-      ${!approved && ['roadmap', 'flows', 'approve', 'structure', 'conformance', 'map'].includes(pr.next_action) ? html`<span class="tr-note">Without an approved roadmap the loop does not start.</span>` : null}
+      ${!approved && ['roadmap', 'flows', 'approve', 'structure', 'conformance', 'map', 'repos'].includes(pr.next_action) ? html`<span class="tr-note">Without an approved roadmap the loop does not start.</span>` : null}
     </div>
   </div>`;
 }

@@ -3,8 +3,8 @@ import { html, useState, useMemo } from '../util/preact.js';
 
 let seq = 0;
 const OPTIONS = [
-  { value: 'STANDARD', title: 'STANDARD', text: 'The project follows the skill structure (back with Api/Data/Domain; front with src/pages and src/components). New code and touched classes follow that pattern.' },
-  { value: 'LEGACY', title: 'LEGACY', text: 'The project has its own structure. New code mimics what already exists and old files only get the minimum edit needed.' },
+  { value: 'STANDARD', title: 'STANDARD', text: 'The code follows (or should follow) the skill pattern. The loop keeps looking at what it touches and refactors toward the pattern when it finds an inconsistency or code smell. Pick it for new projects or code you want to modernize.' },
+  { value: 'LEGACY', title: 'LEGACY', text: 'Old code with its own structure. The agents in the loop avoid touching what they should not: new code mimics what already exists and old files only get the minimum edit needed. Pick it when the code must stay as it is.' },
   { value: null, title: 'Decide later', text: 'No line for now; the loop asks before writing the first spec.' },
 ];
 const optionsFor = (allowLater) => OPTIONS.filter((o) => allowLater || o.value !== null);

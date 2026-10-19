@@ -45,7 +45,7 @@ function FlowDiagram() {
 export function WhyContent() {
   const p = (text) => html`<p class="dlg-text">${text}</p>`;
   return html`
-    ${p('Loop Harness is a local control panel for loop engineering and graph engineering on top of Claude Code. It runs on your machine and uses your own Claude subscription through the claude CLI: no API token needed.')}
+    ${p('Claude Maestro is a local control panel for loop engineering and graph engineering on top of Claude Code. It runs on your machine and uses your own Claude subscription through the claude CLI: no API token needed.')}
     ${p('The loop produces dozens of files: ROADMAP, STATE, VALIDATE, ANSWERS, LOOP.json, one spec per feature, turns, snapshots and the transcript of every agent. Opening .md files one by one does not show the whole. The panel gathers them in one view: the roadmap as a graph, the turns and agents, the specs, the questions from the loop, what to validate, the cost and the limits.')}
     <${FlowDiagram} />
     <ul class="why-list">

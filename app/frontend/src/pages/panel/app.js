@@ -7,8 +7,8 @@ import { html } from '../../util/preact.js';
 import { disconnectedDetail } from '../../api/api_client.js';
 import { WhyButton } from '../../components/why_panel.js';
 import { ctx, ui } from './context.js';
-import { BrandSub, StatusPill, Limits, HeaderActions, headerModel } from './header.js';
-import { GuardBadge, GuardFeed, GUARD_BADGE_TITLE, totalBlocks, openGuardFeed } from './guard_feed.js';
+import { BrandSub, RepoLine, StatusPill, Limits, HeaderActions, headerModel } from './header.js';
+import { GuardBadge, GuardFeed, totalBlocks, openGuardFeed } from './guard_feed.js';
 import { ProgressTrail } from './progress_trail.js';
 import { Alert, idleText } from './alert.js';
 import { NewLoop, nlZone } from './new_loop.js';
@@ -19,6 +19,7 @@ import { ComposerBand, ComposerSeg, FeatureOptions, ComposerTray, ComposerStatus
 import { ActPanel } from './act.js';
 import { PlanningScreen, planningRequired } from './planning.js';
 import { Timeline } from './timeline.js';
+import { WorkspaceZone } from './workspace.js';
 
 const SEP_TITLE = 'drag, use the arrows or double-click to restore';
 
@@ -50,26 +51,29 @@ export function Panel() {
 
     <header id="header" class="header">
       <div class="brand">
-        <a class="logo logo-link" href="/" title="back to the projects" aria-label="back to the projects">L</a>
+        <a class="logo logo-link" href="/" title="back to the projects" aria-label="back to the projects">M</a>
         <div>
-          <div class="brand-name"><a href="/" class="brand-link">Loop Harness</a></div>
+          <div class="brand-name"><a href="/" class="brand-link">Claude Maestro</a></div>
           <div class="brand-sub mono" id="brand-sub" title=${has ? hd.repo : null}>${has ? html`<${BrandSub} />` : '—'}</div>
+          ${has ? html`<${RepoLine} />` : null}
         </div>
       </div>
       <div class="pill" id="status-pill" role="status" aria-live="polite" style=${has ? hd.pillStyle : null}>
         ${has ? html`<${StatusPill} />` : html`<span class="dot" id="status-dot"></span><span class="mono" id="status-text">connecting…</span>`}
       </div>
-      <div class="limits" id="limits" aria-label="Loop limits">${has ? html`<${Limits} />` : null}</div>
-      <button type="button" class="guard-badge mono" id="guard-badge" hidden=${!blocks} title=${blocks ? GUARD_BADGE_TITLE : null}
+      <div class="limits" id="limits" aria-label="Loop limits">${on ? html`<${Limits} />` : null}</div>
+      <button type="button" class="guard-badge mono" id="guard-badge" hidden=${!blocks} aria-describedby=${blocks ? 'guard-tip' : null}
         onClick=${openGuardFeed}>${blocks ? html`<${GuardBadge} total=${blocks} />` : null}</button>
       <div class="spacer"></div>
       <div class="header-actions" id="header-actions">${has ? html`<${HeaderActions} />` : null}</div>
       <div class="header-actions" id="header-extra"><${WhyButton} /></div>
     </header>
 
-    <div id="trail" class="trail" aria-label="Where this project stands"><${ProgressTrail} /></div>
+    <div id="trail" class="trail" aria-label="Where this project stands" hidden=${planning}>${planning ? null : html`<${ProgressTrail} />`}</div>
     <div id="alert-zone" class="alert-zone">${on ? html`<${Alert} />` : null}</div>
     <div id="newloop-zone" class="newloop-zone" hidden=${!nz.show}>${nz.built ? html`<${NewLoop} />` : null}</div>
+
+    <div id="workspace-zone" class="workspace-zone" hidden=${!has}>${has ? html`<${WorkspaceZone} />` : null}</div>
 
     ${planning ? html`<section id="planning" class="planning-zone" aria-label="Planning"><${PlanningScreen} /></section>` : null}
 

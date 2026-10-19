@@ -1,5 +1,5 @@
-/* Hub (/): recent projects, open a folder (native dialog or in-app browser), create a project from scratch,
-   forget a project, app diagnostics (GET /api/app/info), test notification and shut down the app. */
+/* Hub (/): recent projects, open a folder (the system folder window), create a project from scratch,
+   forget a project, reset its specs (POST .../reset-specs), app diagnostics (GET /api/app/info), test notification and shut down the app. */
 import { $ } from '../util/dom.js';
 import { html, render, useState, useRef } from '../util/preact.js';
 import { DASH, list, txt, fmtRelative } from '../util/format.js';
@@ -9,6 +9,7 @@ import { openDialog } from '../components/dialog.js';
 import { pickFolder } from '../components/folder_browser.js';
 import { Conformance, conformanceDefault } from '../components/conformance.js';
 import { openWhyOnFirstVisit, WhyButton } from '../components/why_panel.js';
+import { RepoManager } from './repo_manager.js';
 
 const NATIVE_DIALOG_TIMEOUT_MS = 310000; // the back end waits up to 300 s for the system window
 const MODE = {
@@ -28,7 +29,7 @@ const INVALID_NAME_MSG = 'The name cannot contain \\ / : * ? " < > |';
 
 // store of the page: handlers mutate it and call draw() (Preact only touches what changed, so the focus stays)
 const hb = {
-  projects: null, error: null, info: null, infoError: null, forgetting: null, busy: {}, opening: null, confirmShutdown: false, native: null,
+  projects: null, loops: {}, error: null, info: null, infoError: null, forgetting: null, resetting: null, resetConfirm: '', busy: {}, opening: null, confirmShutdown: false, native: null,
   testing: false, shuttingDown: false, closed: false,
 };
 let hubRoot = null;
@@ -44,6 +45,28 @@ async function loadProjects() {
 function Chip({ text, color, pulse }) {
   return html`<span class="hub-chip" style=${{ color, borderColor: color + '55' }}><span class=${'dot' + (pulse ? ' pulse' : '')} style=${{ background: color }} /><span>${text}</span></span>`;
 }
+/** Running loop of a project (GET /api/app/overview): stage, feature, turn, cost and the question waiting for an answer. */
+function LiveLoop({ p, lp }) {
+  const q = lp.question, feats = list(lp.feature).join(', '), url = lp.url || p.url || `/p/${encodeURIComponent(p.id)}/`;
+  const opts = list(q && q.options);
+  return html`<div class="hub-live" role="group" aria-label=${'Running loop of ' + txt(p.name || p.id)}>
+    <div class="hub-live-top"><span class="dot pulse" aria-hidden="true"></span><strong>${lp.stage || 'loop running'}</strong>
+      ${feats ? html`<span class="mono hub-live-f" title=${feats}>${feats}</span>` : null}</div>
+    <div class="hub-live-meta mono"><span>${'turn ' + (lp.turn != null ? lp.turn : DASH)}</span><span>${typeof lp.cost_usd === 'number' ? '$' + lp.cost_usd.toFixed(2) : DASH}</span>
+      ${list(lp.repos).length > 1 ? list(lp.repos).map((r) => html`<span key=${r} class="hub-live-r">${r}</span>`) : null}</div>
+    ${q ? html`<div class="hub-ask"><div class="hub-ask-t"><strong>Waiting for you</strong><span class="dim">${q.since ? ' · ' + fmtRelative(q.since) : ''}</span></div>
+      <div class="hub-ask-q">${txt(q.reason)}</div>
+      ${opts.length ? html`<ul class="hub-ask-o" aria-label="Options">${opts.map((o, i) => html`<li key=${i}>${String(o)}</li>`)}</ul>` : null}
+      <a class="btn btn-primary btn-sm hub-ask-a" href=${url}>Answer in the panel</a></div>` : null}
+  </div>`;
+}
+function openRepos(p, locked) {
+  openDialog({
+    title: 'Repositories of ' + txt(p.name || p.id), width: 640,
+    content: html`<${RepoManager} projectId=${p.id} locked=${locked ? 'A loop is running in this project: the repository list is locked until it stops.' : ''} />`,
+    actions: [{ text: 'Close', cls: 'btn-primary' }],
+  });
+}
 function ProjectCard({ p }) {
   const ps = p.progress_summary || {};
   const mode = MODE[ps.mode], loop = LOOP[ps.loop_status], c = ps.counts || {};
@@ -51,6 +74,10 @@ function ProjectCard({ p }) {
   const counts = typeof c.total === 'number' && c.total > 0 ? `${c.verified != null ? c.verified : 0}/${c.total} verified${c.blocked ? ` · ${c.blocked} blocked` : ''}` : 'no features yet';
   const askForget = () => { hb.forgetting = p.id; draw(); focusId('forget-no-' + p.id); };
   const cancelForget = () => { hb.forgetting = null; draw(); focusId('forget-' + p.id); };
+  const askReset = () => { hb.resetting = p.id; hb.resetConfirm = ''; draw(); focusId('reset-name-' + p.id); };
+  const cancelReset = () => { hb.resetting = null; hb.resetConfirm = ''; draw(); focusId('reset-' + p.id); };
+  const typedName = hb.resetConfirm.trim();
+  const nameMatches = typedName === String(p.name || '').trim() && typedName !== '';
   return html`<li class="hub-project">
     <div class="hub-project-top">
       ${p.favorite ? html`<span class="hub-fav" title="favorite" aria-label="favorite">★</span>` : null}
@@ -65,7 +92,19 @@ function ProjectCard({ p }) {
       <span class="mono dim">${counts}</span>
       <span class="dim">${'opened ' + fmtRelative(p.last_opened_at)}</span>
     </div>
-    ${hb.forgetting === p.id
+    ${hb.loops[p.id] ? html`<${LiveLoop} p=${p} lp=${hb.loops[p.id]} />` : null}
+    ${hb.resetting === p.id
+      ? html`<form class="confirm-inline confirm-reset" role="group" aria-label="Confirm resetting the specs" onSubmit=${(e) => { e.preventDefault(); if (nameMatches && !hb.busy[p.id]) resetSpecs(p); }}>
+          <span id=${'reset-help-' + p.id}>Moves the plan, roadmap, flows, features and loop state to .specs/.trash/ (nothing is deleted).<br />
+            RULES, PROJECT, the test environment and the codebase map stay.</span>
+          <label class="sr-only" for=${'reset-name-' + p.id}>Type the project name to confirm</label>
+          <input type="text" id=${'reset-name-' + p.id} class="dlg-input mono reset-name" autocomplete="off" spellcheck="false"
+            placeholder=${'type "' + txt(p.name || p.id) + '"'} aria-describedby=${'reset-help-' + p.id} value=${hb.resetConfirm}
+            onInput=${(e) => { hb.resetConfirm = e.currentTarget.value; draw(); }} />
+          <button type="submit" class="btn btn-danger btn-sm" id=${'reset-yes-' + p.id} disabled=${!nameMatches || !!hb.busy[p.id]}>Reset specs</button>
+          <button type="button" class="btn btn-sm" id=${'reset-no-' + p.id} onClick=${cancelReset}>Cancel</button>
+        </form>`
+      : hb.forgetting === p.id
       ? html`<div class="confirm-inline" role="group" aria-label="Confirm forgetting the project">
           <span>Remove it from the list? No file is deleted.</span>
           <button type="button" class="btn btn-danger btn-sm" id=${'forget-yes-' + p.id} disabled=${!!hb.busy[p.id]} onClick=${() => forget(p)}>Yes, forget</button>
@@ -73,6 +112,8 @@ function ProjectCard({ p }) {
         </div>`
       : html`<div class="hub-project-actions">
           <a class="btn btn-primary btn-sm" href=${url}>Open panel</a>
+          <button type="button" class="btn btn-ghost btn-sm" id=${'repos-' + p.id} onClick=${() => openRepos(p, !!hb.loops[p.id])} title="Several repositories, files to copy into the worktree">Repositories</button>
+          <button type="button" class="btn btn-ghost btn-sm" id=${'reset-' + p.id} onClick=${askReset} title="Move the plan and loop state to .specs/.trash and start from zero">Reset specs</button>
           <button type="button" class="btn btn-ghost btn-sm" id=${'forget-' + p.id} onClick=${askForget}>Forget</button>
         </div>`}
   </li>`;
@@ -86,6 +127,26 @@ function ProjectList() {
   }
   const ord = [...hb.projects].sort((a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0) || String(b.last_opened_at || '').localeCompare(String(a.last_opened_at || '')));
   return html`<ul class="hub-projects">${ord.map((p) => html`<${ProjectCard} key=${p.id} p=${p} />`)}</ul>`;
+}
+/** GET overview: every running loop of every project. A back end without it leaves the cards as they were. */
+async function loadOverview() {
+  try {
+    const r = await appApi.get('overview', 10000);
+    hb.loops = Object.fromEntries(list(r && r.loops).filter((l) => l && l.project_id).map((l) => [l.project_id, l]));
+  } catch (_) { /* no overview route: no live block */ }
+}
+async function resetSpecs(p) {
+  hb.busy[p.id] = true; draw();
+  try {
+    const r = await appApi.post('projects/' + encodeURIComponent(p.id) + '/reset-specs', { confirm: hb.resetConfirm.trim() });
+    const n = list(r && r.moved).length;
+    hb.resetting = null; hb.resetConfirm = '';
+    toast(n ? `Specs reset: ${n} item${n === 1 ? '' : 's'} moved to ${r.trash}.` : 'Nothing to reset: the specs were already clean.', 'ok');
+    draw();
+    focusId('reset-' + p.id);
+    loadProjects().catch(() => {});
+  } catch (e) { toast('Specs not reset: ' + e.message, 'err'); }
+  finally { delete hb.busy[p.id]; draw(); }
 }
 async function forget(p) {
   hb.busy[p.id] = true; draw();
@@ -109,10 +170,6 @@ async function openPath(path) {
   try { goToProject(await appApi.post('projects/open', { path }, 60000)); }
   catch (e) { setOpening({ error: e.status === 400 ? `Not opened: ${e.message}. Check that the path is a folder.` : 'Not opened: ' + e.message }); }
 }
-async function openBrowser() {
-  const path = await pickFolder({ title: 'Open a project folder', buttonText: 'Open this folder', explanation: 'Browse to the project folder (or paste the path) and click Open this folder. Folders with .specs already have a loop.' });
-  if (path) openPath(path); else setOpening(null);
-}
 async function openFolder() {
   if (hb.opening && hb.opening.native) return;
   const mine = {};
@@ -120,16 +177,15 @@ async function openFolder() {
   setOpening({ native: true, text: 'Pick the folder in the system window that opened (it may be behind the browser).' });
   try {
     const r = await appApi.post('projects/pick-folder', {}, NATIVE_DIALOG_TIMEOUT_MS);
-    if (hb.native !== mine) return; // the user already went through the in-app browser
+    if (hb.native !== mine) return;
     hb.native = null;
     if (r && r.path) openPath(r.path);
-    else { setOpening(null); openBrowser(); }
+    else setOpening(null); // dialog cancelled
   } catch (e) {
     if (hb.native !== mine) return;
     hb.native = null;
     setOpening(null);
-    toast('The system window did not open (' + e.message + '); use the in-app folder browser.', 'err');
-    openBrowser();
+    toast('The system window did not open (' + e.message + '); paste the folder path instead.', 'err');
   }
 }
 function setOpening(v) { hb.opening = v; draw(); }
@@ -137,8 +193,7 @@ function setOpening(v) { hb.opening = v; draw(); }
 function Opening({ v }) {
   if (!v) return null;
   if (v.error) return html`<div class="nl-box nl-bad" role="alert">${v.error}</div>`;
-  return html`<div class="nl-msg" role="status"><div class="spinner" aria-hidden="true" /><span>${v.text}</span>
-    ${v.native ? html`<button type="button" class="btn btn-sm" onClick=${() => { hb.native = null; setOpening(null); openBrowser(); }}>Use the in-app browser</button>` : null}</div>`;
+  return html`<div class="nl-msg" role="status"><div class="spinner" aria-hidden="true" /><span>${v.text}</span></div>`;
 }
 
 /** Body of the "Create a project from scratch" dialog; handle.submit(dialogApi) is the main action. */
@@ -155,7 +210,14 @@ function CreateProjectForm({ handle }) {
   const editName = (v) => { setName(v); setSubmitError(''); };
   const sep = p.includes('/') && !p.includes('\\') ? '/' : '\\';
   const choose = async () => {
-    const c = await pickFolder({ title: 'Parent folder of the new project', buttonText: 'Use this folder', initial: p });
+    // the system folder window first (Windows Explorer); the in-app browser only when the system window is unavailable
+    let c = null, fallback = false;
+    try {
+      const r = await appApi.post('projects/pick-folder', {}, NATIVE_DIALOG_TIMEOUT_MS);
+      if (r && r.path) c = r.path;
+      else fallback = !!(r && /folder browser/i.test(String(r.reason || '')));
+    } catch (e) { fallback = true; }
+    if (fallback) c = await pickFolder({ title: 'Parent folder of the new project', buttonText: 'Use this folder', initial: p });
     if (c) editParent(c);
     if (nameRef.current) nameRef.current.focus();
   };
@@ -266,14 +328,12 @@ async function shutDown() {
     await appApi.post('shutdown', {}, 15000);
     if (hubPolling) hubPolling.stop();
     hb.closed = true; draw();
-    document.title = 'app shut down · Loop Harness';
+    document.title = 'app shut down · Claude Maestro';
   } catch (e) { toast('Could not shut down: ' + e.message, 'err'); hb.confirmShutdown = false; hb.shuttingDown = false; draw(); focusId('shut-open'); }
 }
 
 /** The whole hub page (#hub). The offline banner is driven by showDisconnectedBanner(); its props never change, so Preact leaves it alone. */
 export function Hub() {
-  const pasteRef = useRef(null);
-  const onPaste = (e) => { e.preventDefault(); const c = pasteRef.current.value.trim(); if (c) openPath(c); };
   return html`<div id="hub" class="hub">
     <div id="banner-offline" class="banner banner-offline" role="alert" hidden>
       <span class="dot dot-red" />
@@ -282,9 +342,9 @@ export function Hub() {
     </div>
     <header class="header hub-header">
       <div class="brand">
-        <div class="logo" aria-hidden="true">L</div>
+        <div class="logo" aria-hidden="true">M</div>
         <div>
-          <div class="brand-name">Loop Harness</div>
+          <div class="brand-name">Claude Maestro</div>
           <div class="brand-sub mono">projects</div>
         </div>
       </div>
@@ -295,17 +355,11 @@ export function Hub() {
     <main class="hub-main">
       <section class="hub-start" aria-labelledby="hub-title">
         <h1 id="hub-title" class="hub-h1">Projects</h1>
-        <p class="muted hub-lead">Open a project folder (new, existing without .specs, or with a loop stopped midway) or create a new one. Each project panel shows where it stands and what the next step is.</p>
+        <p class="muted hub-lead"><strong>Claude Maestro</strong> runs and follows the loop of the <span class="mono">/orchestrator</span> skill on your machine. Open the folder of a project (new, existing or with a loop stopped midway) or create one from scratch. The project panel then shows where it stands and what the next step is.</p>
         <div class="hub-buttons">
           <button type="button" class="btn btn-primary hub-big" id="hub-open" onClick=${openFolder}>Open folder</button>
           <button type="button" class="btn hub-big" id="hub-create" onClick=${createDialog}>Create project from scratch</button>
-          <button type="button" class="btn btn-ghost btn-sm" id="hub-browse" title="in-app folder browser, without the system window" onClick=${openBrowser}>Browse folders</button>
         </div>
-        <form class="hub-paste" id="hub-paste" aria-label="Open by path" onSubmit=${onPaste}>
-          <label for="hub-paste-field" class="hint">or paste the path:</label>
-          <input type="text" id="hub-paste-field" class="mono" placeholder=${'C:\\Users\\you\\projects\\my-app'} autocomplete="off" spellcheck="false" ref=${pasteRef} />
-          <button type="submit" class="btn btn-sm">Open</button>
-        </form>
         <div id="hub-opening" class="hub-opening" hidden=${!hb.opening}><${Opening} v=${hb.opening} /></div>
       </section>
 
@@ -337,16 +391,18 @@ export function Hub() {
 export function startHub(root) {
   hubRoot = root;
   root.replaceChildren();
-  document.title = 'projects · Loop Harness';
+  document.title = 'projects · Claude Maestro';
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (hb.confirmShutdown) cancelShutdown();
+    else if (hb.resetting) { const id = hb.resetting; hb.resetting = null; hb.resetConfirm = ''; draw(); focusId('reset-' + id); }
     else if (hb.forgetting) { const id = hb.forgetting; hb.forgetting = null; draw(); focusId('forget-' + id); }
   });
   draw();
   hubPolling = createPolling({
     intervalMs: 5000,
     task: async () => {
+      await loadOverview();
       try { await loadProjects(); } catch (e) { hb.error = e.message; if (hb.projects == null) draw(); throw e; }
     },
     onConnectionChange: (disc, msg) => showDisconnectedBanner($('banner-offline'), $('banner-offline-detail'), disc, msg),

@@ -18,6 +18,15 @@ export const list = (v) => (Array.isArray(v) ? v : []);
 export const featLabel = (f) => (Array.isArray(f) ? f.join(', ') : f || '');
 export const firstLine = (t) => String(t == null ? '' : t).split('\n').map((x) => x.trim()).find(Boolean) || DASH;
 export const httpUrl = (u) => (typeof u === 'string' && /^https?:\/\//i.test(u) ? u : null);
+/** Long path cut in the middle at folder boundaries (keeps the drive and the last folders); the full value goes in a title. */
+export const midPath = (p, max = 48) => {
+  const v = String(p == null ? '' : p);
+  if (v.length <= max) return v;
+  const sep = v.includes('\\') ? '\\' : '/', parts = v.split(sep), head = parts[0] + sep + '...' + sep;
+  let tail = parts[parts.length - 1];
+  for (let i = parts.length - 2; i > 0 && (head + parts[i] + sep + tail).length <= max; i -= 1) tail = parts[i] + sep + tail;
+  return parts.length > 2 && (head + tail).length <= max ? head + tail : v.slice(0, Math.ceil(max / 3)) + '...' + v.slice(-(max - Math.ceil(max / 3) - 1));
+};
 export const shortPath = (p) => String(p == null ? '' : p).replace(/\\/g, '/').split('/').filter(Boolean).slice(-2).join('/');
 
 export const fmtHour = (iso) => { const d = new Date(iso); return iso && !Number.isNaN(d.getTime()) ? d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : ''; };
