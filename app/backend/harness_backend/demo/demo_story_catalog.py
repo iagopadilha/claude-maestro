@@ -81,19 +81,20 @@ SCAFFOLD_FOLDERS = ["services/payments-api", "services/audit-log", "services/car
 
 PROJECT_TEXT = """# acme-checkout
 
-## Vision
-Card checkout for the Acme store, built as small services behind one gateway: payments, cart, coupons, invoices and
-receipts, plus a checkout screen for customers and a back-office dashboard.
+<!-- Context for the loop's subagents (spec-writer, executors, verifier), like a CLAUDE.md for the loop. Keep it short
+     (~300 words). It does not repeat what other files already say. -->
 
-## Stack
-- Services: Python 3.12 (FastAPI), PostgreSQL, one service per folder under `services/`
-- Web: React + TypeScript under `web/`, shared components in `web/shared/`
-- Infra: edge configuration under `infra/`; `infra/prod/` is applied by the platform team only
+**Vision:** Card checkout for the Acme store, built as small services behind one gateway: payments, cart, coupons,
+invoices and receipts, plus a checkout screen for customers and a back-office dashboard.
 
-## Constraints
-- Money values are integers in cents; never floats.
-- Every payment operation is idempotent (idempotency key per request).
-- Schema changes go through reviewed migrations in `migrations/`, never from a feature branch.
+## Where to look
+
+- Stack, architecture, conventions, structure, tests, integrations, concerns: `docs/codebase/` (read only the document the task needs; it is a guide, the code wins).
+- Limits and "never X": `RULES.md`.
+- Now/next, stage, open questions: `STATE.md`.
+- Roadmap: `ROADMAP.md`.
+- Flows to validate: `FLOWS.md`.
+- Test credentials (names only): `TEST-ENVIRONMENT.md`.
 """
 
 RULES_TEXT = """# Project rules

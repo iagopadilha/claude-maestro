@@ -95,13 +95,14 @@ class WorkspaceFileGuard:
 
     # ------------------------------------------------ revert
     def revert_unexpected_changes(self, snapshot, allowed_paths):
-        """Undoes every change outside `allowed_paths` (relative). {"reverted", "removed", "unrestorable"} (relative paths)."""
+        """Undoes every change outside `allowed_paths` (relative; a folder allows everything below it). {"reverted", "removed", "unrestorable"} (relative paths)."""
         allowed = {normalize_key(item).strip("/") for item in allowed_paths}
+        is_allowed = lambda relative: any(normalize_key(relative) == item or normalize_key(relative).startswith(item + "/") for item in allowed)
         report = {"reverted": [], "removed": [], "unrestorable": []}
         current = {}
         for relative, path, size, mtime_ns in self.walk_files(snapshot):
             current[relative] = (size, mtime_ns)
-            if normalize_key(relative) in allowed:
+            if is_allowed(relative):
                 continue
             before = snapshot.files.get(relative)
             if before is None:
@@ -109,7 +110,7 @@ class WorkspaceFileGuard:
             elif before != (size, mtime_ns) and self.read_bytes(path) != snapshot.copies.get(relative, b"\0missing"):
                 self.restore_file(snapshot, relative, report)
         for relative in snapshot.files:
-            if relative not in current and normalize_key(relative) not in allowed:
+            if relative not in current and not is_allowed(relative):
                 self.restore_file(snapshot, relative, report)
         self.remove_new_empty_folders(snapshot)
         return report

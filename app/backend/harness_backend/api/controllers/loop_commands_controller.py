@@ -6,6 +6,7 @@ from ...domain.project import ProjectNotFoundError
 from ...domain.project_errors import PLANNING_REQUIRED_CODE
 from ...services.planning_requirement_service import PLANNING_REQUIRED_MESSAGE
 from ..router import Response
+from .project_responses import respond_converting_errors
 
 PROJECT_ROUTE_PREFIX = "/p/{project_id}/api"
 WHITEBOARD_BODY_LIMIT_BYTES = 8 * 1024 * 1024
@@ -25,7 +26,9 @@ def respond_with_project_context(project_service, request, action_with_context, 
 
 
 class LoopCommandsController:
-    def __init__(self, project_service, loop_control_service, whiteboard_service, planning_requirement_service):
+    def __init__(self, project_service, loop_control_service, whiteboard_service, planning_requirement_service,
+                 repo_usage_guard=None):
+        self.repo_usage_guard = repo_usage_guard  # callable(context): raises RepoInUseError when another running loop uses a repo
         self.project_service = project_service
         self.loop_control_service = loop_control_service
         self.whiteboard_service = whiteboard_service
@@ -44,11 +47,21 @@ class LoopCommandsController:
         router.add("GET", PROJECT_ROUTE_PREFIX + "/whiteboard", self.get_whiteboard)
         router.add("POST", PROJECT_ROUTE_PREFIX + "/whiteboard", self.save_whiteboard, body_limit_bytes=WHITEBOARD_BODY_LIMIT_BYTES)
 
+    def respond_if_repos_free(self, action_with_context):
+        """Start-like commands (new loop, resume, answer = relaunch): refused with 409 `repo_in_use` when another project's
+        running loop uses one of this project's repos. No guard wired = no check (single-project tests)."""
+        def guarded(context):
+            if self.repo_usage_guard is None:
+                return action_with_context(context)
+            return respond_converting_errors(lambda: (self.repo_usage_guard(context), action_with_context(context))[1])
+        return guarded
+
     def answer_question(self, request):
-        return self.respond_after_planning(request, lambda context: self.loop_control_service.answer_loop_question(context, request.body))
+        return self.respond_after_planning(request, self.respond_if_repos_free(
+            lambda context: self.loop_control_service.answer_loop_question(context, request.body)))
 
     def resume_loop(self, request):
-        return self.respond_after_planning(request, self.loop_control_service.resume_loop)
+        return self.respond_after_planning(request, self.respond_if_repos_free(self.loop_control_service.resume_loop))
 
     def write_note(self, request):
         return self.respond_after_planning(request, lambda context: self.loop_control_service.write_user_note(context, request.body))
@@ -60,7 +73,8 @@ class LoopCommandsController:
         return self.respond_after_planning(request, lambda context: self.loop_control_service.check_preflight(context, request.body))
 
     def start_loop(self, request):
-        return self.respond_after_planning(request, lambda context: self.loop_control_service.start_new_loop(context, request.body))
+        return self.respond_after_planning(request, self.respond_if_repos_free(
+            lambda context: self.loop_control_service.start_new_loop(context, request.body)))
 
     def send_instruction(self, request):
         return self.respond_after_planning(request, lambda context: self.loop_control_service.send_instruction_to_loop(context, request.body))

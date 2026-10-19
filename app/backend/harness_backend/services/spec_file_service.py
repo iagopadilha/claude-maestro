@@ -13,7 +13,9 @@ from ..repositories.specs_file_repository import compute_bytes_version, loop_sta
 
 EDITABLE_EXTENSION = ".md"
 LOOP_DIR_RELATIVE = "project/" + loop_state.LOOP_FOLDER_NAME
-FORBIDDEN_DIRS = (LOOP_DIR_RELATIVE + "/" + loop_state.JSON_FOLDER_NAME, LOOP_DIR_RELATIVE + "/" + loop_state.INTERNAL_FOLDER_NAME)
+TRASH_DIR_RELATIVE = ".trash"  # `.specs/.trash/`: what "Reset specs" moved out; never listed or read
+FORBIDDEN_DIRS = (LOOP_DIR_RELATIVE + "/" + loop_state.JSON_FOLDER_NAME, LOOP_DIR_RELATIVE + "/" + loop_state.INTERNAL_FOLDER_NAME,
+                  TRASH_DIR_RELATIVE)
 EDITABLE_PROJECT_FILES = ("project/PROJECT.md", "project/FLOWS.md", "project/RULES.md", "project/TEST-ENVIRONMENT.md")
 EDITABLE_WITH_LOOP_STOPPED_FILES = ("project/ROADMAP.md", "project/STATE.md")
 FEATURE_FILE_MIN_DEPTH = 3  # features/<slug>/<file>.md

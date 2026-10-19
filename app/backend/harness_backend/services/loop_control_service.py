@@ -4,6 +4,7 @@ Port of `loop_check`/`loop_start`/`answer`/`resume`/`note`/`pause`/`instruction`
 rules and responses. Each public method returns `(http_status, body)`. Only the user's click reaches here (token on the
 server); the orchestrator/Claude never triggers these commands.
 """
+import datetime
 import math
 import os
 import re
@@ -11,10 +12,13 @@ import sys
 import threading
 from typing import Protocol
 
+from ..domain.roadmap_settings import parse_roadmap_e2e
 from ..infrastructure.claude_client import redact_secrets
 from ..infrastructure.process_runner import START_FAILURE_CODE, TIMEOUT_CODE
 from ..repositories.answers_repository import USER_INSTRUCTION_QUESTION, USER_NOTE_QUESTION
+from .dispatch_default import compute_default_dispatch
 
+LAUNCH_MARKER_PREFIX = "[loop-launch]"  # read by WorkspaceService to find the current launch in monitor-relaunch.log
 STATUS_RUNNING = "running"
 STATUS_AWAITING_USER = "awaiting_user"
 STATUSES_RESUMABLE_BY_INSTRUCTION = ("error", "stopped", "done")
@@ -173,14 +177,25 @@ class LoopControlService:
     def spawn_detached_loop(self, context, action, argv, folder, extra_env=None):
         """Call with the relaunch lock held. Output goes to `internal/monitor-relaunch.log`."""
         log_path = self.loop_command_file_repository.get_relaunch_log_path(context.work_dir)
+        launch_env = dict(extra_env or {}, PYTHONUNBUFFERED="1")  # step lines reach the log at once (the panel reads them while it runs)
         try:
-            pid = self.process_runner.spawn_detached(argv, folder, log_path, extra_env)
+            self.write_launch_marker(log_path, action)
+            pid = self.process_runner.spawn_detached(argv, folder, log_path, launch_env)
         except OSError as failure:
             self.log.error("loop_command_failed", project=context.project.id, action=action, error=str(failure)[:300])
             return 500, {"ok": False, "error": "could not relaunch the loop: %s" % failure}
         self.relaunched_pid_by_project[context.project.id] = pid
         self.log.info("loop_command_launched", project=context.project.id, action=action, pid=pid)
         return 200, {"ok": True, "pid": pid}
+
+    @staticmethod
+    def write_launch_marker(log_path, action):
+        """One `[loop-launch] <iso time> <action>` line right before the process starts: the log accumulates across launches and the
+        workspace reader needs to know where the CURRENT launch begins (everything after the last marker)."""
+        os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
+        stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        with open(log_path, "ab") as handle:
+            handle.write(("%s %s %s\n" % (LAUNCH_MARKER_PREFIX, stamp, action)).encode("utf-8"))
 
     def relaunch_loop_from_saved_command(self, context, action, answer=None):
         """Detached run_loop.py with the argv of LOOP-CMD.json (+ `--answer <answer>`)."""
@@ -212,16 +227,48 @@ class LoopControlService:
         return 200, dict({"ok": True}, **result)
 
     # ------------------------------------------------ commands
-    def check_preflight(self, context, body):
+    def convert_body_with_roadmap_defaults(self, context, body):
+        """Flags of the body + the project-wide E2E decided in the approved ROADMAP (`**E2E:** yes`). An `e2e` sent explicitly in the
+        body (old clients) wins over the ROADMAP, both ways; without it the ROADMAP decides (absent = no)."""
+        flags, _dispatch, error = self.resolve_flags_and_dispatch(context, body)
+        return flags, error
+
+    def resolve_flags_and_dispatch(self, context, body):
+        """(flags, dispatch, error). Without `wave` in the body the dispatch is computed from the ROADMAP (auto); an explicit one wins."""
         flags, error = convert_body_to_loop_flags(body)
+        if error:
+            return None, None, error
+        roadmap = None
+        if "e2e" not in body:
+            roadmap = self.read_roadmap_text(context)
+            if parse_roadmap_e2e(roadmap):
+                flags.append("--e2e")
+        if "wave" in body:
+            return flags, {"wave": body["wave"], "auto": False, "reason": "chosen by you"}, None
+        dispatch = compute_default_dispatch(roadmap if roadmap is not None else self.read_roadmap_text(context))
+        if dispatch["wave"] > MIN_WAVE:
+            flags += ["--wave", str(dispatch["wave"])]
+        return flags, dispatch, None
+
+    @staticmethod
+    def read_roadmap_text(context):
+        try:
+            with open(os.path.join(context.specs_dir, "project", "ROADMAP.md"), encoding="utf-8", errors="replace") as handle:
+                return handle.read()
+        except OSError:
+            return ""
+
+    def check_preflight(self, context, body):
+        flags, dispatch, error = self.resolve_flags_and_dispatch(context, body)
         if error:
             return 400, {"ok": False, "error": error}
         self.log.info("loop_command_launched", project=context.project.id, action="loop_check", pid=None)
-        return self.run_loop_check(context, flags)
+        status, result = self.run_loop_check(context, flags)
+        return status, (dict(result, dispatch=dispatch) if status == 200 else result)
 
     def start_new_loop(self, context, body):
         """New loop (or a continuation, if the worktree exists): preflight first; `LOOP_MONITOR_URL` = this project's panel."""
-        flags, error = convert_body_to_loop_flags(body)
+        flags, _dispatch, error = self.resolve_flags_and_dispatch(context, body)
         if error:
             return 400, {"ok": False, "error": error}
         with self.get_relaunch_lock(context.project.id):

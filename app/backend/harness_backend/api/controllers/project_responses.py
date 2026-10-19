@@ -4,7 +4,8 @@ from ...domain.project_errors import (FileEditRefusedError, FileVersionConflictE
                                       InvalidRoadmapError, JobInProgressError, JobNotFoundError, LoopRunningError,
                                       LoopWorktreeExistsError, PathOutsideSpecsError, PLANNING_GATES_CODE,
                                       PLANNING_PREREQUISITES_CODE, PlanningGatesError, PlanningRequiredError,
-                                      ProjectAlreadyExistsError, RoadmapSessionMissingError, SpecFileNotFoundError)
+                                      ProjectAlreadyExistsError, RoadmapSessionMissingError, SpecFileNotFoundError,
+                                      InvalidRepoError, RepoConflictError, RepoNotFoundError)
 from ..router import Response
 
 PROJECT_NOT_FOUND_MESSAGE = "project not found"
@@ -23,6 +24,9 @@ STATUS_BY_ERROR = (
     (InvalidRoadmapError, 409),
     (ProjectAlreadyExistsError, 409),
     (PlanningRequiredError, 409),
+    (InvalidRepoError, 400),
+    (RepoNotFoundError, 404),
+    (RepoConflictError, 409),  # also RepoInUseError
 )
 PLANNING_GATES_STATUS = {PLANNING_PREREQUISITES_CODE: 409, PLANNING_GATES_CODE: 422}
 
@@ -41,7 +45,8 @@ def respond_converting_errors(action):
     except tuple(error_type for error_type, _ in STATUS_BY_ERROR) as error:
         status = next(mapped for error_type, mapped in STATUS_BY_ERROR if isinstance(error, error_type))
         code = getattr(error, "code", None)  # machine-readable reason (planning mode), only when the error carries one
-        return Response.error(status, str(error), **({"code": code} if code else {}))
+        extras = getattr(error, "extras", None) or {}  # more response fields (multi-repo refusals)
+        return Response.error(status, str(error), **dict(extras, **({"code": code} if code else {})))
 
 
 def project_to_dict(project):

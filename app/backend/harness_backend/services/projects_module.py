@@ -7,14 +7,18 @@ Exposes `project_service` (IProjectService, consumed by the other modules), `pla
 from ..api.controllers.planning_controller import PlanningController
 from ..api.controllers.project_controller import ProjectController
 from ..api.controllers.roadmap_controller import RoadmapController
+from ..api.controllers.spec_change_controller import SpecChangeController
 from ..api.controllers.specs_controller import SpecsController
+from ..api.controllers.test_environment_controller import TestEnvironmentController
 from ..infrastructure.claude_client import ClaudeClient
 from ..infrastructure.git_client import GitClient
 from ..infrastructure.process_runner import ProcessRunner
 from ..infrastructure.workspace_file_guard import WorkspaceFileGuard
 from ..repositories.planning_thread_repository import PlanningThreadRepository
 from ..repositories.project_repository import ProjectRepository
+from ..repositories.spec_change_thread_repository import SpecChangeThreadRepository
 from ..repositories.specs_file_repository import SpecsFileRepository
+from ..repositories.test_environment_repository import TestEnvironmentRepository
 from .claude_job_service import DEFAULT_JOB_TIMEOUT_SECONDS, ClaudeJobService
 from .folder_picker_service import FolderPickerService
 from .planning_requirement_service import PlanningRequirementService
@@ -22,8 +26,11 @@ from .planning_service import PlanningService
 from .project_progress_service import ProjectProgressService
 from .project_service import ProjectService
 from .roadmap_service import RoadmapService
+from .spec_change_service import SpecChangeService
 from .spec_file_service import SpecFileService
+from .specs_reset_service import SpecsResetService
 from .specs_structure_service import SpecsStructureService
+from .test_environment_service import TestEnvironmentService
 
 
 class ProjectsModule:
@@ -43,7 +50,7 @@ def build_projects_module(config, log, get_app_url, folder_dialog_argv=None, job
     """`folder_dialog_argv` and `job_timeout_seconds` only exist for tests (fake dialog, short job)."""
     process_runner = ProcessRunner()
     git_client = GitClient(process_runner)
-    claude_client = ClaudeClient(process_runner, claude_binary=config.claude_binary)
+    claude_client = ClaudeClient(process_runner, claude_binary=config.claude_binary, guard_path=config.guard_path)
     project_repository = ProjectRepository(config.projects_registry_path)
     specs_file_repository = SpecsFileRepository()
 
@@ -53,19 +60,27 @@ def build_projects_module(config, log, get_app_url, folder_dialog_argv=None, job
                                                       claude_job_service, log)
     planning_requirement_service = PlanningRequirementService(specs_file_repository, process_runner)
     roadmap_service = RoadmapService(specs_file_repository, project_progress_service, claude_job_service, claude_client,
-                                     planning_requirement_service, log)
+                                     planning_requirement_service, WorkspaceFileGuard(), log)
+    test_environment_service = TestEnvironmentService(TestEnvironmentRepository(specs_file_repository), specs_structure_service, log)
     planning_service = PlanningService(PlanningThreadRepository(), specs_file_repository, project_progress_service,
-                                       planning_requirement_service, claude_job_service, claude_client, WorkspaceFileGuard(), log)
+                                       planning_requirement_service, claude_job_service, claude_client, WorkspaceFileGuard(), log,
+                                       test_environment_service)
+    spec_change_service = SpecChangeService(SpecChangeThreadRepository(), specs_file_repository, project_progress_service,
+                                            claude_job_service, claude_client, WorkspaceFileGuard(), log)
     spec_file_service = SpecFileService(specs_file_repository, project_progress_service, log)
+    specs_reset_service = SpecsResetService(specs_file_repository, specs_structure_service, project_progress_service, claude_job_service, log)
     folder_picker_service = FolderPickerService(process_runner, log, folder_dialog_argv)
     project_service = ProjectService(project_repository, specs_structure_service, specs_file_repository, git_client, process_runner,
                                      log, get_app_url)
 
     controllers = [
-        ProjectController(project_service, project_progress_service, specs_structure_service, folder_picker_service, log),
+        ProjectController(project_service, project_progress_service, specs_structure_service, folder_picker_service, log,
+                          specs_reset_service),
         RoadmapController(project_service, roadmap_service, claude_job_service),
         SpecsController(project_service, spec_file_service),
         PlanningController(project_service, planning_service),
+        SpecChangeController(project_service, spec_change_service),
+        TestEnvironmentController(project_service, test_environment_service),
     ]
     return ProjectsModule(project_service, controllers, [claude_job_service], project_progress_service, roadmap_service, claude_job_service,
                           planning_requirement_service, planning_service)

@@ -14,6 +14,7 @@ import shutil
 from typing import Protocol
 
 from ..config import envload
+from ..domain.project_errors import LOOP_RUNNING_CODE, InvalidRequestError, LoopRunningError, RepoConflictError
 from ..infrastructure.claude_client import redact_secrets
 from ..infrastructure.git_client import DEFAULT_INTEGRATION_BRANCH, INTEGRATION_BRANCH_VARIABLE, OTHER_COMPARISON_BASES
 
@@ -31,6 +32,12 @@ PR_MODE_OFF = "off"
 BACKUP_STAMP_FORMAT = "%Y-%m-%d-%H%M"
 BACKUP_FALLBACK_PROJECT_NAME = "project"
 TIMED_OUT_TEXT = "timed out"
+CLOSE_LOOP_SCRIPT = "close_loop"
+CLOSE_LOOP_TIMEOUT_SECONDS = 600  # a close backs up and removes worktrees: longer than a push
+CLOSE_UNAVAILABLE_CODE = "close_loop_unavailable"
+CLOSE_FAILED_CODE = "close_failed"
+LOOP_FINISHED_STATUS = "done"
+LOOP_RUNNING_REASON = "The loop is still running; stop it before closing."
 
 
 def is_same_path(first, second):
@@ -85,10 +92,13 @@ class ILoopWorktreeService(Protocol):
     def match_cited_targets(self, cited, worktrees) -> list: ...
     def push_worktree_branch(self, worktree) -> dict: ...
     def clean_worktree_with_backup(self, context, worktree, force) -> dict: ...
+    def check_close_loop(self, context) -> dict: ...
+    def close_loop(self, context, body) -> dict: ...
 
 
 class LoopWorktreeService:
-    def __init__(self, config, log, git_client, engine_script_service, loop_command_file_repository):
+    def __init__(self, config, log, git_client, engine_script_service, loop_command_file_repository, loop_status_service=None):
+        self.loop_status_service = loop_status_service  # only the Close loop routes need it (is the loop alive?)
         self.config = config
         self.log = log
         self.git_client = git_client
@@ -220,3 +230,64 @@ class LoopWorktreeService:
         self.log.info("loop_worktree_deleted" if deleted else "loop_worktree_not_deleted", project=context.project.id,
                       branch=worktree["branch"], backup=backup_dir)
         return item
+
+    # ------------------------------------------------ Close loop (the routine itself is `engine/close_loop.py`)
+    def check_close_loop(self, context):
+        """`GET .../close-loop/check`: read only. Per-repo readiness comes from the engine routine; this adds the loop state."""
+        returned = self.run_close_loop_routine(context, ["--check"])
+        running = self.is_loop_running(context)
+        repos = [self.complete_repo_readiness(item, running) for item in returned.get("repos") or [] if isinstance(item, dict)]
+        return {"ok": True, "can_close": bool(repos) and all(item["can_close"] for item in repos), "loop_finished": self.is_loop_finished(context),
+                "repos": repos}
+
+    def close_loop(self, context, body):
+        """`POST .../close-loop`: one failing repo never stops the others; the per-repo outcome is in the body."""
+        confirm = body.get("confirm_compare_link", False)
+        names = body.get("repos")
+        if not isinstance(confirm, bool):
+            raise InvalidRequestError("confirm_compare_link must be true or false")
+        if names is not None and (not isinstance(names, list) or not all(isinstance(name, str) and name.strip() for name in names)):
+            raise InvalidRequestError("repos must be a list of repo names")
+        if self.is_loop_running(context):
+            raise LoopRunningError("the loop is running: stop it before closing", code=LOOP_RUNNING_CODE)
+        arguments = ["--close", "--out", self.get_output_dir()] + (["--confirm-compare-link"] if confirm else [])
+        arguments += ["--repos", ",".join(name.strip() for name in names)] if names else []
+        returned = self.run_close_loop_routine(context, arguments)
+        repos = returned.get("repos") if isinstance(returned.get("repos"), dict) else {}
+        result = dict(returned, ok=True, repos=repos)
+        result.setdefault("closed", [name for name, item in repos.items() if isinstance(item, dict) and item.get("status") == "closed"])
+        result.setdefault("kept", [name for name, item in repos.items() if isinstance(item, dict) and item.get("status") != "closed"])
+        self.log.info("close_loop_done", project=context.project.id, closed=len(result["closed"]), kept=len(result["kept"]))
+        return result
+
+    def run_close_loop_routine(self, context, arguments):
+        """Thin adapter over the engine routine (Track A2, `engine/close_loop.py`): `python close_loop.py <primary repo> <arguments>`
+        prints ONE JSON object last in stdout. Contract expected from it: `--check` -> {"repos": [...]} with the per-repo items of
+        the close-loop/check payload; `--close` -> the body of `POST close-loop` without `ok`."""
+        if not os.path.isfile(self.config.engine_script_path(CLOSE_LOOP_SCRIPT)):
+            raise RepoConflictError("the close routine (engine/close_loop.py) is not available in this version", code=CLOSE_UNAVAILABLE_CODE)
+        result = self.engine_script_service.run_engine_script_and_wait(CLOSE_LOOP_SCRIPT, context.repo_path, arguments,
+                                                                       CLOSE_LOOP_TIMEOUT_SECONDS)
+        returned = extract_last_json(result.output)
+        if result.timed_out or not returned:
+            detail = TIMED_OUT_TEXT if result.timed_out else (result.error or result.output).strip()[-BACKUP_ERROR_LIMIT:] or "no output"
+            raise RepoConflictError("close routine failed: %s" % redact_secrets(detail, BACKUP_ERROR_LIMIT), code=CLOSE_FAILED_CODE)
+        return returned
+
+    def is_loop_running(self, context):
+        return bool(self.loop_status_service and self.loop_status_service.is_loop_running(context))
+
+    def is_loop_finished(self, context):
+        if self.loop_status_service is None:
+            return False
+        return self.loop_status_service.get_loop_summary(context)["status"] == LOOP_FINISHED_STATUS
+
+    @staticmethod
+    def complete_repo_readiness(item, running):
+        """Normalizes one engine item to the contract and adds the `loop_running` reason while the loop is alive."""
+        reasons = [reason for reason in item.get("reasons") or [] if isinstance(reason, dict)]
+        if running and not any(reason.get("code") == LOOP_RUNNING_CODE for reason in reasons):
+            reasons.insert(0, {"code": LOOP_RUNNING_CODE, "text": LOOP_RUNNING_REASON})
+        only_pr_missing = bool(reasons) and all(reason.get("code") == "pr_missing" for reason in reasons)
+        return dict(item, can_close=bool(item.get("can_close")) and not reasons, reasons=reasons,
+                    needs_confirm=bool(item.get("needs_confirm")) and only_pr_missing)

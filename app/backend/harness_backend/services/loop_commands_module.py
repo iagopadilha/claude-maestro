@@ -57,12 +57,14 @@ def build_loop_commands_module(config, log, project_service, loop_status_service
     loop_control_service = LoopControlService(config, log, loop_status_service, process_runner, loop_command_file_repository,
                                               answers_repository, get_app_url)
     chat_service = ChatService(log, chat_repository, chat_job_repository, agent_transcript_repository, claude_client)
-    loop_worktree_service = LoopWorktreeService(config, log, git_client, engine_script_service, loop_command_file_repository)
+    loop_worktree_service = LoopWorktreeService(config, log, git_client, engine_script_service, loop_command_file_repository,
+                                                loop_status_service=loop_status_service)
     action_service = ActionService(config, log, loop_status_service, loop_control_service, loop_command_file_repository,
                                    loop_worktree_service, engine_script_service, chat_job_repository, claude_client)
     whiteboard_service = WhiteboardService(log, whiteboard_repository)
 
-    controllers = [LoopCommandsController(project_service, loop_control_service, whiteboard_service, planning_requirement_service),
+    controllers = [LoopCommandsController(project_service, loop_control_service, whiteboard_service, planning_requirement_service,
+                                          repo_usage_guard=getattr(loop_status_service, "ensure_repos_free", None)),
                    ChatController(project_service, chat_service, planning_requirement_service),
                    ActionController(project_service, action_service, chat_service, planning_requirement_service)]
     return LoopCommandsModule(loop_control_service=loop_control_service, chat_service=chat_service, action_service=action_service,

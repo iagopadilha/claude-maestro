@@ -21,10 +21,12 @@ from .services.app_diagnostics_service import build_app_diagnostics_service
 from .services.projects_module import build_projects_module
 from .services.loop_read_module import build_loop_read_module
 from .services.loop_commands_module import build_loop_commands_module
+from .services.multi_repo_module import build_multi_repo_module
 
 
 class AssembledApplication:
-    def __init__(self, config, log, server, activity_monitor, projects_module, loop_read_module, loop_commands_module):
+    def __init__(self, config, log, server, activity_monitor, projects_module, loop_read_module, loop_commands_module,
+                 multi_repo_module=None):
         self.config = config
         self.log = log
         self.server = server
@@ -32,6 +34,7 @@ class AssembledApplication:
         self.projects_module = projects_module
         self.loop_read_module = loop_read_module
         self.loop_commands_module = loop_commands_module
+        self.multi_repo_module = multi_repo_module
 
     def get_app_url(self):
         return self.server.url or ""
@@ -58,16 +61,24 @@ def build_application(config=None, **config_overrides):
     loop_commands_module = build_loop_commands_module(config, log, projects_module.project_service,
                                                       loop_read_module.loop_status_service, activity_monitor, get_app_url,
                                                       projects_module.planning_requirement_service)
+    multi_repo_module = build_multi_repo_module(config, log, projects_module.project_service, loop_read_module.loop_status_service,
+                                                loop_commands_module.loop_worktree_service, projects_module.claude_job_service,
+                                                loop_commands_module.loop_control_service,
+                                                specs_structure_service=projects_module.project_progress_service.specs_structure_service,
+                                                roadmap_service=projects_module.roadmap_service,
+                                                project_progress_service=projects_module.project_progress_service,
+                                                planning_requirement_service=projects_module.planning_requirement_service)
     app_controller = AppController(config, log, server, activity_monitor, projects_module.project_service,
                                    app_diagnostics_service=build_app_diagnostics_service(config))
 
-    for module in (projects_module, loop_read_module, loop_commands_module):
+    for module in (projects_module, loop_read_module, loop_commands_module, multi_repo_module):
         for controller in module.controllers:
             controller.register_routes(router)
         for provider in module.busy_providers:
             activity_monitor.add_busy_provider(provider)
     app_controller.register_routes(router)
-    return AssembledApplication(config, log, server, activity_monitor, projects_module, loop_read_module, loop_commands_module)
+    return AssembledApplication(config, log, server, activity_monitor, projects_module, loop_read_module, loop_commands_module,
+                                multi_repo_module)
 
 
 def write_app_registry(application):

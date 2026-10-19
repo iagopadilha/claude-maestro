@@ -4,14 +4,19 @@ without secrets.
 Who uses it: the read-only chat, the action router, the roadmap/mapping jobs. The loop itself stays in the engine
 (`run_loop.py`).
 """
+import json
+import logging
 import os
 import re
 import shutil
 import sys
 from typing import Protocol
 
+from ..config import skill_locator
 from ..engine import cli_output  # engine/ has no __init__.py: it imports as a namespace package (stdlib only module)
 from .process_runner import TIMEOUT_CODE, TIMEOUT_MESSAGE
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_BINARY_NAME = "claude"
 EMPTY_MCP_CONFIG = '{"mcpServers":{}}'
@@ -50,7 +55,8 @@ def build_push_disabled_variables(remote_names, base_env=None):
 
 class IClaudeClient(Protocol):
     def build_command(self, model, budget_usd, allowed_tools=None, disallowed_tools=None, no_mcp=True,
-                      resume_session="", fork_session=False, prompt_argument="", permission_mode="") -> list:
+                      resume_session="", fork_session=False, prompt_argument="", permission_mode="", hook_profile="",
+                      mcp_config_path="") -> list:
         """argv of `claude -p ... --output-format json`."""
 
     def run_prompt(self, argv, folder, stdin_text, timeout_seconds, extra_env=None) -> dict:
@@ -64,10 +70,12 @@ class IClaudeClient(Protocol):
 
 
 class ClaudeClient:
-    def __init__(self, process_runner, claude_binary=""):
-        """Empty `claude_binary` = `claude` from PATH. A `.py` (the tests' fake claude) runs with `sys.executable`."""
+    def __init__(self, process_runner, claude_binary="", guard_path=""):
+        """Empty `claude_binary` = `claude` from PATH. A `.py` (the tests' fake claude) runs with `sys.executable`.
+        `guard_path` = the orchestrator skill's guard.py (the app config's); empty = looked up through the skill locator."""
         self.process_runner = process_runner
         self.claude_binary = claude_binary
+        self.guard_path = guard_path
 
     def get_binary(self):
         return self.claude_binary or shutil.which(DEFAULT_BINARY_NAME) or DEFAULT_BINARY_NAME
@@ -78,12 +86,32 @@ class ClaudeClient:
             return os.path.isfile(self.claude_binary) or bool(shutil.which(self.claude_binary))
         return bool(shutil.which(DEFAULT_BINARY_NAME))
 
+    def locate_guard(self):
+        """guard.py of the orchestrator skill ('' when it is not installed)."""
+        if self.guard_path and os.path.isfile(self.guard_path):
+            return self.guard_path
+        return skill_locator.locate_guard(skill_locator.locate_orchestrator_skill_dir())
+
+    def build_hook_settings(self, hook_profile):
+        """`--settings` JSON that registers the guard as a PreToolUse hook (deterministic: blocks with exit 2 whatever the model
+        tries) with `--profile <hook_profile>`; '' when no guard.py is found (the job's snapshot revert remains the net)."""
+        guard = self.locate_guard()
+        if not guard:
+            logger.warning("guard.py not found: the `%s` job runs without the PreToolUse hook (only the snapshot revert confines it)", hook_profile)
+            return ""
+        command = 'python "%s" --profile %s' % (os.path.abspath(guard).replace("\\", "/"), hook_profile)
+        return json.dumps({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": command}]}]}})
+
     def build_command(self, model, budget_usd, allowed_tools=None, disallowed_tools=None, no_mcp=True,
-                      resume_session="", fork_session=False, prompt_argument="", permission_mode=""):
+                      resume_session="", fork_session=False, prompt_argument="", permission_mode="", hook_profile="",
+                      mcp_config_path=""):
         """argv without a shell. Without `prompt_argument`, the prompt goes through stdin in `run_prompt`.
 
         Order: base, -p [prompt], --output-format json, --model, --max-budget-usd, --permission-mode, --allowedTools...,
-        --disallowedTools..., --strict-mcp-config --mcp-config {empty}, --resume <session> [--fork-session].
+        --disallowedTools..., --settings <hook json>, --strict-mcp-config --mcp-config {empty}, --resume <session> [--fork-session].
+        `hook_profile` (e.g. "planning", "spec") adds the guard.py PreToolUse hook with that profile through an inline `--settings`
+        (nothing is written to the user's project). `mcp_config_path` (with `no_mcp`) replaces the empty config by that file, e.g. the
+        read-only Grafana server of a project that opted in: still `--strict-mcp-config`, so no other MCP server joins it.
         """
         binary = self.get_binary()
         argv = [sys.executable, binary] if binary.endswith(".py") else [binary]
@@ -101,8 +129,11 @@ class ClaudeClient:
             argv += ["--allowedTools"] + list(allowed_tools)
         if disallowed_tools:
             argv += ["--disallowedTools"] + list(disallowed_tools)
+        hook_settings = self.build_hook_settings(hook_profile) if hook_profile else ""
+        if hook_settings:
+            argv += ["--settings", hook_settings]
         if no_mcp:
-            argv += ["--strict-mcp-config", "--mcp-config", EMPTY_MCP_CONFIG]
+            argv += ["--strict-mcp-config", "--mcp-config", mcp_config_path or EMPTY_MCP_CONFIG]
         if resume_session:
             argv += ["--resume", resume_session]
             if fork_session:
