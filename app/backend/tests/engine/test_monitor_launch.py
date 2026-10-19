@@ -479,16 +479,44 @@ class TestNoticeWithPanel(MonitorCase):
         base.update(extra)
         return base
 
-    def test_url_shows_in_every_channel_and_in_way_3(self):
+    def setUp(self):
+        super().setUp()
+        previous = os.environ.pop("LOOP_NOTIFY_CONTINUE", None)
+        self.addCleanup(lambda: os.environ.pop("LOOP_NOTIFY_CONTINUE", None) if previous is None else os.environ.__setitem__("LOOP_NOTIFY_CONTINUE", previous))
+
+    def test_url_shows_in_every_channel_and_is_the_way_to_continue(self):
         context = self.context()
         _, full = notify.build(context)
         _, html_body = notify.build_html(context)
         _, short = notify.build_short(context)
         for name, body in (("text", full), ("html", html_body), ("short", short)):
             self.assertIn(self.URL, body, name)
+        instruction = "Open the panel to continue (answer, resume or approve there): "
+        self.assertIn(instruction + self.URL, full)
+        self.assertIn(instruction, html_body)
+        self.assertIn(instruction + self.URL, short)
+
+    def test_default_notice_gives_the_reason_and_no_resume_command(self):
+        context = self.context()
+        for name, body in (("text", notify.build(context)[1]), ("html", notify.build_html(context)[1]), ("short", notify.build_short(context)[1])):
+            self.assertIn("Which way to go?", body, name)
+            self.assertNotIn("--answer", body, name)
+            self.assertNotIn("--option", body, name)
+            self.assertNotIn("run_loop.py", body, name)
+
+    def test_a_test_notice_or_a_finish_has_no_how_to_continue(self):
+        for event in ("test", "done"):
+            for body in (notify.build(self.context(event=event))[1], notify.build_short(self.context(event=event))[1]):
+                self.assertNotIn("HOW TO CONTINUE", body, event)
+
+    def test_commands_mode_brings_back_the_long_form(self):
+        os.environ["LOOP_NOTIFY_CONTINUE"] = "commands"
+        context = self.context()
+        full = notify.build(context)[1]
         self.assertIn("3) Answer in the panel: " + self.URL, full)
-        self.assertIn("3) Answer in the panel:", html_body)
-        self.assertIn("answer at " + self.URL, short)
+        self.assertIn("--option 1", full)
+        self.assertIn("--answer", notify.build_html(context)[1])
+        self.assertIn("answer at " + self.URL, notify.build_short(context)[1])
 
     def test_url_also_shows_on_done_and_error(self):
         for event in ("done", "error"):
@@ -511,10 +539,12 @@ class TestNoticeWithPanel(MonitorCase):
             self.assertNotIn(self.URL, body)
             self.assertNotIn("3) Answer in the panel", body)
 
-    def test_without_panel_the_message_stays_the_same(self):
+    def test_without_the_panel_up_the_message_says_how_to_open_it(self):
         context = self.context(monitor_url=None)
         for body in (notify.build(context)[1], notify.build_html(context)[1], notify.build_short(context)[1]):
-            self.assertNotIn("panel", body.lower())
+            self.assertIn("Open the panel to continue", body)
+            self.assertIn("serve --project", body)
+            self.assertNotIn(self.URL, body)
 
     def test_build_context_brings_monitor_url_from_meta(self):
         project, _ = self.make()

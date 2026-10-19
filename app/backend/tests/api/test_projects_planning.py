@@ -11,9 +11,10 @@ from harness_backend.services.planning_gates import are_gates_ok, are_prerequisi
 from .support_projects import (FAKE_DELAY_VARIABLE, FAKE_FAIL_VARIABLE, JOB_WAIT_TIMEOUT_SECONDS, ProjectsTestCase, create_git_repo,
                                loop_file_path, read_file, write_file)
 
-GATE_IDS = ["git", "structure", "conformance", "map", "goal", "features", "fields", "open_questions", "flows"]
+GATE_IDS = ["git", "structure", "conformance", "map", "goal", "features", "fields", "open_questions", "flows", "test_environment"]
 FAKE_PLANNING_SESSION = "fake-planning-session-1"
-EXPECTED_EDIT_RULES = ["Edit(/.specs/project/PROJECT.md)", "Edit(/.specs/project/ROADMAP.md)", "Edit(/.specs/project/FLOWS.md)"]
+EXPECTED_EDIT_RULES = ["Edit(/.specs/project/PROJECT.md)", "Edit(/.specs/project/ROADMAP.md)", "Edit(/.specs/project/FLOWS.md)",
+                       "Edit(/.specs/project/TEST-ENVIRONMENT.md)", "Edit(/.specs/project/RULES.md)", "Edit(/.specs/project/REPOS-SUGGESTED.json)"]
 
 
 def gates_by_id(planning):
@@ -77,7 +78,7 @@ class TestPlanningRead(PlanningTestCase):
         self.assertTrue(gates["map"]["optional"], "a repo without code needs no map")
         self.assertEqual((planning["can_approve"], planning["approved"]), (False, False))
         self.assertEqual(planning["thread"], {"messages": [], "busy": False, "job_id": None, "session": False})
-        self.assertEqual(planning["docs"], {"project": None, "roadmap": None, "flows": None})
+        self.assertEqual(planning["docs"], {"project": None, "roadmap": None, "flows": None, "environment": None})
 
     def test_initialized_project_lists_what_is_missing(self):
         repo, project_id = self.create_planning_project()
@@ -86,12 +87,45 @@ class TestPlanningRead(PlanningTestCase):
         gates = gates_by_id(planning)
         for gate_id in ("git", "structure", "conformance"):
             self.assertTrue(gates[gate_id]["ok"], gate_id)
+        self.assertEqual(gates["goal"]["label"], "Project context (PROJECT.md)")
         self.assertFalse(gates["goal"]["ok"])
-        self.assertIn("FILL_IN", gates["goal"]["items"][0])
+        self.assertEqual(gates["goal"]["detail"], "1 line(s) still with FILL_IN", "the short template has only the Vision to fill in")
+        self.assertEqual(len(gates["goal"]["items"]), 1)
+        self.assertIn("**Vision:** FILL_IN", gates["goal"]["items"][0])
+        project_path = os.path.join(repo, ".specs", "project", "PROJECT.md")
+        write_file(project_path, read_file(project_path).replace("FILL_IN (1 to 2 sentences: what is being built and for whom)", "a to-do app for the team"))
+        gate = gates_by_id(self.get_planning(project_id))["goal"]
+        self.assertEqual((gate["ok"], gate["detail"]), (True, "filled in"))
+        write_file(project_path, "# Old\n\n## Goals\n- ship it\n\n## Tech Stack\n- Framework: .NET\n")  # old big format, filled in: still green
+        self.assertTrue(gates_by_id(self.get_planning(project_id))["goal"]["ok"])
+        write_file(project_path, "  \n")
+        self.assertFalse(gates_by_id(self.get_planning(project_id))["goal"]["ok"], "empty PROJECT.md is not green")
         self.assertFalse(gates["features"]["ok"])
         self.assertTrue(gates["open_questions"]["ok"], "the template says `- none`")
         self.assertFalse(gates["flows"]["ok"])
         self.assertTrue(planning["docs"]["flows"].startswith("# Flows"))
+
+    def test_new_project_is_born_with_every_file_and_never_overwrites(self):
+        repo, project_id = self.create_planning_project()
+        project_dir = os.path.join(repo, ".specs", "project")
+        for name in ("RULES.md", "STATE.md", "ROADMAP.md", "FLOWS.md", "PROJECT.md", "TEST-ENVIRONMENT.md", ".env.test"):
+            self.assertTrue(os.path.isfile(os.path.join(project_dir, name)), name)
+        project = read_file(os.path.join(project_dir, "PROJECT.md"))
+        self.assertTrue(project.startswith("# plan\n"))
+        self.assertIn("Context for the loop's subagents", project)
+        self.assertEqual(project.count("FILL_IN"), 1, "the Vision is the only field to fill in")
+        for removed in ("## Goals", "## Tech Stack", "## Scope", "## Constraints"):
+            self.assertNotIn(removed, project)
+        for pointer in ("docs/codebase/", "`RULES.md`", "`STATE.md`", "`ROADMAP.md`", "`FLOWS.md`", "`TEST-ENVIRONMENT.md`"):
+            self.assertIn(pointer, project)
+        self.assertIn("## Codebase map", read_file(os.path.join(project_dir, "STATE.md")))
+        self.assertIn(".specs/project/.env.test", read_file(os.path.join(repo, ".gitignore")).splitlines())
+        for name in ("TEST-ENVIRONMENT.md", ".env.test", "PROJECT.md"):
+            write_file(os.path.join(project_dir, name), "mine: " + name)
+        status, body = self.request("POST", "/p/%s/api/structure/initialize" % project_id, {})
+        self.assertEqual(status, 200, body)
+        for name in ("TEST-ENVIRONMENT.md", ".env.test", "PROJECT.md"):
+            self.assertEqual(read_file(os.path.join(project_dir, name)), "mine: " + name, name)
 
     def test_repo_with_code_requires_the_map(self):
         _, project_id = self.create_planning_project(files={"src/app.py": "print(1)\n"})
@@ -121,7 +155,9 @@ class TestPlanningConversation(PlanningTestCase):
         call = self.read_claude_calls()[-1]
         argv = call["argv"]
         self.assertEqual(os.path.normcase(call["cwd"]), os.path.normcase(repo))
-        self.assertEqual(call["stdin"], "/orchestrator plan --headless\nBuild a to-do app")
+        self.assertTrue(call["stdin"].startswith("/orchestrator plan --headless\n[Planning status from the app"), "slash command first, then the status")
+        self.assertIn("[MISSING] flows:", call["stdin"], "the AI sees the gate that is still red")
+        self.assertTrue(call["stdin"].endswith("\n\nBuild a to-do app"), "the user text stays last")
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
         self.assertEqual(list_flag_values(argv, "--allowedTools"), ["Read", "Grep", "Glob", "Skill"] + EXPECTED_EDIT_RULES)
         self.assertEqual(list_flag_values(argv, "--disallowedTools"), ["Bash", "NotebookEdit", "Agent"])
@@ -129,6 +165,8 @@ class TestPlanningConversation(PlanningTestCase):
         self.assertIn("--strict-mcp-config", argv, "planning runs without MCP")
         self.assertNotIn("--model", argv, "the account's default model")
         self.assertNotIn("--resume", argv)
+        hook_command = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        self.assertTrue(hook_command.endswith('guard.py" --profile planning'), "the deterministic PreToolUse hook confines the chat to .specs/")
 
         planning = self.get_planning(project_id)
         self.assertEqual([(message["role"], message["text"]) for message in planning["thread"]["messages"]],
@@ -147,7 +185,9 @@ class TestPlanningConversation(PlanningTestCase):
         self.send_and_wait(project_id, "Add a due date")
         call = self.read_claude_calls()[-1]
         self.assertEqual(call["argv"][call["argv"].index("--resume") + 1], FAKE_PLANNING_SESSION)
-        self.assertEqual(call["stdin"], "Add a due date", "a resumed message carries only the user text")
+        self.assertTrue(call["stdin"].startswith("[Planning status from the app"), "a resumed message also carries the status")
+        self.assertTrue(call["stdin"].endswith("\n\nAdd a due date"))
+        self.assertNotIn("/orchestrator plan", call["stdin"])
         self.assertEqual(len(self.get_planning(project_id)["thread"]["messages"]), 4)
 
         status, body = self.request("POST", "/p/%s/api/roadmap/approve" % project_id, {"confirm": True})
@@ -293,6 +333,34 @@ class TestPlanningGatesUnit(unittest.TestCase):
                              gate_id)
         self.assertFalse(build_planning_gates(self.facts(project_text=None))[4]["ok"], "PROJECT.md missing")
         self.assertFalse(build_planning_gates(self.facts(flows_exists=False))[8]["ok"], "FLOWS.md missing")
+
+
+    def test_test_environment_is_visible_but_never_blocks_the_approval(self):
+        problems = ["TEST-ENVIRONMENT.md mentions names no .env defines: ADMIN_TOKEN"]
+        gate = build_planning_gates(self.facts(environment_all_problems=problems, regression_required=True))[-1]
+        self.assertEqual(gate["id"], "test_environment")
+        self.assertFalse(gate["ok"])
+        self.assertTrue(gate["optional"], "an incomplete test environment never blocks Approve roadmap")
+        self.assertIn("needed before the loop starts", gate["detail"])
+        self.assertEqual(gate["items"], problems)
+        ready = build_planning_gates(self.facts())[-1]
+        self.assertTrue(ready["ok"] and ready["optional"])
+
+    def test_map_gate_waits_for_the_running_map_job(self):
+        files = ["STACK.md", "TESTING.md"]
+        gates = {gate["id"]: gate for gate in build_planning_gates(self.facts(
+            has_code=True, map_files=files, running_job={"id": "j-1", "type": "map", "started_at": "x"}))}
+        self.assertFalse(gates["map"]["ok"], "the first document does not close the step while the job still runs")
+        self.assertIn("mapping now: 2 document(s)", gates["map"]["detail"])
+        done = {gate["id"]: gate for gate in build_planning_gates(self.facts(has_code=True, map_files=files))}
+        self.assertTrue(done["map"]["ok"])
+        self.assertEqual(done["map"]["items"][0], "STACK.md: languages, frameworks, versions and main dependencies")
+        self.assertEqual(done["map"]["detail"], "2 document(s) in docs/codebase")
+        marked = {gate["id"]: gate for gate in build_planning_gates(self.facts(
+            has_code=True, map_files=files, map_folder="docs/codebase", map_commit="abc1234"))}
+        self.assertEqual(marked["map"]["detail"], "2 document(s) in docs/codebase, mapped at abc1234")
+        legacy = {gate["id"]: gate for gate in build_planning_gates(self.facts(has_code=True, map_files=files, map_folder=".specs/codebase"))}
+        self.assertEqual(legacy["map"]["detail"], "2 document(s) in .specs/codebase")
 
 
 if __name__ == "__main__":

@@ -56,6 +56,8 @@ def prepare_isolated_environment():
     create_fake_skill(skill)
     os.environ["LOOP_SKILL_DIR"] = skill
     os.environ["LOOP_DATA_DIR"] = os.path.join(root, "app-data")
+    os.environ["LOOP_USER_SHARED_DIR"] = os.path.join(root, "user-shared")  # the user-level shared .env (never the real ~/.claude)
+    os.environ["LOOP_CLAUDE_CONFIG_FILE"] = os.path.join(root, "claude.json")  # the user's MCP definitions (never the real ~/.claude.json)
     os.environ[PREPARED_MARK] = root
 
 

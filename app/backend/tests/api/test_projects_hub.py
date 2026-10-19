@@ -17,8 +17,9 @@ class TestCreateProjectFromScratch(ProjectsTestCase):
         self.assertEqual(body["url"], "/p/%s/" % body["project"]["id"])
         for relative in ("project/PROJECT.md", "project/ROADMAP.md", "project/STATE.md", "project/RULES.md"):
             self.assertTrue(os.path.isfile(os.path.join(repo, ".specs", *relative.split("/"))), relative)
-        for relative in ("codebase", "features", "project/loop/json", "project/loop/internal"):
+        for relative in ("features", "project/loop/json", "project/loop/internal"):
             self.assertTrue(os.path.isdir(os.path.join(repo, ".specs", *relative.split("/"))), relative)
+        self.assertFalse(os.path.exists(os.path.join(repo, ".specs", "codebase")), "the map lives in docs/codebase, not in .specs/")
         self.assertIn("my-app", read_file(os.path.join(repo, ".specs", "project", "PROJECT.md")))
         rules = read_file(os.path.join(repo, ".specs", "project", "RULES.md"))
         self.assertIn("| ID | Rule |", rules)
@@ -27,7 +28,7 @@ class TestCreateProjectFromScratch(ProjectsTestCase):
         claude_md = read_file(os.path.join(repo, "CLAUDE.md"))
         self.assertIn("@.specs/project/RULES.md", claude_md)
         self.assertIn("Conformance: STANDARD", claude_md)
-        self.assertFalse(os.path.exists(os.path.join(repo, ".specs", "project", "TEST-ENVIRONMENT.md")))
+        self.assertTrue(os.path.exists(os.path.join(repo, ".specs", "project", "TEST-ENVIRONMENT.md")), "the template is created up front: the planning chat edits it")
         self.assertEqual(run_git(repo, "rev-parse", "--is-inside-work-tree").stdout.strip(), "true")
         self.assertEqual(run_git(repo, "log", "--oneline").stdout.count("\n"), 1)
         self.assertIn("chore: initial project structure (loop-harness)", run_git(repo, "log", "--format=%s").stdout)

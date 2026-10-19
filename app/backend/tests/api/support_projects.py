@@ -29,6 +29,7 @@ JOB_WAIT_TIMEOUT_SECONDS = 30
 FAKE_LOG_VARIABLE = "FAKE_CLAUDE_LOG"
 FAKE_FAIL_VARIABLE = "FAKE_CLAUDE_FAIL"
 FAKE_DELAY_VARIABLE = "FAKE_CLAUDE_DELAY"
+FAKE_MAP_MODE_VARIABLE = "FAKE_CLAUDE_MAP_MODE"  # "nothing" = writes no map document; "touch-code" = also edits src/app.py
 FAKE_SESSION = "fake-roadmap-session-1"
 LOOP_DIR_PARTS = (".specs", "project", "loop")
 
@@ -81,7 +82,11 @@ elif prompt.startswith("/orchestrator roadmap"):
           "## [screen-base] Screen\n1. Open /\n2. Expected: the list\n")
     result = "roadmap generated"
 elif prompt.startswith("/orchestrator map"):
-    write(os.path.join(".specs", "codebase", "STACK.md"), "# Stack\n\nPython.\n")
+    map_mode = os.environ.get("FAKE_CLAUDE_MAP_MODE", "")
+    if map_mode != "nothing":
+        write(os.path.join("docs", "codebase", "STACK.md"), "# Stack\n\nPython.\n")
+    if map_mode == "touch-code":
+        write(os.path.join("src", "app.py"), "print('changed by the map job')\n")
     result = "mapped"
 elif "--resume" in argv:
     path = os.path.join(project, "ROADMAP.md")
@@ -91,7 +96,7 @@ elif "--resume" in argv:
 print(json.dumps({"type": "result", "is_error": False, "result": result, "session_id": session, "total_cost_usd": 0.42}))
 '''
 
-FILLED_PROJECT = "# Project\n\n**Vision:** a to-do app.\n**For:** the team.\n**Solves:** forgotten tasks.\n"
+FILLED_PROJECT = "# Project\n\n**Vision:** a to-do app for the team.\n\n## Where to look\n\n- Limits and \"never X\": `RULES.md`.\n"
 TWO_FEATURE_ROADMAP = ("# Roadmap\n\n## Stage 1 — Base\n\n"
                        "- [api-base] status=pending scope=Medium kind=back paths=src/api\n"
                        "- [screen-base] status=pending scope=Small kind=front paths=src/web deps=api-base\n")
@@ -172,15 +177,18 @@ class ProjectsTestCase(unittest.TestCase):
         self.projects_dir = os.path.join(self.temporary_dir, "projects")
         os.makedirs(self.projects_dir)
         self.original_env = {name: os.environ.get(name) for name in
-                             ("LOOP_DATA_DIR", "LOOP_SKILL_DIR", FAKE_LOG_VARIABLE, FAKE_FAIL_VARIABLE, FAKE_DELAY_VARIABLE)}
+                             ("LOOP_DATA_DIR", "LOOP_SKILL_DIR", "LOOP_USER_SHARED_DIR", "LOOP_CLAUDE_CONFIG_FILE", FAKE_LOG_VARIABLE, FAKE_FAIL_VARIABLE, FAKE_DELAY_VARIABLE, FAKE_MAP_MODE_VARIABLE)}
         skill_dir = os.path.join(self.temporary_dir, "skill")
         write_file(os.path.join(skill_dir, "SKILL.md"), "# fake skill\n")
         write_file(os.path.join(skill_dir, "hooks", "guard.py"), "import sys\nsys.exit(2)\n")
         self.fake_claude_path = os.path.join(self.temporary_dir, "fake_claude.py")
         write_file(self.fake_claude_path, FAKE_CLAUDE_CODE)
         self.claude_calls_path = os.path.join(self.temporary_dir, "claude_calls.jsonl")
-        os.environ.update({"LOOP_DATA_DIR": self.data_dir, "LOOP_SKILL_DIR": skill_dir, FAKE_LOG_VARIABLE: self.claude_calls_path})
-        for name in (FAKE_FAIL_VARIABLE, FAKE_DELAY_VARIABLE):
+        self.user_shared_dir = os.path.join(self.temporary_dir, "user-shared")  # the user-level shared .env lives here, never in the real home
+        self.claude_config_path = os.path.join(self.temporary_dir, "claude.json")  # fake ~/.claude.json (the user's MCP servers)
+        os.environ.update({"LOOP_DATA_DIR": self.data_dir, "LOOP_SKILL_DIR": skill_dir, FAKE_LOG_VARIABLE: self.claude_calls_path,
+                           "LOOP_USER_SHARED_DIR": self.user_shared_dir, "LOOP_CLAUDE_CONFIG_FILE": self.claude_config_path})
+        for name in (FAKE_FAIL_VARIABLE, FAKE_DELAY_VARIABLE, FAKE_MAP_MODE_VARIABLE):
             os.environ.pop(name, None)
         self.config = load_app_config(user_data_dir=self.data_dir, claude_binary=self.fake_claude_path, open_browser=False)
         self.log = StructuredLog(self.config.logs_dir)

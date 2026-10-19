@@ -3,12 +3,15 @@ import json
 import os
 import unittest
 
-from .support_projects import (TWO_FEATURE_ROADMAP, ProjectsTestCase, create_git_repo, loop_file_path, read_file, run_git, write_file,
+from .support_projects import (TWO_FEATURE_ROADMAP, ProjectsTestCase, create_git_repo, loop_file_path, mark_loop_already_ran, read_file, run_git, write_file,
                                write_planning_documents)
 
 
 def steps_by_id(progress):
     return {step["id"]: step for step in progress["steps"]}
+
+
+IGNORE_WITH_ENV_FILES = "node_modules/\n.specs/\n.env\n.env.*\n!.env.example\n.specs/project/.env.test\n.specs/project/ACCESS.json\n"  # secrets and access choices are ignored by default
 
 
 class TestProgressByMode(ProjectsTestCase):
@@ -47,8 +50,12 @@ class TestProgressByMode(ProjectsTestCase):
         self.assertEqual(progress["next_action"], "map", "repo with code and no map: map it before the roadmap")
         self.assertFalse(steps_by_id(progress)["map"]["optional"])
 
-        write_file(os.path.join(repo, ".specs", "codebase", "STACK.md"), "# Stack\n")
+        write_file(os.path.join(repo, ".specs", "codebase", "STACK.md"), "# Stack\n")  # legacy location: still counts as the map
         self.assertEqual(self.get_progress(project_id)["next_action"], "roadmap")
+        self.assertIn("1 document(s) in .specs/codebase", steps_by_id(self.get_progress(project_id))["map"]["detail"])
+        write_file(os.path.join(repo, "docs", "codebase", "STACK.md"), "# Stack\n")
+        self.assertIn("1 document(s) in docs/codebase", steps_by_id(self.get_progress(project_id))["map"]["detail"], "docs/codebase wins")
+        os.remove(os.path.join(repo, "docs", "codebase", "STACK.md"))
 
         write_file(os.path.join(repo, ".specs", "project", "ROADMAP.md"), "- [broken] status=invented\n")
         progress = self.get_progress(project_id)
@@ -93,7 +100,7 @@ class TestProgressByMode(ProjectsTestCase):
         status, body = self.request("POST", "/p/%s/api/structure/initialize" % project_id, {})
         self.assertEqual(status, 200, body)
         path = os.path.join(repo, ".specs", "project", "TEST-ENVIRONMENT.md")
-        self.assertIn(".specs/project/TEST-ENVIRONMENT.md", body["created"])
+        self.assertNotIn(".specs/project/TEST-ENVIRONMENT.md", body["created"], "the template already exists since the structure was first initialized")
         self.assertIn("FILL_IN", read_file(path))
         self.assertIn("FILL_IN", steps_by_id(self.get_progress(project_id))["test_environment"]["detail"])
 
@@ -172,6 +179,7 @@ class TestProjectWithLoopInTheMiddle(ProjectsTestCase):
         worktree = repo + "-worktree-loop"
         run_git(repo, "worktree", "add", "-q", "-b", "loop/x", worktree)
         os.makedirs(os.path.join(worktree, ".specs", "project"))
+        mark_loop_already_ran(worktree)  # a loop ran there: only then is the worktree the work dir
         self.get_progress(project_id)
         monitor = json.loads(read_file(loop_file_path(worktree, "json", "MONITOR.json")))
         self.assertEqual(monitor["work"], worktree)
@@ -193,7 +201,7 @@ class TestInitializeWithoutOverwriting(ProjectsTestCase):
         self.assertEqual(body["conformance"], "LEGACY")
         self.assertEqual(read_file(os.path.join(repo, ".specs", "project", "PROJECT.md")), "# My PROJECT written by hand\n")
         self.assertEqual(read_file(os.path.join(repo, ".specs", "project", "ROADMAP.md")), TWO_FEATURE_ROADMAP)
-        self.assertEqual(read_file(os.path.join(repo, ".gitignore")), "node_modules/\n.specs/\n")
+        self.assertEqual(read_file(os.path.join(repo, ".gitignore")), IGNORE_WITH_ENV_FILES)
         claude_md = read_file(os.path.join(repo, "CLAUDE.md"))
         self.assertTrue(claude_md.startswith("# My project\n\nMy own rule.\n"))
         self.assertIn("@.specs/project/RULES.md", claude_md)
@@ -203,7 +211,7 @@ class TestInitializeWithoutOverwriting(ProjectsTestCase):
         self.assertEqual(status, 200)
         self.assertEqual((second["created"], second["changed"]), ([], []), "the second time creates and changes nothing")
         self.assertEqual(read_file(os.path.join(repo, "CLAUDE.md")), claude_md)
-        self.assertEqual(read_file(os.path.join(repo, ".gitignore")), "node_modules/\n.specs/\n")
+        self.assertEqual(read_file(os.path.join(repo, ".gitignore")), IGNORE_WITH_ENV_FILES)
 
     def test_new_project_templates_are_filled_in(self):
         repo = create_git_repo(os.path.join(self.projects_dir, "templated"))

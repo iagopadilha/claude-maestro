@@ -4,7 +4,7 @@ import os
 import time
 import unittest
 
-from .support_projects import (FAKE_DELAY_VARIABLE, FAKE_FAIL_VARIABLE, FAKE_SESSION, TWO_FEATURE_ROADMAP, ProjectsTestCase,
+from .support_projects import (FAKE_DELAY_VARIABLE, FAKE_FAIL_VARIABLE, FAKE_MAP_MODE_VARIABLE, FAKE_SESSION, TWO_FEATURE_ROADMAP, ProjectsTestCase,
                                create_git_repo, loop_file_path, mark_loop_already_ran, read_file, run_git, write_file,
                                write_planning_documents)
 
@@ -77,6 +77,7 @@ class TestReadAndApproval(ProjectsTestCase):
         worktree = repo + "-worktree-loop"
         run_git(repo, "worktree", "add", "-q", "-b", "loop/x", worktree)
         write_planning_documents(worktree, TWO_FEATURE_ROADMAP)
+        mark_loop_already_ran(worktree)  # the work dir is the worktree only once a loop ran there
         write_file(os.path.join(worktree, "CLAUDE.md"), "# ready\n\nConformance: LEGACY\n")
         self.assertEqual(self.request("POST", "/p/%s/api/roadmap/approve" % project_id, {"confirm": True})[0], 200)
         self.assertTrue(os.path.isfile(loop_file_path(worktree, "json", "ROADMAP-APPROVED.json")))
@@ -158,7 +159,44 @@ class TestClaudeJobs(ProjectsTestCase):
         argv = self.read_claude_calls()[-1]["argv"]
         self.assertEqual(argv[argv.index("-p") + 1], "/orchestrator map")
         self.assertIn("--strict-mcp-config", argv, "mapping runs without MCP")
-        self.assertTrue(os.path.isfile(os.path.join(repo, ".specs", "codebase", "STACK.md")))
+        hook_command = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        self.assertTrue(hook_command.endswith('guard.py" --profile spec'), "the map agents write only inside .specs/ and docs/codebase/ (PreToolUse hook)")
+        self.assertTrue(os.path.isfile(os.path.join(repo, "docs", "codebase", "STACK.md")))
+        self.assertFalse(os.path.exists(os.path.join(repo, ".specs", "codebase", "STACK.md")), "the map is no longer under .specs/")
+        claude_md = read_file(os.path.join(repo, "CLAUDE.md"))
+        self.assertIn("<!-- CODEBASE:BEGIN -->", claude_md, "CLAUDE.md points at the new map")
+        self.assertIn("`docs/codebase/STACK.md`: languages, frameworks", claude_md)
+        self.assertIn("the code wins", claude_md)
+        index = read_file(os.path.join(repo, "docs", "codebase", "README.md"))
+        self.assertIn("[STACK.md](STACK.md)", index, "the app writes the index of the map")
+        self.assertRegex(index, r"Mapped at commit [0-9a-f]{7,} on \d{4}-\d{2}-\d{2}")
+        sha = index.split("Mapped at commit ")[1].split()[0]
+        gate = next(g for g in self.request("GET", "/p/%s/api/planning" % project_id)[1]["gates"] if g["id"] == "map")
+        self.assertTrue(gate["ok"])
+        self.assertIn("mapped at " + sha, gate["detail"], "the checklist shows the staleness marker")
+        self.assertIn("docs/codebase", gate["detail"])
+
+    def test_map_that_wrote_nothing_is_an_error_not_a_success(self):
+        os.environ[FAKE_MAP_MODE_VARIABLE] = "nothing"
+        repo = create_git_repo(os.path.join(self.projects_dir, "map-nothing"), {"src/app.py": "print(1)\n"})
+        project_id = self.open_project(repo)
+        status, body = self.request("POST", "/p/%s/api/codebase/map" % project_id, {})
+        self.assertEqual(status, 202, body)
+        job = self.wait_for_job(project_id, body["job"])
+        self.assertEqual(job["state"], "error")
+        self.assertIn("wrote no document in docs/codebase", job["error"])
+
+    def test_map_job_changes_outside_specs_are_undone(self):
+        os.environ[FAKE_MAP_MODE_VARIABLE] = "touch-code"
+        repo = create_git_repo(os.path.join(self.projects_dir, "map-touch"), {"src/app.py": "print(1)\n"})
+        project_id = self.open_project(repo)
+        status, body = self.request("POST", "/p/%s/api/codebase/map" % project_id, {})
+        self.assertEqual(status, 202, body)
+        job = self.wait_for_job(project_id, body["job"])
+        self.assertEqual(job["state"], "ok")
+        self.assertIn("src/app.py", job["reply"], "the reply tells what was undone")
+        self.assertEqual(read_file(os.path.join(repo, "src", "app.py")), "print(1)\n")
+        self.assertTrue(os.path.isfile(os.path.join(repo, "docs", "codebase", "STACK.md")), "the map itself stays")
 
     def test_refine_without_generated_roadmap_is_409(self):
         repo = create_git_repo(os.path.join(self.projects_dir, "no-session"))
@@ -203,6 +241,7 @@ class TestClaudeJobs(ProjectsTestCase):
         self.assertEqual(self.request("POST", "/p/%s/api/roadmap/generate" % project_id, {"goal": "x"})[0], 409)
         os.remove(loop_file_path(repo, "internal", "LOOP.lock"))
         run_git(repo, "worktree", "add", "-q", "-b", "loop/y", repo + "-worktree-loop")
+        mark_loop_already_ran(repo + "-worktree-loop")
         status, body = self.request("POST", "/p/%s/api/roadmap/generate" % project_id, {"goal": "x"})
         self.assertEqual(status, 409, body)
         self.assertIn("worktree", body["error"])

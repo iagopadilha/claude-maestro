@@ -311,7 +311,7 @@ class TestEscalation(LoopCase):
         self.assertEqual(loop["options"], ["try the feature again", "skip the feature and carry on with the others"])
         notice = project.notice()
         self.assertIn("waiting for your decision", notice)
-        self.assertIn("--answer", notice)
+        self.assertIn("Open the panel to continue", notice)
         self.done(project.run("--pause-on-blocked", "--answer", "skip x and carry on"), 0)  # the user decides: carry on with y
         self.assertEqual(project.roadmap()["y"]["status"], "verified")
         self.assertEqual(project.roadmap()["x"]["status"], "blocked")
@@ -432,7 +432,7 @@ class TestHumanInTheLoop(LoopCase):
         self.done(project.run("--no-auto-answer"), 10)
         notice = project.notice()
         self.assertIn("1) a | 2) b", notice)
-        self.assertIn("--option 1", notice)
+        self.assertIn("Open the panel to continue", notice)
 
     def test_answer_without_a_pending_question_is_refused(self):
         project = self.make(ROAD_BASIC, SCEN_BASIC)
@@ -525,7 +525,7 @@ class TestAlwaysNotify(LoopCase):
         self.done(ask.run("--no-auto-answer"), 10)
         text = ask.notice()
         self.assertIn("waiting for your decision", text)
-        self.assertIn("--answer", text)
+        self.assertIn("Open the panel to continue", text)
 
     def test_preflight_requires_the_mandatory_channels(self):
         project = self.make(ROAD_BASIC, SCEN_BASIC)
@@ -552,6 +552,24 @@ class TestAlwaysNotify(LoopCase):
         self.done(project.run(), 0)
         self.assertNotEqual(project.run().returncode, 0)  # "all N features are already verified/blocked"
         self.assertIn("pre-flight failed", project.notice())
+
+    def test_regression_without_a_usable_test_environment_does_not_start_and_notifies_what_is_missing(self):
+        project = self.make("## Stage 1\n- [refactor-a] status=pending regression=yes\n", {"features": {"refactor-a": {"paths": "apps/a"}}})
+        project.extra_env["LOOP_NOTIFY_CHANNELS"] = "console"  # no worktree yet: the file channel has nowhere to write
+        project.write_test_environment("| Admin | `$NOPE_UNDEFINED_TOKEN` |\n")
+        result = project.run()  # a real run, not --check
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(os.path.isdir(project.work), "the loop must not create the worktree or spend a turn")
+        for expected in ("did NOT start", "regression=yes on: refactor-a", "$NOPE_UNDEFINED_TOKEN", ".specs/project/.env.test", "~/.loop-harness/.env"):
+            self.assertIn(expected, result.stdout)  # the console notice, before the exit message
+
+    def test_e2e_without_test_environment_notifies_that_it_was_the_e2e_flag(self):
+        project = self.make(ROAD_BASIC, SCEN_BASIC)
+        project.extra_env["LOOP_NOTIFY_CHANNELS"] = "console"
+        result = project.run("--e2e")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("the loop was started with --e2e", result.stdout)
+        self.assertIn("TEST-ENVIRONMENT.md is missing", result.stdout)
 
     def test_failing_preflight_does_not_start_but_reports_the_problems(self):
         project = self.make(ROAD_BASIC, SCEN_BASIC, conformance=None)

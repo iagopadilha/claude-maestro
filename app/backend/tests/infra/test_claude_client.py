@@ -59,6 +59,11 @@ class TestBuildCommand(ClaudeClientCase):
         self.assertIn("--strict-mcp-config", argv)
         self.assertEqual(argv[-3:], ["--resume", "s-9", "--fork-session"])
 
+    def test_a_given_mcp_config_replaces_the_empty_one_and_stays_strict(self):
+        argv = self.client.build_command("", 1, no_mcp=True, mcp_config_path="/x/grafana-mcp.json")
+        self.assertEqual(argv[argv.index("--mcp-config") + 1], "/x/grafana-mcp.json")
+        self.assertIn("--strict-mcp-config", argv)
+
     def test_without_optionals_adds_no_empty_flags(self):
         argv = self.client.build_command("", 0, no_mcp=False)
         self.assertEqual(argv, [sys.executable, self.binary, "-p", "--output-format", "json"])
