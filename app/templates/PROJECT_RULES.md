@@ -11,7 +11,7 @@ inference. A subagent never edits; if it thinks a rule is missing, it returns it
 
 **Precedence:** a rule from here overrides spec, design, task and skill. Conflict = stop and ask (`NEEDS_CONFIRM`).
 
-**Size:** up to ~40 rules and ~600 words. Beyond that, consolidate or move detail to `.specs/codebase/`.
+**Size:** up to ~40 rules and ~600 words. Beyond that, consolidate or move detail to `docs/codebase/`.
 
 ```markdown
 # Limiting rules

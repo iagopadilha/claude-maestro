@@ -1,0 +1,13 @@
+# .specs/project/.env.test: THIS project's test values. SECRET: ignored by git, never commit, never paste into a document.
+# Same names the project's TEST-ENVIRONMENT.md mentions as $NAME. The first file that defines a name wins:
+#   this file > ~/.loop-harness/.env (your machine, every project) > plugin/shared/.env. A real environment variable wins over all.
+# Only DEV and localhost values. Quote a value with # & % { } ? ^ using single quotes. Lists use `;` (write \; for a literal ;).
+
+# Test users: lists aligned by position. Leave them out to use the generic account of ~/.loop-harness/.env.
+# TEST_USER_EMAILS=first@company.com;second@company.com
+# TEST_USER_PASSWORDS=
+# TEST_USER_ROLES=customer;admin
+
+# LOCAL_URL=https://localhost:5001
+# ROUTE_PREFIX=/api/v1
+# ADMIN_TOKEN=

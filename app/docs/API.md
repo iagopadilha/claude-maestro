@@ -317,6 +317,42 @@ this endpoint.
 ### POST shutdown   `{}`
 Compatible no-op `{"ok": true}`: shutting down belongs to the app (`POST /api/app/shutdown`).
 
+### POST workspace/repos/<name>/commit-push   `{"message"?: "one line", "push"?: true}`
+Saves the user's folder of one repo so the worktree (born from the last commit) carries the work: `git add -A`, commit and (when `push`
+is true, the default) push, on the CURRENT branch only and never forced. The message is one line of up to the service limit (empty =
+default message). Refused with 409 `busy` while a loop runs, 409 `worktree_exists` when the repo's worktree already exists (the loop's
+state is never touched), 409 `commit_push_failed` when git fails (extras `committed`, `branch`: the commit may exist even if the push
+failed); 400 for an invalid message, a non-boolean `push` or a missing folder. Response
+`{"ok": true, "repo", "branch", "committed", "pushed", "commit"}`.
+
+The panel (Workspace band, row of a repo whose worktree is `not_created` and whose folder is dirty) shows this as **Commit and push**
+(`push: true`) and **Commit only** (`push: false`), each behind a confirmation with an optional message.
+
+### Per-repo readiness (hub route, keyed by project id)
+Extra repos of a multi-repo project need a `Conformance:` line and, when they have code, a codebase map (`services/repo_readiness_service.py`).
+In the panel these are the **Set conformance** and **Map codebase** buttons under each extra repo (trail step **Set up repositories**, the
+Repositories tab and the Workspace band all use the same list); `loop/check` also reports a `PROBLEM` for every extra repo whose `CLAUDE.md`
+has no `Conformance:` line.
+- `GET /api/app/projects/<id>/repos-readiness` -> `{ok, multi, repos: [{name, primary, path, folder, exists, has_code, conformance, suggestion, map: {files, folder, commit, running, job}, missing: ["conformance"|"map"], ready, detail}], ready}`. The folder read is the repo's loop worktree when it exists, else the repo folder.
+- `PUT /api/app/projects/<id>/repos/<name>/conformance` `{"value": "STANDARD|LEGACY"}` -> `{ok, name, conformance}`; writes the line in that repo's `CLAUDE.md`.
+- `POST /api/app/projects/<id>/repos/<name>/map` `{"budget_usd"?}` -> 202 `{ok, name, job, detail}`; starts the codebase map job in that repo.
+The last two refuse the primary repo (409 `primary`: it uses the project checklist) and a running loop (409 `loop_running`); a missing folder is
+`folder_missing`, and `map` also refuses 409 `worktree_exists`. They feed the planning gate `repos` (see `ARCHITECTURE.md`).
+
+### Automatic worktree preparation (hub routes, keyed by project id)
+In a multi-repo project each repo's worktree is prepared automatically (`engine/detect_setup.py`); the repo objects of
+`GET /api/app/projects/<id>/repos` say what will happen:
+- `detected_setup`: the command found from the repo's root files (lockfiles first, then `.sln`/`.csproj`, then `requirements.txt`, `poetry.lock`,
+  `go.mod`), or `null`. `setup_configured` is true when a custom `setup` is stored (it always wins); `PUT .../repos/<name>/setup` `{"setup"}`
+  with an empty string goes back to automatic.
+- `copy_configured`: `REPOS.json` `copy` key absent = automatic (the git-ignored local config files are copied), `[]` = copy nothing, a list =
+  exactly that list. `PUT .../repos/<name>/copy` `{"copy": [...]}` stores a list; `{"copy": null}` goes back to automatic. The response carries
+  `copy` and `copy_configured`.
+- `GET .../repos/<name>/copy-suggestions` -> `{ok, name, copy_configured, suggestions: [{path, size, secret, ticked}]}`; `ticked` is true for
+  every suggestion while the copy is automatic, otherwise only for the listed ones.
+The panel shows them in **Advanced: files and setup** (**Save setup**, **Save files to copy**, **Use automatic**). A single-repo project
+without `REPOS.json` is unchanged: nothing is copied or installed unless `setup` is passed to `loop/start`.
+
 ## Front-end polling
 `GET state?visible=1` every 2 s while the tab is visible; hidden, it stops. A network error shows the "panel
 disconnected" banner and retries every 5 s without losing what is on screen.

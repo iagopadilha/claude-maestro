@@ -1,0 +1,4 @@
+# Plugin files with YAML frontmatter or JSON read by Claude Code must stay LF: CRLF (git autocrlf on Windows) makes the skill fail to load.
+plugin/skills/*/SKILL.md text eol=lf
+plugin/agents/*.md text eol=lf
+plugin/hooks/hooks.json text eol=lf

@@ -74,7 +74,7 @@ A script name in the skill text (`run_loop.py`, `loop_state.py`, `delivery.py`, 
 
 `.specs` templates live in `<app>/templates/` (`PROJECT_RULES.md`, `TEST_ENVIRONMENT.md`, `specs/PROJECT.md`,
 `ROADMAP.md`, `FLOWS.md`, `STATE.md`); the panel's **Initialize structure** button creates `.specs/` from them without overwriting
-anything, links `@.specs/project/RULES.md` from `CLAUDE.md` and puts `.specs/` in `.gitignore`.
+anything, links `@.specs/project/RULES.md` from `CLAUDE.md` and puts `.specs/` in `.gitignore`. `PROJECT.md` is a short context file for the loop's subagents (a Vision line plus pointers to `docs/codebase/`, `RULES.md`, `STATE.md`, `ROADMAP.md`, `FLOWS.md`, `TEST-ENVIRONMENT.md`); the project's limits live in `RULES.md`. `TEST-ENVIRONMENT.md` and `.env.test` are created together with the other files.
 
 Test suites: `python -m unittest discover -s "<app>/backend/tests" -t "<app>/backend"` (engine and app) and
 `python -m unittest discover -s "<plugin>/skills/orchestrator/hooks" -p test_guard.py` (guard).
@@ -107,7 +107,7 @@ inside the **repo** folder (never the loop worktree), with `--permission-mode au
   Written by the harness app on <ISO date>
   ```
 - `--map-first` is added when the user ticked the option. The skill runs Phase 1 (mapping) first when it is there, or
-  when the repo has code and `.specs/codebase/` is empty.
+  when the repo has code and `docs/codebase/` (or the legacy `.specs/codebase/`) is empty.
 - The skill writes `.specs/project/PROJECT.md`, `.specs/project/ROADMAP.md` (stages `## Stage N — Name`, one line per
   feature, `status=pending`) and `.specs/project/FLOWS.md` (one `## [slug]` flow per feature), puts every doubt in the `## Open questions` section of the ROADMAP instead of asking,
   **never approves** the roadmap (never writes `ROADMAP-APPROVED.json`), never runs the loop, does not start the panel
@@ -132,12 +132,12 @@ project has no approved roadmap and never ran a loop. One `claude -p` session pe
 model, US$ 2 per message, 10-minute timeout, no MCP, no Bash; the only writes allowed are the three documents.
 
 - Each turn the skill (`references/planning.md`) re-reads `PROJECT.md`, `ROADMAP.md` and `FLOWS.md` (and
-  `.specs/codebase/` when present), updates them incrementally and replies with what changed and the 1 to 3 most
+  `docs/codebase/`, or the legacy `.specs/codebase/`, when present), updates them incrementally and replies with what changed and the 1 to 3 most
   important questions. Unlike `roadmap --headless`, it **asks**: the reply is the conversation. Unanswered doubts stay in
   the ROADMAP's `## Open questions`; an answer moves into the documents and the question leaves the list.
 - It never approves, never starts or checks a loop, runs no subagent and writes nothing else.
 - The app owns the gates (`GET /p/<id>/api/planning`): prerequisites (git, `.specs/`, `Conformance:`, the codebase map
-  when the repo has code), PROJECT goal, features, fields, open questions and a flow (≥ 2 steps) per feature. **Approve
+  when the repo has code), project context (PROJECT.md), features, fields, open questions and a flow (≥ 2 steps) per feature. **Approve
   roadmap** is refused (`planning_gates`) until all of them pass. Format of `FLOWS.md`: the skill's `references/state.md`.
 
 ## 6. What the app guarantees
