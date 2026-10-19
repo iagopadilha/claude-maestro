@@ -1,11 +1,12 @@
 /* "Dependencies" tab: state machine with counts (state.counts), feature graph by stage
    (plain SVG) and, when the back end offers GET graph, the mermaid text as copyable blocks. */
-import { h, fill } from '../../util/dom.js';
+import { html, useEffect } from '../../util/preact.js';
 import { list } from '../../util/format.js';
 import { copyText } from '../../components/copy.js';
-import { createFeatureGraph, createStateMachine } from '../../components/graph.js';
+import { FeatureGraph, StateMachine, newGraphView } from '../../components/graph.js';
 import { ctx, ui, features, featById, focusFeatureId } from './context.js';
 import { selectFeature } from './roadmap_sidebar.js';
+import { renderAll } from '../project_panel.js';
 
 export function depInfo(f) {
   const byId = featById();
@@ -27,19 +28,33 @@ export function readiness(f, info) {
   return ['ready to run', '#5BD38A'];
 }
 
-const dp = { root: null, graph: null, machine: null, mermaid: null, mermaidKey: undefined, mermaidLoading: false, mermaidBox: null, note: null };
+// kept across tab switches: view/ctl = pan/zoom of the graph (ctl is reached by the zoom buttons), status = highlighted state
+const dp = { view: newGraphView(), ctl: {}, status: null, mermaid: null, mermaidKey: undefined, mermaidLoading: false };
 
-function build() {
-  dp.graph = createFeatureGraph({ onSelect: (id) => selectFeature(id) });
-  dp.machine = createStateMachine({ onPick: (s) => { dp.graph.highlightStatus(s); dp.note.textContent = s ? `highlighting the features in "${s}" · click again to clear` : ''; } });
-  dp.note = h('span', { class: 'dep-note', 'aria-live': 'polite' });
-  dp.mermaidBox = h('div', { class: 'dep-mermaid', hidden: true });
-  dp.root = h('div', { class: 'dep' },
-    h('div', { class: 'dep-top' },
-      h('div', { class: 'dep-top-t' }, h('span', { class: 'small-label', text: 'Feature lifecycle' }), dp.note),
-      dp.machine.element),
-    h('div', { class: 'dep-graph' }, dp.graph.element),
-    dp.mermaidBox);
+function MermaidBlocks({ blocks }) {
+  return html`<details>
+    <summary>Graph as text <span class="dim-mono">mermaid for PR/GitHub and text for chat; copy and paste</span></summary>
+    ${blocks.map((b) => html`<div key=${b.title} class="dep-block"><div class="small-label">${b.title}</div>
+      <div class="cmd-row"><pre class="cmd">${b.text}</pre>
+        <button type="button" class="btn btn-sm" onClick=${() => copyText(b.text, 'Copied.')}>Copy</button></div></div>`)}
+  </details>`;
+}
+
+/** Content of #canvas in the "Dependencies" view (div.dep): lifecycle (state machine), feature graph and the mermaid text blocks. */
+export function Dependencies() {
+  useEffect(() => { loadMermaid(); });
+  const status = dp.status, fs = features(), blocks = dp.mermaid || [];
+  const pick = (s) => { dp.status = s; renderAll(); };
+  return html`<div class="dep">
+    <div class="dep-top">
+      <div class="dep-top-t"><span class="small-label">Feature lifecycle</span>
+        <span class="dep-note" aria-live="polite">${status ? `highlighting the features in "${status}" · click again to clear` : null}</span></div>
+      <${StateMachine} counts=${ui.past ? countsOf(fs) : ctx.state && ctx.state.counts} chosen=${status} onPick=${pick} />
+    </div>
+    <div class="dep-graph"><${FeatureGraph} features=${fs} stages=${ctx.state && ctx.state.stages} selected=${focusFeatureId()}
+      status=${status} onSelect=${selectFeature} view=${dp.view} ctl=${dp.ctl} /></div>
+    <div class="dep-mermaid" hidden=${!blocks.length}>${blocks.length ? html`<${MermaidBlocks} blocks=${blocks} />` : null}</div>
+  </div>`;
 }
 
 /** GET graph = {dependencies_mermaid, states_mermaid, text}; plain text is accepted too. */
@@ -62,33 +77,15 @@ async function loadMermaid() {
     dp.mermaid = []; // without the route (or without a roadmap) the block simply does not show
   } finally {
     dp.mermaidLoading = false;
-    drawMermaid();
+    renderAll();
   }
 }
-function drawMermaid() {
-  if (!dp.mermaidBox) return;
-  const blocks = dp.mermaid || [];
-  dp.mermaidBox.hidden = !blocks.length;
-  fill(dp.mermaidBox, blocks.length ? h('details', {},
-    h('summary', {}, 'Graph as text ', h('span', { class: 'dim-mono', text: 'mermaid for PR/GitHub and text for chat; copy and paste' })),
-    blocks.map((b) => h('div', { class: 'dep-block' }, h('div', { class: 'small-label', text: b.title }),
-      h('div', { class: 'cmd-row' }, h('pre', { class: 'cmd', text: b.text }),
-        h('button', { type: 'button', class: 'btn btn-sm', onclick: () => copyText(b.text, 'Copied.') }, 'Copy'))))) : null);
-}
 
-/** Builds/updates the tab and returns the root element (the center shows it full size). */
-export function dependenciesView() {
-  if (!dp.root) build();
-  dp.machine.update(ui.past ? countsOf(features()) : ctx.state && ctx.state.counts);
-  dp.graph.update({ features: features(), stages: ctx.state && ctx.state.stages, selected: focusFeatureId() });
-  loadMermaid();
-  return dp.root;
-}
 function countsOf(fs) {
   const c = { total: fs.length };
   for (const f of fs) c[f.status] = (c[f.status] || 0) + 1;
   return c;
 }
-export function zoomDependencies(f) { if (dp.graph) dp.graph.zoom(f); }
-export function fitDependencies() { if (dp.graph) dp.graph.fit(); }
-export function dependenciesScale() { return dp.graph ? dp.graph.scale() : 1; }
+export function zoomDependencies(f) { if (dp.ctl.zoom) dp.ctl.zoom(f); }
+export function fitDependencies() { if (dp.ctl.fit) dp.ctl.fit(); }
+export function dependenciesScale() { return dp.ctl.scale ? dp.ctl.scale() : 1; }

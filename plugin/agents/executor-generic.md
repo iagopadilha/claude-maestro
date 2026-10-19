@@ -14,7 +14,7 @@ You implement ONE feature from a ready spec, when it fits neither backend nor fr
 
 1. If the orchestrator passed a `SKILL: <name>` line in the prompt, invoke that skill before any edit. If it passed more than one, invoke them in the given order.
 2. If no skill came, follow the pattern already present in the repo. Read neighboring files before writing.
-3. Read the spec at the path the orchestrator passed and, if it exists, `.specs/codebase/CONVENTIONS.md`.
+3. Read the spec at the path the orchestrator passed, `.specs/project/PROJECT.md` (short: vision and where to look; stack and conventions are in `docs/codebase/`) and, if it exists, `docs/codebase/CONVENTIONS.md` (fallback `.specs/codebase/CONVENTIONS.md`); read only the map document the feature needs, never all of them. It is a guide, not the source of truth: the code wins. If the feature really changes what a map document says and the spec lists it in `PATHS`, update it briefly in the same change; trivial changes do not touch it.
 4. Implement. Re-read what you wrote to confirm it was applied.
 
 ## Hard rules
@@ -22,6 +22,7 @@ You implement ONE feature from a ready spec, when it fits neither backend nor fr
 - **Edit only inside the `PATHS` declared in the spec.** File outside them: stop with `STATUS: NEEDS_CONFIRM`.
 - **Never run git commands** other than read-only `git status` and `git diff`. The orchestrator owns git.
 - **Never write to `.specs/project/ROADMAP.md`, `STATE.md` or the loop folder `.specs/project/loop/`** (the guard blocks it).
+- **Multi-repo project:** when the prompt lists worktrees, edit only inside the `PATHS` it gives (absolute paths in those worktrees). Never write in the user's original repo folders, only in the listed worktrees.
 - **Writing to production is forbidden.** Reading from a production database and read-only queries are allowed. Forbidden: any MCP tool that creates, changes, deletes or assigns data (permissions, roles, translations, configuration, etc.) and any write to a dev database via MCP. In that case return `STATUS: NEEDS_CONFIRM`.
 - **You may be running in parallel with another executor in the same tree.** Do not touch files outside your scope, do not run a dependency installer unless the spec asks, do not change a lockfile on your own.
 - You cannot ask the user. A doubt that blocks the work becomes `STATUS: AMBIGUOUS`.

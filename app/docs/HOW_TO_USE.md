@@ -19,7 +19,7 @@ python <app>/harness.py doctor      # checks the skill, the guard blocking `git 
 CONVERSATION (with Claude)                      APP / SCRIPT (you)
 1 map the project                               6 Check (harness.py check)   checks everything, spends nothing
 2 Conformance STANDARD or LEGACY                7 Start loop (button) or the command the check prints
-3 roadmap + rules (RULES.md)  -> approve        8 the loop runs on its own, in turns, in a worktree
+3 plan: roadmap + flows + rules  -> approve     8 the loop runs on its own, in turns, in a worktree
 4 test environment (TEST-ENVIRONMENT.md)        9 it STOPS and NOTIFIES (toast, email, webhook, panel)
 5 feature specs                                10 you answer in the panel, or with --answer / --option
 ```
@@ -35,12 +35,15 @@ CONVERSATION (with Claude)                      APP / SCRIPT (you)
 
 ## Part 1 - normal conversation (you take part)
 
-Open Claude in the project folder and use `/orchestrator` as usual (or the panel buttons: Map, Generate roadmap, Refine):
+Open Claude in the project folder and use `/orchestrator` as usual, or the panel (Map, Conformance, the planning chat):
 
 1. Context and mapping (`/orchestrator map` in an existing repo).
 2. Set `Conformance: STANDARD` or `LEGACY` (the orchestrator asks, explains why and writes it to `CLAUDE.md`; `python <app>/harness.py classify <repo>` shows the evidence).
-3. Roadmap: the orchestrator proposes, you adjust and **approve** it in the panel (button **Approve roadmap**, which writes `ROADMAP-APPROVED.json`). Without that approval the check refuses to start; changed a feature or a stage afterwards, approve again. Limiting rules (`RULES.md`) come in here, with your phrase.
-4. **Test environment:** the orchestrator gathers headers, DEV users, URLs and the secret manager key of each secret (name, environment, class that reads it) in `.specs/project/TEST-ENVIRONMENT.md` (template in `<app>/templates/TEST_ENVIRONMENT.md`) and asks you, in one batch, only what is missing. This comes **before** the approval because it is what stops the loop most.
+3. Roadmap: plan it by conversation and **approve** it in the panel (button **Approve roadmap**, which writes `ROADMAP-APPROVED.json`). Without that approval the check refuses to start; changed a feature or a stage afterwards, approve again. Limiting rules (`RULES.md`) come in here, with your phrase.
+   - **Planning mode.** A project with no approved roadmap that never ran a loop opens in the panel's **planning screen**: checklist on the left, a live chat in the middle, the documents on the right (PROJECT / ROADMAP / FLOWS). Each message runs `/orchestrator plan --headless` in one session resumed every time: it writes only `.specs/project/PROJECT.md`, `ROADMAP.md` and `FLOWS.md`, then tells you what changed and asks the 1 to 3 questions that matter most. Answer them in the chat; the rest wait in the ROADMAP's `## Open questions`. The chat needs the prerequisites first (git, `.specs/` structure, `Conformance:`, and the codebase map when the repo has code); each failing one has its button on the left. **New conversation** starts a fresh session and keeps the documents.
+   - **Approve roadmap** stays disabled (and the back end refuses it) until every gate is green: prerequisites, `PROJECT.md` (the short context for the subagents) without `FILL_IN`, i.e. its Vision filled in, at least one feature with no grammar or field error, `## Open questions` at `- none`, and in `FLOWS.md` a flow of at least 2 steps for every feature. Until then the loop, the chat with the agents, Act and the whiteboard are not reachable.
+   - `FLOWS.md` holds, per feature (`## [slug] Title`), the numbered steps and `Expected:` results that prove it works; the flow validation (`verifier-flow`, `--e2e`) uses it. `/orchestrator roadmap` writes it too.
+4. **Test environment:** the orchestrator gathers the NAMES of headers, DEV users, URLs and secrets (and where each comes from) in `.specs/project/TEST-ENVIRONMENT.md`; **values never go in the markdown**: they live in `.specs/project/.env.test` or `~/.loop-harness/.env` (generic DEV account), both ignored by git, with users as `;`-separated lists (`TEST_USER_EMAILS`, `TEST_USER_PASSWORDS`) (template in `<app>/templates/TEST_ENVIRONMENT.md`) and asks you, in one batch, only what is missing. This comes **before** the approval because it is what stops the loop most.
 5. Answer the open questions of the specs.
 6. When all of that is approved, the orchestrator **stops and hands you the ready command**, in a single line.
 
@@ -50,7 +53,9 @@ python <app>/harness.py serve --project <project-folder>
 ```
 - Starts the app (only `127.0.0.1`, a free port from 47800 to 47899), prints `MONITOR_URL=<project panel url>` and `APP_URL=<hub url>` and opens the browser. If the app **is already up**, it only registers the project in it, prints the URL and exits (one app for every project).
 - Flags: `--port N` (fixed port), `--idle-hours H` (hours without use until it shuts down on its own; `0` = never; default 2), `--no-browser`, `--data-dir D` (default `~/.loop-harness` or `LOOP_DATA_DIR`).
-- The hub (`APP_URL`) lists the projects, opens an existing folder, creates a project from scratch (folder + `git init` + `.specs/`) and shows the diagnostics.
+- The hub (`APP_URL`) lists the projects, opens an existing folder, creates a project from scratch (folder + `git init` + `.specs/`, landing in the planning screen) and shows the diagnostics.
+- **Reset specs** (button on each project card, next to Forget): starts new features from zero. After you type the project name, it moves the plan, roadmap, flows, features, `phases/`, `archive/` and the whole loop state (approval, answers, turns, snapshots, chats, planning conversation) to `.specs/.trash/<date-time>/` and recreates ROADMAP, FLOWS and STATE from the templates. `RULES.md`, `PROJECT.md`, the test environment (`TEST-ENVIRONMENT.md`, `.env.test`, `rules.tests.json`), `SCOPE.json`, `PERMISSIONS.json`, the codebase map (`docs/codebase`), `CLAUDE.md`, your code and git stay. Nothing is deleted (move the folders back to undo); it is refused while a loop or a Claude job runs in the project, and the roadmap has to be approved again.
+- **Several repositories:** see "Projects with several repositories" below.
 - The project panel (`/p/<id>/`) shows roadmap, turns, agents, specs, questions, validations, cost and limits, and has the loop buttons.
 
 The loop also ensures the panel on its own: when it starts, `run_loop` reuses the panel that launched it (`LOOP_MONITOR_URL`), or the work's live `MONITOR.json`, or registers the project in the live app (`app.json`), or starts `harness.py serve --project <repo>` detached. It prints `[loop] monitor: <url>` and the URL goes in every notice.
@@ -94,7 +99,7 @@ Run it in a terminal **separate** from the conversation, outside Claude.
 ```
 python <app>/harness.py check <project-folder>
 ```
-It says `[check] READY. Command:` or lists `[check] PROBLEM:` lines (no roadmap, roadmap not approved, no Conformance, the skill guard not found or not blocking `git push`, push without a remote with an explicit `--push`, etc.) and `[check] WARNING:` lines (uncommitted changes in the repo, a Node project without `--setup`). When it says READY, it prints the full command (`python "<app>/harness.py" loop "<repo>" ...`).
+It says `[check] READY. Command:` or lists `[check] PROBLEM:` lines (no roadmap, roadmap not approved, no Conformance, in a multi-repo project an extra repo without a Conformance line, the skill guard not found or not blocking `git push`, push without a remote with an explicit `--push`, etc.) and `[check] WARNING:` lines (uncommitted changes in the repo, a Node project without `--setup`). When it says READY, it prints the full command (`python "<app>/harness.py" loop "<repo>" ...`).
 
 **Step 2 - start:**
 ```
@@ -138,11 +143,98 @@ You can leave it running and walk away. There is nothing to answer: if it needs 
 | `harness.py doctor [--json]` | - | diagnostics (the same as `GET /api/app/info`) |
 
 ## What happens underneath
-- The script creates **once** the worktree `../<project>-worktree-loop` (its own) on a `loop/<date>` branch and copies `.specs/` and `CLAUDE.md` there. Your folder and your branch are not touched.
+- The script creates **once** the worktree `../<project>-worktree-loop` (its own) on a `loop/<date>` branch and copies `.specs/` and `CLAUDE.md` there. Your folder and your branch are not touched. A multi-repo project gets one worktree per repo (see below).
 - Each turn is a new `claude -p` (clean context) that reads `.specs/`, advances one wave, commits and writes `.specs/project/loop/json/LOOP.json`. Pushing is impossible inside the turn (the skill guard + `pushurl` disabled only for that process); the final delivery is made by the script.
 - The guard is the skill's (`<skill>/hooks/guard.py`). The check verifies it exists and blocks `git push`, and that the plugin's `hooks/hooks.json` points (through `${CLAUDE_PLUGIN_ROOT}`) at a guard that exists on this machine.
 - Everything the loop owns lives in `.specs/project/loop/`: the files a person reads at its root (`ANSWERS.md`, `VALIDATE.md`, `DEPENDENCIES.md`, `GRAPH.md`, `NOTICE.txt`), machine state in `json/` and the rest (lock, logs, turn logs, snapshots) in `internal/`. A project written by an older layout is moved there automatically (`harness.py state migrate <root>` does it by hand; it never overwrites).
 - When it stops: console, Windows toast, `.specs/project/loop/NOTICE.txt`, the panel and the **summary `loop-summary-<project>-<date>.md`**.
+
+## Projects with several repositories
+One project can change more than one git repository (for example a back end and a front end). It is off by default: a project with one repo
+looks and works as before.
+
+**Turn it on.** In the Workspace band (under the header; also in the hub dialog) check **This project uses several repositories**. The
+repos known to the app show with a checkbox each; **Add folder** opens the native folder window. A folder that is not a git repo, has a
+detached HEAD or is already listed is refused with the reason. Removing a repo only takes it off the list: no folder or worktree is
+deleted. The list is locked while a loop runs. It is saved in `.specs/project/REPOS.json`, which Reset specs keeps. Unchecking the box
+keeps the list, but the loop then uses only the primary repo (the one you opened).
+
+**The Workspace band.** Per repo it shows your folder, the worktree, the branch (from the branch your folder is on now), and a state. The
+loop never edits your folder, and nothing is cloned or pushed. For each repo it creates its own git worktree, a sibling folder
+`../<repo>-worktree-loop`, on a `loop/<date>` branch, the same name in every repo. It is created automatically **when the loop starts**, with
+the reason and every step shown (nothing is silent), or earlier with **Create workspace** (a confirmation, then the steps live; the loop does
+the same if you skip it). If your folder has uncommitted changes you get a warning first: the worktree starts from the last commit and does not
+carry them. `.specs/` lives in the primary repo's worktree.
+
+**The worktree is prepared by itself.** In a multi-repo project each repo's worktree is prepared automatically, so you normally set nothing:
+the **setup command** is detected from the repo's root files (`pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`, `package.json`, a `.sln` or
+`.csproj`, `requirements.txt`, `poetry.lock`, `go.mod`) unless you stored your own, and the **git-ignored local config files** (`.env`,
+`.env.*`, `appsettings.*.json`, `*.local.*`; never `node_modules`, `bin`, `obj`, `dist`, and never `.example`, `.sample` or `.template`
+files) are copied unless you configured a list. To override, open **Advanced: files and setup** on the repo row: it says "Automatic: will run
+..." or "Custom: ..." for the setup and "Automatic" or "Custom list" for the files. **Save setup** stores a command (saving it empty goes back
+to automatic); tick files and **Save files to copy** stores a list (an empty list copies nothing); **Use automatic** goes back to the
+automatic copy. A project with a single repo and no `REPOS.json` is unchanged: nothing is copied or installed unless you pass `--setup`.
+Secrets rule: the guard blocks agents from reading copied files in the worktree (the rows tagged "hidden from agents"); the build and the app
+still load them.
+
+**Extra repos need Conformance and a map.** The loop works in every listed repo, so each extra repo needs what the primary one needs: a
+`Conformance: STANDARD|LEGACY` line in its `CLAUDE.md` and, when it has code, a codebase map (`docs/codebase`). Without them the agents do not
+know that repo's conventions. The loop `--check` reports a PROBLEM for every extra repo without a Conformance line. In planning, the trail
+step **Set up repositories** opens the repo list, and a **repos** gate appears after the map gate while an extra repo misses one of them;
+**Approve roadmap** stays blocked. Under each extra repo (Workspace band, Repositories tab, or that dialog) a tag shows "Conformance: ..." or
+"no Conformance" and "mapped" or "not mapped", with the buttons **Set conformance** (the panel suggests one) and **Map codebase** (a
+confirmation, then a job of a few minutes; a repo without code needs no map). Both write `CLAUDE.md` (and `docs/codebase`) in that repo, so
+its folder shows as changed, which is where **Commit and push** comes in. Both are refused while a loop runs, and mapping is refused when the
+repo's worktree already exists.
+
+**Commit and push.** The worktree starts from the last commit of your folder. When a repo's worktree is **not created** yet and its folder
+has uncommitted changes, its row in the Workspace band shows two buttons: **Commit and push** and **Commit only**. Each opens a confirmation
+with an optional commit message (empty = the default message). **Commit and push** runs `git add -A`, commits and pushes the branch you are
+on, never forced; **Commit only** commits and pushes nothing. They are disabled while a loop runs or a workspace is being created, and the
+back end refuses them after the worktree exists. If the push fails the commit stays in your folder and the message says so.
+
+**Roadmap.** In a multi-repo project write `paths=<repo>:<path>` (no prefix = the primary repo) and, when one repo must come before another,
+`repo-order=<repo>,<repo>`. The repo is the short name from the list; an unknown name is an error. In planning, the chat looks at the repo
+catalog and **suggests** a repo for each feature; you confirm, and only then is the prefix written.
+
+**Repo catalog.** A sheet per repo (what it does, with a file that proves each capability) kept in `~/.loop-harness/repo-catalog.json`. A scan
+runs as a job (`POST /api/app/catalog/scan`). A capability whose evidence file does not exist is dropped. A repo with no `docs/codebase` is
+**weak**: map it first. A repo whose HEAD moved since the scan is **stale**.
+
+**Commits, push and PR.** The orchestrator makes one commit per repo for each verified feature (same slug). It never pushes. On your action
+(Act, Deliver, or `harness.py deliver`) each repo gets its own push of the `loop/*` branch and one PR against the integration branch
+(`developer` by default). Each PR lists the other PRs in a **Related PRs** block. If one repo fails, the others stay; fix it and deliver again.
+
+**Close loop.** After delivery, **Close loop** (Workspace band) cleans up. It stays disabled and says which repo blocks it: push not confirmed,
+no PR (a compare link alone can be confirmed), uncommitted changes in the worktree, or a copied file changed. In order it (1) backs up each
+worktree, (2) copies the durable plan back to the primary repo's `.specs/` (ROADMAP with statuses, FLOWS, STATE, feature specs, `phases/`,
+`VALIDATE.md`, the summary), (3) writes `.specs/project/loop/json/last-run.json`, (4) removes the worktrees without `--force`. Local branches
+and commits stay. A repo that cannot close is kept and the others still close. To continue later, start the loop again: if `last-run.json`
+names a branch that still exists, the worktree is **re-attached** to it instead of making a new branch.
+
+**Several loops.** The hub shows every running loop with stage, feature, turn, cost and any pending question. A loop cannot start on a repo
+another running project already uses; the message names that project.
+
+**What keeps it safe.** The orchestrator may write and commit only inside this project's listed worktrees (and the primary `.specs/`). Each
+extra repo is given to `claude -p` with `--add-dir=<worktree>`. A turn runs with no MCP servers and with `WebFetch`, `WebSearch`,
+`NotebookEdit`, `ssh`, `scp` and `sftp` denied. `git push`, PR creation and release are blocked for every profile.
+
+**Not covered.** Two loops on the same repo (beyond the cross-project check above). The secrets protection does not catch a broad `Grep` or
+`Glob` over a worktree, only a call that names a copied file. Shell redirects are not confined to the worktrees.
+
+## Test environment tab: credentials, shared account and Grafana
+The panel's **Test environment** tab lists every `$NAME` of `TEST-ENVIRONMENT.md` with where it is defined (`env`, project `.env.test`,
+machine `~/.loop-harness/.env`, `shared`, `shared-blocked` or `missing`). **Values are never shown**: secret names appear as set or missing.
+- **Save a value:** type it in the row and choose where it goes: the project's `.specs/project/.env.test` (git-ignored) or your user-level
+  shared `~/.claude/skills/_shared/.env`. Other lines and comments in that file stay untouched.
+- **Shared fallback:** your generic DEV account (plugin `shared/.env` and `~/.claude/skills/_shared/.env`) is used only after you accept it for
+  this project (`.specs/project/ACCESS.json`, `shared_fallback`). Until then a name only the shared file defines shows `shared-blocked` and the
+  loop will not start ("accept the shared fallback in the Test environment tab").
+- **Grafana (read only):** tick `grafana_read` to let the planning chat and the loop's spec agents look up sample data in Loki. They get only the
+  Loki query/label tools and `list_datasources`; Grafana write tools stay denied. It needs the `grafana` MCP server in your `~/.claude.json`; if
+  it is not there the option does nothing.
+- **What the AI sees:** the names and whether each is set (`credential-names.json`), never a value. It will not ask you for one in the chat:
+  fill the tab instead.
 
 ## Email notification and variables (.env)
 `.env` lookup order (model: `<app>/.env.example`; the `.env` never goes to the repository):
@@ -167,7 +259,7 @@ Without an explicit file, 2 and 3 are merged (the first one that defines a key w
 The check verifies almost all of this and warns about what is missing:
 - **A `.gitignore` ignoring the build folders** (`bin/`, `obj/`, `node_modules/`, `dist/`). Without it the build leaves files behind, the tree looks dirty and the loop stops with "dirty tree".
 - **Everything committed.** The worktree is born from the last commit; a loose change in the repo does not go along.
-- **`Conformance: STANDARD|LEGACY` in `CLAUDE.md`** and **an approved `.specs/project/ROADMAP.md`** (Approve roadmap button).
+- **`Conformance: STANDARD|LEGACY` in `CLAUDE.md`** and **an approved `.specs/project/ROADMAP.md`** (Approve roadmap button, which also needs a flow per feature in `.specs/project/FLOWS.md`).
 - **The mandatory notify channels configured** (when `LOOP_NOTIFY_REQUIRED` lists any), otherwise the preflight refuses to start.
 - **The orchestrator skill reachable** (`SKILL.md` + `hooks/guard.py`, plugin `hooks/hooks.json`): `harness.py doctor` checks it.
 - **.NET:** `dotnet` on PATH; the build restores on its own (needs network or the NuGet cache). **Node:** `--setup "npm ci"` if there are dependencies.

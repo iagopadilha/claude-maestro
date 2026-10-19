@@ -70,11 +70,11 @@ The skill creates a `.specs/` directory to organize all project documentation:
 ```
 .specs/
 ├── project/
-│   ├── PROJECT.md      # Vision, goals, tech stack, constraints
+│   ├── PROJECT.md      # Vision, goals, tech stack, constraints (Loop Harness: short vision + pointers)
 │   ├── ROADMAP.md      # Milestones, features, status tracking
 │   └── STATE.md        # Persistent memory: decisions, blockers, learnings, todos, deferred ideas
 │
-├── codebase/           # Brownfield analysis (existing projects only)
+├── codebase/           # LEGACY location; new brownfield maps go to docs/codebase/ at the project root
 │   ├── STACK.md        # Technology stack and dependencies
 │   ├── ARCHITECTURE.md # Patterns, data flow, code organization
 │   ├── CONVENTIONS.md  # Naming, style, coding patterns
@@ -249,7 +249,7 @@ Agent: I'll analyze your existing codebase and document:
 
        [Analyzes codebase...]
 
-       ✅ Created 7 brownfield docs in .specs/codebase/
+       ✅ Created 7 brownfield docs in docs/codebase/
        Next: Initialize project to define goals and roadmap
 ```
 

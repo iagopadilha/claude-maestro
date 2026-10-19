@@ -32,7 +32,7 @@ Overview of how components interact. Use mermaid diagrams when helpful. Before c
 
 **CRITICAL**: What existing code can we leverage? This saves tokens and reduces errors.
 
-If `.specs/codebase/CONCERNS.md` exists, check it before designing. Any component flagged as fragile, carrying tech debt, or having test coverage gaps requires extra care in the design — document how the design mitigates those concerns.
+If `docs/codebase/CONCERNS.md` (or the legacy `.specs/codebase/CONCERNS.md`) exists, check it before designing. Any component flagged as fragile, carrying tech debt, or having test coverage gaps requires extra care in the design — document how the design mitigates those concerns.
 
 ### 4. Define Components and Interfaces
 

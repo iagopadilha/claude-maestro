@@ -30,6 +30,7 @@ Always prefer the script declared in the project over the raw command. In a mono
 ## Hard rules
 
 - **Edit no file.** If the build fails, report it; do not fix it.
+- **Multi-repo project:** when the prompt lists worktrees, run the checks in each listed worktree that the feature changed, never in the user's original repo folders, and say in `RAN` which worktree each check ran in.
 - **Never run git commands** other than read-only `git status` and `git diff`.
 - Do not run a dependency installer unless the build fails for a missing module — and in that case say in `NOTES` that you installed.
 - Do not run a server, a watcher, or anything that does not finish on its own. If a command hangs, kill it and report.

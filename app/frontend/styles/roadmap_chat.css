@@ -1,0 +1,29 @@
+/* "Roadmap" tab (panel/roadmap_chat.js): stages and features on the side, the "change a spec with the AI" chat of the selected scope.
+   Same surfaces as the planning chat (plan-col, plan-form, cmsg); only tokens, no colors of its own. */
+.rc{display:grid;grid-template-columns:minmax(200px,280px) minmax(0,1fr);grid-template-rows:minmax(0,1fr);gap:10px;min-height:0;}
+.rc-side{display:flex;flex-direction:column;gap:6px;min-height:0;overflow:auto;border:1px solid var(--line2);border-radius:8px;background:var(--panel);padding:8px;}
+.rc-stage{display:flex;flex-direction:column;gap:2px;margin-top:6px;}
+.rc-stage .small-label{margin-bottom:2px;}
+.rc-plan{border:1px solid var(--line2);}
+.rc-plan.sel{border-color:var(--amber);}
+.rc-chip-plain{color:var(--muted);background:var(--panel2);}
+.rc-side .frow.sel{box-shadow:inset 2px 0 0 var(--amber);}
+.rc-chat .cmsg{background:var(--panel2);border-color:var(--line2);}
+.rc-chat .cmsg.user{background:var(--bg);border-color:var(--line3);}
+.rc-chat .cmsg.ai .cmsg-h>span:first-child,.rc-chat .cmsg.user .cmsg-h>span:first-child{color:var(--text2);}
+.rc-chat .ch-think{color:var(--text2);}
+.rc-chat .ch-think::before{background:var(--amber);}
+.rc-chat .ch-think,.rc-chat .ch-err{margin:0 12px 6px;}
+.rc-scope{font-size:11px;color:var(--muted);word-break:break-all;}
+.rc-files,.rc-changed{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;}
+.rc-files{flex:none;padding:6px 12px;border-bottom:1px solid var(--line);}
+.rc-changed{margin-top:6px;}
+.rc-files .small-label,.rc-changed .small-label{margin:0;}
+.rc-files code,.rc-changed code{font:11px var(--mono);color:var(--text2);background:var(--bg);border:1px solid var(--line2);border-radius:4px;padding:1px 5px;word-break:break-all;}
+.rc-changed code{border-color:var(--green);}
+.rc-redo{flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:0 12px 6px;padding:6px 8px;border-radius:6px;border:1px solid var(--amber-line);background:var(--amber-bg);color:var(--amber-soft);font-size:12px;line-height:1.4;}
+.rc-redo .btn-primary{background:var(--amber);border-color:var(--amber);}
+@media (max-width:1000px){
+  .rc{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(420px,1fr);overflow:auto;}
+  .rc-side{max-height:220px;}
+}

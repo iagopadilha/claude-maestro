@@ -3,11 +3,18 @@
 Reads everything from disk on each call (cheap: small files and one `git rev-parse`). The checks the engine makes in the
 preflight are NOT rewritten: approval = `loop_state.roadmap_approval` (the same as `run_loop.py --check`), test environment =
 `run_loop.test_environment_problems`, grammar = `loop_state.parse_roadmap` + `loop_state.check_fields`.
+The planning gates (what "Approve roadmap" requires) are built from the same facts (`planning_gates.build_planning_gates`).
 """
 import os
+import re
 from typing import Protocol
 
-from ..repositories.specs_file_repository import list_test_environment_problems, loop_state
+from ..domain.flows_document import check_flow_coverage
+from ..domain.roadmap_settings import parse_roadmap_e2e
+from ..repositories.specs_file_repository import list_test_environment_problems, loop_state, run_hints
+from .planning_gates import (GATE_CONFORMANCE, GATE_FLOWS, GATE_GIT, GATE_MAP, GATE_REPOS, GATE_STRUCTURE, are_gates_ok,
+                             build_planning_gates, describe_map_documents)
+from .roadmap_service import extract_open_questions
 
 MODE_NEW = "new"
 MODE_NO_SPECS = "no_specs"
@@ -19,6 +26,7 @@ ACTION_STRUCTURE = "structure"
 ACTION_CONFORMANCE = "conformance"
 ACTION_MAP = "map"
 ACTION_ROADMAP = "roadmap"
+ACTION_FLOWS = "flows"
 ACTION_APPROVE = "approve"
 ACTION_TEST_ENVIRONMENT = "test_environment"
 ACTION_CHECK = "check"
@@ -35,6 +43,9 @@ CLOSED_FEATURE_STATUSES = ("verified", "blocked")
 MAP_JOB_TYPE = "map"
 ROADMAP_JOB_TYPE_PREFIX = "roadmap"
 MISSING_ITEMS_SHOWN = 6
+ACTION_REPOS = "repos"
+ACTION_BY_FAILING_GATE = {GATE_STRUCTURE: ACTION_STRUCTURE, GATE_CONFORMANCE: ACTION_CONFORMANCE, GATE_MAP: ACTION_MAP,
+                          GATE_REPOS: ACTION_REPOS, GATE_FLOWS: ACTION_FLOWS}
 NAMES_THAT_ARE_NOT_CODE = {".git", ".specs", ".claude", ".vscode", ".idea", "claude.md", "readme.md", ".gitignore",
                            ".gitattributes", "license", "license.md"}
 
@@ -44,6 +55,7 @@ class IProjectProgressService(Protocol):
     def build_progress_summary(self, context) -> dict: ...
     def get_loop_status(self, work_dir) -> dict: ...
     def is_loop_running(self, context) -> bool: ...
+    def build_planning_gates(self, context) -> list: ...
 
 
 def create_step(step_id, title, ok, detail, optional=False):
@@ -58,6 +70,7 @@ class ProjectProgressService:
         self.process_runner = process_runner
         self.claude_job_service = claude_job_service
         self.log = log
+        self.repo_readiness_provider = None  # set by the multi-repo module: `provider(context) -> [{name, missing, detail}]` of the extra repos
 
     # ------------------------------------------------ loop status (same derivation as the panel's loop status)
     def get_loop_status(self, work_dir):
@@ -80,6 +93,16 @@ class ProjectProgressService:
     def is_loop_running(self, context):
         return self.process_runner.is_alive(self.specs_file_repository.read_loop_lock_pid(context.work_dir))
 
+    # ------------------------------------------------ planning gates
+    def ensure_test_environment_template(self, context):
+        """The planning chat edits TEST-ENVIRONMENT.md (and can only Edit, not create). Structure init already creates it; this is the
+        idempotent fallback for projects initialized before that."""
+        return self.specs_structure_service.create_test_environment_template(context.work_dir)
+
+    def build_planning_gates(self, context):
+        """The planning checklist (gate ids in the contract order; see planning_gates.py)."""
+        return build_planning_gates(self.read_project_facts(context))
+
     # ------------------------------------------------ checklist
     def build_progress_summary(self, context):
         progress = self.build_progress(context)
@@ -97,9 +120,12 @@ class ProjectProgressService:
         """Reads (without deciding anything) everything the checklist needs."""
         repo, work = context.repo_path, context.work_dir
         folder_exists = os.path.isdir(repo)
-        roadmap_text = self.specs_file_repository.read_text(os.path.join(work, ".specs", "project", "ROADMAP.md"))
-        features, errors = loop_state.parse_roadmap(roadmap_text or "")
-        errors = errors + loop_state.check_fields(features)
+        project_dir = os.path.join(work, ".specs", "project")
+        roadmap_text = self.specs_file_repository.read_text(os.path.join(project_dir, "ROADMAP.md"))
+        flows_text = self.specs_file_repository.read_text(os.path.join(project_dir, "FLOWS.md"))
+        features, parse_errors = loop_state.parse_roadmap(roadmap_text or "")
+        field_errors = loop_state.check_fields(features)
+        errors = parse_errors + field_errors
         job = self.claude_job_service.get_running_job(repo) if folder_exists else None
         return {
             "work_dir": work,
@@ -109,10 +135,19 @@ class ProjectProgressService:
             "has_code": folder_exists and self.repo_has_code(repo),
             "structure": self.specs_structure_service.check_structure(work),
             "conformance": self.specs_structure_service.get_conformance(work),
-            "map_files": self.specs_file_repository.list_markdown_files(os.path.join(work, ".specs", "codebase")),
+            "repos_unready": self.read_unready_repos(context),
+            **self.read_map_facts(work, repo),
             "roadmap_exists": roadmap_text is not None, "features": features, "roadmap_errors": errors,
+            "roadmap_parse_errors": parse_errors, "roadmap_field_errors": field_errors,
+            "open_questions": extract_open_questions(roadmap_text or ""),
+            "project_text": self.specs_file_repository.read_text(os.path.join(project_dir, "PROJECT.md")),
+            "flows_exists": flows_text is not None, "flow_coverage": check_flow_coverage(features, flows_text or ""),
             "approval": loop_state.roadmap_approval(work),
-            "environment_problems": list_test_environment_problems(work) if roadmap_text else [],
+            "environment_problems": list_test_environment_problems(work, with_e2e=bool(parse_roadmap_e2e(roadmap_text))) if roadmap_text else [],
+            "environment_all_problems": list_test_environment_problems(work, with_e2e=True) if folder_exists else [],  # as if required
+            "e2e": bool(parse_roadmap_e2e(roadmap_text)),  # `**E2E:** yes` in the ROADMAP header (read-only in the planning payload)
+            "regression_required": bool(roadmap_text and (re.search(r"\bregression=(yes|baseline)\b", roadmap_text)
+                                                           or parse_roadmap_e2e(roadmap_text))),
             "environment_exists": os.path.isfile(os.path.join(work, ".specs", "project", "TEST-ENVIRONMENT.md")),
             "loop": self.get_loop_status(work),
             "running_job": {"id": job["id"], "type": job["type"], "started_at": job["started_at"]} if job else None,
@@ -120,11 +155,29 @@ class ProjectProgressService:
                        "blocked": sum(1 for f in features.values() if f.get("status") == "blocked")},
         }
 
+    def read_unready_repos(self, context):
+        """Extra repos of a multi-repo project that miss Conformance or a map. A failure to read them never takes the checklist down."""
+        if self.repo_readiness_provider is None:
+            return []
+        try:
+            return list(self.repo_readiness_provider(context))
+        except Exception as failure:
+            self.log.warn("repo_readiness_unreadable", type=type(failure).__name__, message=str(failure)[:200])
+            return []
+
+    @staticmethod
+    def read_map_facts(work, repo):
+        """The codebase map: `docs/codebase` first, then the legacy `.specs/codebase` (a project mapped before keeps working)."""
+        relative, root = run_hints.find_map_folder(work, repo)
+        folder = os.path.join(root, *relative.split("/"))
+        return {"map_files": run_hints.list_map_documents(folder), "map_folder": relative,
+                "map_commit": run_hints.read_mapped_commit(folder)}
+
     def build_steps(self, facts):
         structure, approval, loop = facts["structure"], facts["approval"], facts["loop"]
         job = facts["running_job"]
         conformance_detail = "Conformance: %s" % facts["conformance"] if facts["conformance"] else self.describe_conformance_suggestion(facts)
-        map_detail = ("%d document(s) in .specs/codebase" % len(facts["map_files"]) if facts["map_files"]
+        map_detail = (describe_map_documents(facts) if facts["map_files"]
                       else "repo with code and no map: map it before the roadmap" if facts["has_code"] else "repo without code: nothing to map")
         if job and job["type"] == MAP_JOB_TYPE:
             map_detail = "mapping (job %s)" % job["id"]
@@ -134,9 +187,11 @@ class ProjectProgressService:
             create_step("structure", ".specs/ structure", structure["ok"],
                         "complete" if structure["ok"] and not structure["missing"] else "missing: " + ", ".join(structure["missing"][:MISSING_ITEMS_SHOWN])),
             create_step("conformance", "Conformance in CLAUDE.md", facts["conformance"], conformance_detail),
-            create_step("map", "Codebase map", facts["map_files"], map_detail,
+            create_step("map", "Codebase map", facts["map_files"] and not (job and job["type"] == MAP_JOB_TYPE), map_detail,
                         optional=not (facts["has_code"] and not facts["features"])),
             create_step("roadmap", "Roadmap", facts["features"] and not facts["roadmap_errors"], self.describe_roadmap(facts)),
+            create_step("flows", "Flows (FLOWS.md)", self.has_every_flow(facts), self.describe_flows(facts),
+                        optional=approval["approved"] and not self.has_every_flow(facts)),
             create_step("approval", "Approved roadmap", approval["approved"],
                         "approved on %s" % approval["at"] if approval["approved"] else approval["reason"]),
             create_step("test_environment", "Test environment", not facts["environment_problems"],
@@ -176,12 +231,38 @@ class ProjectProgressService:
         if not facts["features"] or facts["roadmap_errors"]:
             return ACTION_ROADMAP
         if not facts["approval"]["approved"]:
-            return ACTION_APPROVE
+            return ProjectProgressService.find_planning_action(facts)
         if facts["environment_problems"]:
             return ACTION_TEST_ENVIRONMENT
         return None
 
+    @staticmethod
+    def find_planning_action(facts):
+        """Roadmap not approved: `approve` only when every planning gate is ok; otherwise the first failing gate's action
+        (flows / map / ...), `roadmap` for the planning conversation (project context, fields, open questions). A failing git gate has no
+        action here (the git step shows it)."""
+        gates = build_planning_gates(facts)
+        if are_gates_ok(gates):
+            return ACTION_APPROVE
+        failing = [gate["id"] for gate in gates if not gate["ok"] and not gate["optional"] and gate["id"] != GATE_GIT]
+        if not failing:
+            return ACTION_APPROVE
+        return ACTION_BY_FAILING_GATE.get(failing[0], ACTION_ROADMAP)
+
     # ------------------------------------------------ support
+    @staticmethod
+    def has_every_flow(facts):
+        return bool(facts["flows_exists"] and facts["features"] and not facts["flow_coverage"]["missing"])
+
+    @staticmethod
+    def describe_flows(facts):
+        if not facts["flows_exists"]:
+            return "FLOWS.md missing"
+        missing = facts["flow_coverage"]["missing"]
+        if missing:
+            return "without a flow: " + ", ".join(missing[:MISSING_ITEMS_SHOWN])
+        return "%d flow(s), one per feature" % len(facts["features"]) if facts["features"] else "no feature in the ROADMAP yet"
+
     @staticmethod
     def describe_roadmap(facts):
         job = facts["running_job"]

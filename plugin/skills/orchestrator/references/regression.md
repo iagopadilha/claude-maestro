@@ -83,7 +83,7 @@ spec (+ regression.md) -> gate -> BASELINE -> executor -> verifier (build/lint) 
 
 - `verifier-flow` runs one at a time (it uses ports). Since a feature with `regression=` already moves alone in the wave, there is no collision with another executor.
 - Test data with the prefix `zz_regression_`, created by the script and removed at the end. Never in production.
-- Login and credentials: those of the project's DEV environment, listed in `.specs/project/TEST-ENVIRONMENT.md`; if a credential that blocks **all** cases is missing, `UNVERIFIED` with the question in `NOTES` and the exact secret-manager key of each item; if it is missing only for some cases, `not-covered` and continue (rule above).
+- Login and credentials: those of the project's DEV environment, listed by `$NAME` in `.specs/project/TEST-ENVIRONMENT.md` (values in the git-ignored `.env.test` / `~/.loop-harness/.env`; run commands with `python "<plugin>/shared/testenv.py" exec --project <root> '<command using $NAME>'` in single quotes, which fills the values in and redacts them from the output; never read the `.env` files); if a credential that blocks **all** cases is missing, `UNVERIFIED` with the question in `NOTES` and the exact secret-manager key of each item; if it is missing only for some cases, `not-covered` and continue (rule above).
 
 ## Bridge to unit tests (future)
 

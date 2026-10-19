@@ -1,5 +1,5 @@
-"""`claude -p` jobs launched by the app (generate/refine the roadmap, map the codebase): they run in a thread, one per
-project at a time, and are written to `<repo>/.specs/project/loop/internal/jobs/<id>.json`.
+"""`claude -p` jobs launched by the app (generate/refine the roadmap, map the codebase, a planning chat reply): they run in a
+thread, one per project at a time, and are written to `<repo>/.specs/project/loop/internal/jobs/<id>.json`.
 
 The claude `session_id` stays in the file (so that `refine` continues the same conversation) and NEVER leaves through the
 API. A job that was `running` when the app went down shows up as `error` (interrupted) when read.
@@ -18,6 +18,9 @@ from ..repositories.specs_file_repository import loop_state
 JOB_TYPE_ROADMAP = "roadmap"
 JOB_TYPE_ROADMAP_REFINE = "roadmap_refine"
 JOB_TYPE_MAP = "map"
+JOB_TYPE_PLANNING = "planning"
+JOB_TYPE_SPEC_CHANGE = "spec_change"
+JOB_TYPE_WORKSPACE_CREATE = "workspace-create"  # not a claude run: a task (see start_task_job)
 ROADMAP_JOB_TYPES = (JOB_TYPE_ROADMAP, JOB_TYPE_ROADMAP_REFINE)
 JOB_STATE_RUNNING = "running"
 JOB_STATE_OK = "ok"
@@ -29,6 +32,7 @@ JOB_ID_PATTERN = re.compile(r"^j-[0-9a-f]{12}$")
 JOBS_DIR_NAME = "jobs"
 INTERRUPTED_JOB_MESSAGE = "interrupted: the app was shut down while the job was running"
 PUBLIC_JOB_FIELDS = ("id", "type", "state", "started_at", "finished_at", "cost_usd", "reply", "error")
+TASK_JOB_FIELDS = ("steps", "result")  # only task jobs carry them
 
 
 def now_iso():
@@ -49,12 +53,19 @@ class IClaudeJobService(Protocol):
 
 
 class ClaudeJobCommand:
-    """What to run: ready argv (built by the ClaudeClient) and the stdin text."""
+    """What to run: ready argv (built by the ClaudeClient) and the stdin text.
 
-    def __init__(self, argv, stdin_text="", resumed_session=""):
+    `timeout_seconds` (optional) replaces the service timeout for this job. `finalize(result) -> result` (optional) runs in
+    the job thread after claude ends and before the job is recorded as finished (e.g. the planning file guard and thread).
+    `work_dir` (optional) is the folder claude runs in (the loop worktree); default = the repo path the job is registered under."""
+
+    def __init__(self, argv, stdin_text="", resumed_session="", timeout_seconds=None, finalize=None, work_dir=None):
         self.argv = list(argv)
         self.stdin_text = stdin_text
         self.resumed_session = resumed_session
+        self.timeout_seconds = timeout_seconds
+        self.finalize = finalize
+        self.work_dir = work_dir
 
 
 class ClaudeJobService:
@@ -88,11 +99,67 @@ class ClaudeJobService:
         self.log.info("claude_job_started", job=record["id"], type=job_type, repo=repo_path)
         return self.to_public(record)
 
-    def run_job(self, record, command):
+    def start_task_job(self, repo_path, job_type, task):
+        """Same registry and files as `start_job`, but the thread runs `task(add_step) -> result dict` instead of `claude -p`.
+
+        `add_step(step)` appends a step (a dict) to the job record, written to disk so a poll sees it. `task` returns
+        {"ok": bool, "result": any, "error": str}; an exception becomes an error job. JobInProgressError while any job
+        (claude or task) runs in this repo."""
+        record = {"id": "j-" + secrets.token_hex(JOB_ID_RANDOM_BYTES), "type": job_type, "state": JOB_STATE_RUNNING,
+                  "started_at": now_iso(), "finished_at": None, "cost_usd": None, "reply": "", "error": "",
+                  "dir": repo_path, "session_id": "", "steps": [], "result": None, "order": time.time_ns()}
+        with self.jobs_lock:
+            if self.find_running_id(repo_path):
+                raise JobInProgressError("a job is already running in this project: wait for it to finish")
+            self.running_jobs[record["id"]] = repo_path
         try:
-            result = self.claude_client.run_prompt(command.argv, record["dir"], command.stdin_text, self.timeout_seconds)
+            self.write_record(repo_path, record)
+            threading.Thread(target=self.run_task_job, args=(record, task), daemon=True, name="task-job-" + record["id"]).start()
+        except Exception:
+            with self.jobs_lock:
+                self.running_jobs.pop(record["id"], None)
+            raise
+        self.log.info("task_job_started", job=record["id"], type=job_type, repo=repo_path)
+        return self.to_public(record)
+
+    def run_task_job(self, record, task):
+        def add_step(step):
+            with self.jobs_lock:
+                record["steps"].append(step)
+            self.try_write_record(record)
+
+        try:
+            outcome = task(add_step)
+        except Exception as failure:  # a job never takes the app down
+            self.log.error("task_job_failed", job=record["id"], type=type(failure).__name__, message=str(failure)[:200])
+            outcome = {"ok": False, "result": None, "error": "internal failure: %s" % type(failure).__name__}
+        record.update(state=JOB_STATE_OK if outcome.get("ok") else JOB_STATE_ERROR, finished_at=now_iso(),
+                      error=str(outcome.get("error") or ""), result=outcome.get("result"))
+        try:
+            self.try_write_record(record)
+        finally:
+            with self.jobs_lock:
+                self.running_jobs.pop(record["id"], None)
+        self.log.info("task_job_finished", job=record["id"], type=record["type"], state=record["state"])
+
+    def try_write_record(self, record):
+        try:
+            self.write_record(record["dir"], record)
+        except OSError as failure:
+            self.log.error("claude_job_write_failed", job=record["id"], message=str(failure)[:200])
+
+    def run_job(self, record, command):
+        timeout_seconds = min(command.timeout_seconds or self.timeout_seconds, self.timeout_seconds)
+        try:
+            result = self.claude_client.run_prompt(command.argv, command.work_dir or record["dir"], command.stdin_text, timeout_seconds)
         except Exception as failure:  # a job never takes the app down
             result = {"ok": False, "reply": "", "cost_usd": None, "session_id": "", "error": "internal failure: %s" % type(failure).__name__}
+        if command.finalize is not None:
+            try:
+                result = command.finalize(result)
+            except Exception as failure:  # the finalization never leaves the job running forever
+                self.log.error("claude_job_finalize_failed", job=record["id"], type=type(failure).__name__, message=str(failure)[:200])
+                result = dict(result, ok=False, error="internal failure while finishing the job: %s" % type(failure).__name__)
         record.update(state=JOB_STATE_OK if result.get("ok") else JOB_STATE_ERROR, finished_at=now_iso(),
                       cost_usd=result.get("cost_usd"), reply=str(result.get("reply") or "")[:JOB_REPLY_LIMIT],
                       error=str(result.get("error") or ""), session_id=result.get("session_id") or record.get("session_id") or "")
@@ -166,4 +233,5 @@ class ClaudeJobService:
 
     @staticmethod
     def to_public(record):
-        return {field: record.get(field) for field in PUBLIC_JOB_FIELDS}
+        fields = PUBLIC_JOB_FIELDS + (TASK_JOB_FIELDS if "steps" in record else ())
+        return {field: (list(record.get(field)) if field == "steps" else record.get(field)) for field in fields}

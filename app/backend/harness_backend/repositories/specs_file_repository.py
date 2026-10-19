@@ -19,6 +19,7 @@ if ENGINE_DIR not in sys.path:
     sys.path.insert(0, ENGINE_DIR)
 import loop_state  # noqa: E402  (loop folder layout, parse_roadmap, roadmap approval)
 import classify_structure  # noqa: E402  (Conformance section of CLAUDE.md)
+import run_hints  # noqa: E402  (How to run section of CLAUDE.md)
 
 TEXT_ENCODING = "utf-8"
 

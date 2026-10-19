@@ -1,6 +1,7 @@
 """Git client (reads the repo state and creates a new repo). No shell; everything through ProcessRunner; never raises.
 
-Never pushes nor touches a protected branch: push and PR belong to `engine/delivery.py`, triggered by the user.
+Never pushes on its own nor touches a protected branch: the loop's push and PR belong to `engine/delivery.py`. The only push here is
+`commit_all_and_push`, run on the user's click for the user's own folder and current branch.
 """
 import os
 from typing import Protocol
@@ -27,9 +28,11 @@ def default_comparison_bases():
 class IGitClient(Protocol):
     def is_git_repo(self, folder) -> bool: ...
     def get_current_branch(self, folder) -> str: ...
+    def get_short_head(self, folder) -> str: ...
     def list_worktrees(self, folder) -> list: ...
     def count_unpushed_commits(self, folder, bases=None): ...
     def has_uncommitted_changes(self, folder, include_untracked=True) -> bool: ...
+    def commit_all_and_push(self, folder, message, push=True) -> dict: ...
     def init_repo_with_initial_commit(self, folder, message, user="") -> tuple: ...
 
 
@@ -49,6 +52,11 @@ class GitClient:
             return False
         code, output, _ = self.run_git(folder, "rev-parse", "--is-inside-work-tree")
         return code == 0 and output == "true"
+
+    def get_short_head(self, folder):
+        """Short sha of HEAD; '' when it cannot be read (no commit, not a repo)."""
+        code, output, _ = self.run_git(folder, "rev-parse", "--short", "HEAD")
+        return output if code == 0 else ""
 
     def get_current_branch(self, folder):
         """Current branch name; '' with a detached HEAD or outside a repo."""
@@ -99,6 +107,42 @@ class GitClient:
     def get_config(self, folder, key):
         code, output, _ = self.run_git(folder, "config", key)
         return output if code == 0 else ""
+
+    def commit_all_and_push(self, folder, message, push=True):
+        """`git add -A` + commit (when there is something staged) + push of the CURRENT branch. Only called from a user click.
+
+        Pushes to the upstream when one is set, else `git push -u origin <branch>`. Never forces, never switches branch, never touches
+        another branch. Returns {"ok", "branch", "committed", "pushed", "commit", "error"}; `ok` is False at the first failing step
+        (a commit that succeeded stays: the error then names the push)."""
+        result = {"ok": False, "branch": "", "committed": False, "pushed": False, "commit": "", "error": ""}
+        branch = self.get_current_branch(folder)
+        if not branch:
+            result["error"] = "the folder has no current branch (detached HEAD): check out a branch first"
+            return result
+        result["branch"] = branch
+        code, _, error = self.run_git(folder, "add", "-A")
+        if code != 0:
+            result["error"] = "git add failed: %s" % (error or code)
+            return result
+        code, staged, _ = self.run_git(folder, "diff", "--cached", "--name-only")
+        if code == 0 and staged:
+            name = self.get_config(folder, "user.name") or DEFAULT_GIT_USER_NAME
+            email = self.get_config(folder, "user.email") or DEFAULT_GIT_USER_EMAIL
+            code, _, error = self.run_git(folder, "-c", "user.name=" + name, "-c", "user.email=" + email, "commit", "-m", message)
+            if code != 0:
+                result["error"] = "git commit failed: %s" % (error or code)
+                return result
+            result["committed"], result["commit"] = True, self.get_short_head(folder)
+        if not push:
+            result["ok"] = True
+            return result
+        has_upstream = self.run_git(folder, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")[0] == 0
+        code, _, error = self.run_git(folder, *(["push"] if has_upstream else ["push", "-u", "origin", branch]))
+        if code != 0:
+            result["error"] = "git push failed: %s" % (error.splitlines()[-1] if error else code)
+            return result
+        result["pushed"], result["ok"] = True, True
+        return result
 
     def init_repo_with_initial_commit(self, folder, message, user=""):
         """`git init` + `git add -A` + initial commit (`--allow-empty`: an empty folder also gets a commit). Returns (ok, error).

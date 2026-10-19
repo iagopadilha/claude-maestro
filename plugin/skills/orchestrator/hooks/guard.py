@@ -7,6 +7,8 @@ Registered once in hooks/hooks.json (plugin agents ignore frontmatter hooks):
   spec-writer / spec-reviewer / brownfield-mapper -> spec;  executor-back / executor-front / executor-generic -> executor;
   verifier / verifier-flow -> verifier;  anything else (main session, other agents) -> exit 0 at once, nothing enforced.
 Explicit `--profile orchestrator|executor|spec|verifier` keeps working as before.
+`--profile planning` is for the app's planning chat (`claude -p` with `--settings`, not an agent): spec's confinement (`specs-only`) without
+`state-write`, because planning legitimately writes ROADMAP.md and FLOWS.md; the roadmap approval file stays blocked (`approval-write`).
 
 Reads the hook JSON on stdin. Blocks with exit 2 + the reason on stderr.
 Exception: a rule released in `.specs/project/loop/json/PERMISSIONS.json` (written by the orchestrator ONLY when the
@@ -23,9 +25,12 @@ read from the new place first and from the flat place as a fallback, until `harn
 
 Covers the Bash and PowerShell tools (same command analysis).
 """
+import fnmatch
 import json
 import os
+import posixpath
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -43,15 +48,15 @@ INSTALL = re.compile(
     r"\b(npm|pnpm|yarn|bun)\s+(i|install|add|ci|update|upgrade)\b|\bdotnet\s+(restore|add\s+package)\b|\bpip\s+install\b",
     re.I,
 )
-# credentials: .secrets/, the plugin's shared .env, the app's data folder (.env, and app.json with the panel token), SSH keys.
+# credentials: .secrets/, the plugin's shared .env, a project's .env.test (test VALUES; TEST-ENVIRONMENT.md only holds names), the app's data folder (.env, and app.json with the panel token), SSH keys.
 # `[\\/]+` because a Read/Glob/Grep input is checked as JSON text, where a Windows backslash comes doubled.
 SECRET_HINT = re.compile(
-    r"\.secrets[\\/]|[\\/]shared[\\/]+\.env(?!\.example)|\.loop-harness[\\/]+(?:\.env(?!\.example)|app\.json)|\bid_(rsa|ed25519)\b", re.I
+    r"\.secrets[\\/]|[\\/]shared[\\/]+\.env(?!\.example)|\.env\.test(?!\.example)|\.loop-harness[\\/]+(?:\.env(?!\.example)|app\.json)|\bid_(rsa|ed25519)\b", re.I
 )
 # state only the orchestrator writes: the project files it owns and the WHOLE loop folder (.specs/project/loop/).
 # The flat names after `loop` are the old plugin layout (read until migrated). PROJECT.md and TEST-ENVIRONMENT.md stay editable.
 STATE_FILE = re.compile(
-    r"\.specs[\\/]project[\\/](ROADMAP\.md|STATE\.md|RULES\.md|phases[\\/]|archive[\\/]|loop(?:[\\/]|$)|"
+    r"\.specs[\\/]project[\\/](ROADMAP\.md|FLOWS\.md|STATE\.md|RULES\.md|phases[\\/]|archive[\\/]|loop(?:[\\/]|$)|"
     r"VALIDATE\.md|DEPENDENCIES\.md|GRAPH\.md|ANSWERS\.md|NOTICE\.txt|rules\.tests\.json|SCOPE\.json|LOOP\.json|LOOP\.lock|"
     r"PERMISSIONS\.json|ROADMAP-APPROVED\.json|delivery\.json)", re.I
 )
@@ -127,19 +132,23 @@ NULL_TARGETS = {"/dev/null", "$null", "nul", "null"}
 
 # rules that not even PERMISSIONS.json releases: workflows never push to the integration branch/main nor force, and the
 # roadmap approval and the panel's trigger endpoints are only ever the user's click
-HARD = {"push-protected", "push-force", "approval-write", "panel-trigger"}
+HARD = {"push-protected", "push-force", "approval-write", "panel-trigger", "grafana-write"}
 
 PROFILES = {
     # implements code: everything blocked except editing inside the project
-    "executor": ["git-write", "git-push", "pr-release", "prod-write", "dev-write", "outbound-msg", "secrets", "install", "state-write", "project-deny", "path-scope", "repo-only", "delivery", "state-script", "loop-run", "approval-write", "panel-trigger"],
+    "executor": ["git-write", "git-push", "pr-release", "prod-write", "dev-write", "outbound-msg", "secrets", "install", "state-write", "project-deny", "path-scope", "repo-only", "delivery", "state-script", "loop-run", "approval-write", "panel-trigger", "grafana-write"],
     # only reads and runs checks
-    "verifier": ["git-write", "git-push", "pr-release", "prod-write", "dev-write", "outbound-msg", "secrets", "state-write", "project-deny", "delivery", "state-script", "loop-run", "approval-write", "panel-trigger"],
-    # writes spec/map
-    "spec": ["git-write", "git-push", "pr-release", "prod-write", "dev-write", "outbound-msg", "secrets", "state-write", "project-deny", "delivery", "state-script", "loop-run", "approval-write", "panel-trigger"],
+    "verifier": ["git-write", "git-push", "pr-release", "prod-write", "dev-write", "outbound-msg", "secrets", "state-write", "project-deny", "delivery", "state-script", "loop-run", "approval-write", "panel-trigger", "grafana-write"],
+    # writes spec/map: only inside .specs/, .regression/ and docs/codebase/ (the map); never code
+    "spec": ["specs-only", "map-docs", "git-write", "git-push", "pr-release", "prod-write", "dev-write", "outbound-msg", "secrets", "state-write", "project-deny", "delivery", "state-script", "loop-run", "approval-write", "panel-trigger", "grafana-write"],
     # the orchestrator chat: may commit (one per feature) and write state; does not push (only via `harness.py deliver`), does not
     # touch PROD and does not write to tickets/issues/messages (outbound-msg): the main action is never in the feature's scope.
     # It never approves the roadmap nor clicks for the user in the panel (approval-write, panel-trigger).
-    "orchestrator": ["git-push", "pr-release", "git-add-all", "prod-write", "secrets", "project-deny", "outbound-msg", "approval-write", "panel-trigger"],
+    # repo-only: it commits and writes only inside the project's worktrees (SCOPE.json `roots`) and the primary .specs/.
+    "orchestrator": ["git-push", "pr-release", "git-add-all", "prod-write", "secrets", "project-deny", "outbound-msg", "approval-write", "panel-trigger", "repo-only", "grafana-write"],
+    # the app's planning chat (a `claude -p`, not an agent): like spec (only .specs/), but WITHOUT state-write: it writes ROADMAP.md and
+    # FLOWS.md itself. ROADMAP-APPROVED.json stays blocked (approval-write): the approval is the user's click in the panel.
+    "planning": ["specs-only", "secrets", "approval-write", "panel-trigger", "git-write", "git-push", "pr-release", "prod-write", "outbound-msg", "grafana-write"],
 }
 
 # hook payload `agent_type` (without the `plugin-name:` prefix) -> profile, used by `--profile auto`
@@ -150,7 +159,20 @@ AGENT_PROFILES = {
 }
 
 
+def specs_dir_from_env():
+    """LOOP_SPECS_DIR: absolute path of the PRIMARY `.specs` folder, exported by the engine in the `claude -p` environment (hooks inherit it).
+    SCOPE.json lives only there, so a hook whose cwd is another worktree would find nothing walking up. Ignored unless it is an
+    existing folder named `.specs`."""
+    value = os.environ.get("LOOP_SPECS_DIR", "").strip().strip("\"'")
+    if value and os.path.isabs(value) and os.path.isdir(value) and os.path.basename(os.path.normpath(value)) == ".specs":
+        return os.path.normpath(value)
+    return None
+
+
 def find_specs_dir(cwd):
+    from_env = specs_dir_from_env()
+    if from_env:
+        return from_env
     here = os.path.abspath(cwd or os.getcwd())
     for _ in range(8):
         candidate = os.path.join(here, ".specs")
@@ -278,8 +300,49 @@ def shell_write_targets(command):
 TEMP_HINT = re.compile(r"[\\/](tmp|temp|scratchpad)[\\/]|^/tmp/", re.I)
 
 
+# Paths are compared case-insensitively only where the filesystem is (Windows, macOS default); on a case-sensitive one the original
+# case is kept, so an os.path.exists() on a normalized path still hits the real file. Tests flip this flag to exercise the POSIX branch.
+CASE_INSENSITIVE = os.name == "nt" or sys.platform == "darwin"
+
+
+def fold(text):
+    return text.lower() if CASE_INSENSITIVE else text
+
+
 def norm(path):
-    return os.path.normpath(path).replace("\\", "/").rstrip("/").lower()
+    return fold(os.path.normpath(path).replace("\\", "/").rstrip("/"))
+
+
+def normalize_path(path, base=None, fold_case=None):
+    """Canonical, lowercase, forward-slash absolute form of a path as a tool or a shell may spell it: backslashes, `//` collapsed,
+    `.` and `..` resolved, git-bash `/c/...` and WSL `/mnt/c/...` drive forms turned into `c:/...` (Windows), a relative path resolved
+    against `base` (the hook's cwd)."""
+    text = str(path).strip().strip("\"'").replace("\\", "/")
+    text = re.sub(r"/{2,}", "/", text)
+    if os.name == "nt":
+        text = re.sub(r"^/(?:mnt/)?([a-zA-Z])(?=/|$)", r"\1:", text)
+    if not (text.startswith("/") or re.match(r"^[a-zA-Z]:/", text)) and base:
+        text = normalize_path(base, None, False) + "/" + text
+    text = posixpath.normpath(text).rstrip("/")
+    return text.lower() if (CASE_INSENSITIVE if fold_case is None else fold_case) else text
+
+
+def has_git_ancestor(absolute):
+    """True when a folder above `absolute` holds a `.git` entry (folder or file): the path is inside a git working tree."""
+    here = os.path.dirname(absolute.rstrip("/"))
+    while here:
+        if os.path.exists(os.path.join(here, ".git")):
+            return True
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    return False
+
+
+def temp_exempt(absolute):
+    """Genuine temp files only: a tmp/temp/scratchpad segment AND not inside any git working tree (a repo that happens to live under such a folder is code)."""
+    return bool(TEMP_HINT.search(absolute + "/")) and not has_git_ancestor(absolute)
 
 
 SLUG_MARK = re.compile(r"SCOPE_FEATURE:\s*([A-Za-z0-9._-]+)")
@@ -303,13 +366,22 @@ def executor_slug(payload):
         return None
 
 
-def load_scope(specs_dir, slug=None):
-    """Reads .specs/project/loop/json/SCOPE.json: {"features": {"slug": ["folder/or/file", ...]}} written by the orchestrator.
-    With a known `slug` present in the file, only that feature's paths; otherwise the union of all in-flight features."""
+def read_scope_file(specs_dir):
+    """SCOPE.json as a dict ({} when absent or unreadable)."""
     try:
         with open(loop_file(specs_dir, "SCOPE.json"), encoding="utf-8") as handle:
             data = json.load(handle)
-        features = data.get("features") or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def load_scope(specs_dir, slug=None):
+    """Reads .specs/project/loop/json/SCOPE.json: {"roots": [...], "features": {"slug": ["folder/or/file", ...]}} written by the orchestrator.
+    An entry is absolute (a path in any worktree) or relative (to the primary root, the folder holding `.specs/`).
+    With a known `slug` present in the file, only that feature's paths; otherwise the union of all in-flight features."""
+    features = read_scope_file(specs_dir).get("features") or {}
+    try:
         if slug and slug in features:
             return list(features[slug])
         paths = []
@@ -318,6 +390,256 @@ def load_scope(specs_dir, slug=None):
         return paths
     except Exception:
         return []
+
+
+def project_roots(specs_dir):
+    """Normalized worktree roots: the primary root (folder holding `.specs/`) first, then the absolute `roots` of SCOPE.json."""
+    roots = [norm(os.path.dirname(specs_dir))]
+    for item in read_scope_file(specs_dir).get("roots") or []:
+        if isinstance(item, str) and os.path.isabs(item) and norm(item) not in roots:
+            roots.append(norm(item))
+    return roots
+
+
+def inside_any(absolute, roots):
+    return any(absolute == root or absolute.startswith(root + "/") for root in roots)
+
+
+def load_copied(specs_dir):
+    """Absolute, normalized paths of the config files copied into the worktrees (SCOPE.json `copied`, from REPOS.json `copy`)."""
+    items = read_scope_file(specs_dir).get("copied") or []
+    return [norm(item) for item in items if isinstance(item, str) and os.path.isabs(item)]
+
+
+CANDIDATE_SPLIT_RE = re.compile(r'''[\s"'`<>|;&(){},=]+''')
+
+
+def mentions_copied_normalized(text, cwd, copied, roots):
+    """Every path-looking token of `text`, normalized (see normalize_path), compared with the copied absolute paths and with their
+    tail inside each listed worktree root (so `../wt/./.env.local`, `R://wt/.env.local` or `/r/wt/.env.local` are the same file)."""
+    base = cwd or (roots[0] if roots else None)
+    tails = set()
+    for path in copied:
+        for root in roots:
+            if path.startswith(root + "/"):
+                tails.add(path[len(root) + 1:])
+    for token in CANDIDATE_SPLIT_RE.split(text.replace("\\", "/")):
+        if not token or not re.search(r"[./\\]", token):
+            continue
+        absolute = normalize_path(token, base)
+        if absolute in copied:
+            return True
+        for root in roots:
+            if absolute.startswith(root + "/") and absolute[len(root) + 1:] in tails:
+                return True
+    return False
+
+
+def mentions_copied_secret(text, cwd, specs_dir):
+    """True when `text` (a command segment, a file path or a tool input) names a copied config file: by full path, or by its
+    path inside the worktree when `cwd` is that worktree. Only the NAME is matched: a build that merely loads the file is not a tool call on it."""
+    if not specs_dir or not text:
+        return False
+    copied = load_copied(specs_dir)
+    if not copied:
+        return False
+    flat = fold(text.replace("\\\\", "/").replace("\\", "/"))
+    here = norm(cwd) if cwd else ""
+    roots = project_roots(specs_dir)
+    if mentions_copied_normalized(text, cwd, copied, roots):
+        return True
+    for path in copied:
+        if path in flat:
+            return True
+        for root in roots:
+            if path.startswith(root + "/") and (here == root or here.startswith(root + "/")):
+                relative = path[len(root) + 1:]
+                if re.search(r"(?<![\w./-])" + re.escape(relative) + r"(?![\w-])", flat):
+                    return True
+    return False
+
+
+# ---- broad reads that would reach a copied config file without NAMING it (rg --no-ignore, grep -r, find -exec cat, globs...)
+GLOB_CHARS = re.compile(r"[*?\[\]{}]")
+# ripgrep (and ag/ack): the flags that switch the ignore rules off
+IGNORE_OFF_RE = re.compile(r"\s(?:--no-ignore\S*|--unrestricted|-[a-zA-Z]*u[a-zA-Z]*)(?=\s|$)", re.I)
+IGNORE_AWARE_RE = re.compile(r"(?:^|[\s|(])(?:rg|ripgrep|ag|ack)(?:\.exe)?\s", re.I)
+GREP_RE = re.compile(r"(?:^|[\s|(])(?:grep|egrep|fgrep|ugrep|ug)(?:\.exe)?\s", re.I)
+GREP_RECURSIVE_RE = re.compile(r"\s(?:--recursive|--dereference-recursive|-d\s*recurse|-[a-zA-Z]*[rR][a-zA-Z]*)(?=\s|$)")
+GIT_GREP_BYPASS_RE = re.compile(r"\bgit(?:\.exe)?\s+(?:-[-\w]+(?:[= ]\S+)?\s+)*grep\b[^\n]*?\s--(?:no-index|no-exclude-standard)\b", re.I)
+READ_TOOLS = r"(?:cat|grep|egrep|fgrep|head|tail|less|more|strings|xxd|od|base64|cp|sed|awk|type|rg|bat|tac|nl)"
+FIND_RE = re.compile(r"(?:^|[\s|(])find(?:\.exe)?\s", re.I)
+FIND_READ_RE = re.compile(r"(?:-exec(?:dir)?|-ok(?:dir)?|\|\s*xargs(?:\s+-\S+)*)\s+(?:\S*[\\/])?" + READ_TOOLS + r"\b", re.I)
+GCI_RE = re.compile(r"(?:^|[\s|(])(?:Get-ChildItem|gci|dir|ls)(?:\s[^|]*?)?\s-(?:Recurse|r)(?=\s|$)", re.I)
+PIPE_READER_RE = re.compile(r"\b(?:Select-String|sls|Get-Content|gc|cat|type|findstr|xargs|grep|egrep|rg|head|tail|more|less|ForEach-Object|foreach)\b|\|\s*%", re.I)
+FINDSTR_RE = re.compile(r"(?:^|[\s|(])findstr(?:\s[^|]*?)?\s/[a-z]*s[a-z]*(?=\s|$)", re.I)
+WILDCARD_READER_RE = re.compile(r"\b(?:Select-String|sls|Get-Content|gc|findstr)\b", re.I)
+COPY_TREE_RE = re.compile(
+    r"(?:^|[\s|(])(?:(?:cp|rsync)(?:\.exe)?(?:\s[^|]*?)?\s(?:--recursive|--archive|-[a-zA-Z]*[rRa][a-zA-Z]*)(?=\s|$)"
+    r"|Copy-Item(?:\s[^|]*?)?\s-Recurse\b|xcopy(?:\s[^|]*?)?\s/[se]\b|robocopy\s|zip\s|Compress-Archive\s|tar\s+-?[a-zA-Z]*c)", re.I)
+
+
+def expand_braces(pattern):
+    found = re.search(r"\{([^{}]*)\}", pattern)
+    if not found:
+        return [pattern]
+    options = []
+    for alternative in found.group(1).split(","):
+        options.extend(expand_braces(pattern[:found.start()] + alternative + pattern[found.end():]))
+    return options
+
+
+def last_segment(pattern):
+    return fold(re.split(r"[\\/]", pattern.strip("\"'"))[-1])
+
+
+def glob_covers(pattern, names):
+    """Plain glob match of the last segment of `pattern` against the copied file names (a bare `*` covers everything)."""
+    return any(fnmatch.fnmatchcase(name, option) for option in expand_braces(last_segment(pattern)) for name in names)
+
+
+def glob_names_copied(pattern, names, quoted=False):
+    """Does a glob single out a copied file? Only a SPECIFIC glob counts (a letter/digit in the fixed part, e.g. `.env*`, `*.local`,
+    or an unquoted `.*`): a bare `*` or `**/*` lists everything and is not an attempt at the secret. `!negated` globs never count."""
+    if pattern.strip("\"'").startswith("!"):
+        return False
+    for option in expand_braces(last_segment(pattern)):
+        literal = GLOB_CHARS.sub("", option)
+        specific = bool(re.search(r"[a-z0-9]", literal)) or (option.startswith(".") and not quoted)
+        if specific and any(fnmatch.fnmatchcase(name, option) for name in names):
+            return True
+    return False
+
+
+def option_values(plain, long_names, short_names=()):
+    """Values of `--name=value`, `--name value` and `-n value` options in a tokenised command (names compared case-insensitively)."""
+    values = []
+    for index, token in enumerate(plain):
+        lowered = token.lower()
+        for name in long_names:
+            if lowered.startswith(name + "="):
+                values.append(token[len(name) + 1:].strip("\"'"))
+            elif lowered == name and index + 1 < len(plain):
+                values.append(plain[index + 1])
+        if lowered in short_names and index + 1 < len(plain):
+            values.append(plain[index + 1])
+    return values
+
+
+def target_dirs(tokens, cwd):
+    """Folders a command works on: each token that is an existing folder (or the folder part of a glob), else the cwd when no token
+    names an existing file or folder (`grep -r x` with no path reads the cwd)."""
+    dirs, anything = [], False
+    for token in tokens:
+        bare = token.strip("\"'")
+        if not bare or bare.startswith("-"):
+            continue
+        if GLOB_CHARS.search(bare):
+            parts = re.split(r"([\\/])", bare)
+            bare = "".join(parts[:-1]).rstrip("\\/") or "."
+        raw = os.path.expanduser(bare)
+        raw = raw if os.path.isabs(raw) else os.path.join(cwd or os.getcwd(), raw)
+        if os.path.isdir(raw):
+            dirs.append(norm(raw))
+            anything = True
+        elif os.path.isfile(raw):
+            anything = True
+    if not anything and cwd:
+        dirs.append(norm(cwd))
+    return dirs
+
+
+def folder_has_copied(folder, copied):
+    """True when `folder` is, or is above, the folder of a copied file."""
+    folder = folder.rstrip("/")
+    return bool(folder) and any(path.startswith(folder + "/") for path in copied)
+
+
+def broad_reader(statement, plain, names):
+    """Why this statement reads recursively or past the ignore rules (so it would reach a copied file without naming it), or ''."""
+    if IGNORE_AWARE_RE.search(statement):
+        if IGNORE_OFF_RE.search(statement):
+            return "search with the ignore rules switched off (rg --no-ignore/-u/-uu) reads git-ignored config copies"
+        if any(glob_names_copied(glob, names) for glob in option_values(plain, ("--glob", "--iglob"), ("-g",))):
+            return "search whose --glob singles out a git-ignored config copy"
+    if GIT_GREP_BYPASS_RE.search(statement):
+        return "git grep --no-index/--no-exclude-standard searches git-ignored files"
+    if GREP_RE.search(statement) and GREP_RECURSIVE_RE.search(statement):
+        includes = option_values(plain, ("--include",))
+        excludes = option_values(plain, ("--exclude",))
+        if (includes and not any(glob_covers(item, names) for item in includes)) or any(glob_covers(item, names) for item in excludes):
+            return ""
+        return "recursive grep over a folder that holds a config copy"
+    if FIND_RE.search(statement) and FIND_READ_RE.search(statement):
+        patterns = option_values(plain, ("-name", "-iname"))
+        negated = any(token in ("!", "-not", "-o") for token in plain)
+        if patterns and not negated and not any(glob_covers(item, names) for item in patterns):
+            return ""
+        return "find feeding the files it lists to a reader (-exec/xargs) over a folder that holds a config copy"
+    if GCI_RE.search(statement) and PIPE_READER_RE.search(statement):
+        includes = option_values(plain, ("-include", "-filter"))
+        excludes = option_values(plain, ("-exclude",))
+        if (includes and not any(glob_covers(item, names) for item in includes)) or any(glob_covers(item, names) for item in excludes):
+            return ""
+        return "recursive listing piped into a reader over a folder that holds a config copy"
+    if FINDSTR_RE.search(statement):
+        masks = [token for token in plain if token and token[0] not in "/-" and GLOB_CHARS.search(token)]
+        if masks and not any(glob_covers(mask, names) for mask in masks):
+            return ""
+        return "findstr /s over a folder that holds a config copy"
+    if COPY_TREE_RE.search(statement):
+        return "recursive copy/archive of a folder that holds a config copy (the copy would escape the name check)"
+    return ""
+
+
+def broad_secret_read(statement, cwd, specs_dir):
+    """Reason when one statement reaches a copied config file without naming it: a recursive or ignore-bypassing reader whose target
+    folder is or contains the copied file's folder, or a glob that singles the copied name out. '' = nothing found. Best effort."""
+    copied = load_copied(specs_dir) if specs_dir else []
+    if not copied:
+        return ""
+    names = [path.rsplit("/", 1)[-1] for path in copied]
+    tokens = re.findall(r"\"[^\"]*\"|'[^']*'|[^\s|]+", statement)
+    plain = [token.strip("\"'") for token in tokens]
+    how = broad_reader(statement, plain, names)
+    if how and any(folder_has_copied(folder, copied) for folder in target_dirs(tokens, cwd)):
+        return how
+    for token, bare in zip(tokens, plain):
+        if bare.startswith("-") or not GLOB_CHARS.search(bare):
+            continue
+        parts = re.split(r"[\\/]", bare)
+        folder = bare[:len(bare) - len(parts[-1])].rstrip("\\/")
+        any_folder = bool(GLOB_CHARS.search(folder))
+        where = "" if any_folder else resolve_dir(folder or ".", cwd)
+        if not (any_folder or any(path.rsplit("/", 1)[0] == where for path in copied)):
+            continue
+        if glob_names_copied(bare, names, quoted=token[:1] in ("\"", "'")):
+            return "glob that matches a config copy"
+        if parts[-1] in ("*", "*.*") and WILDCARD_READER_RE.search(statement):
+            return "wildcard read of a folder that holds a config copy"
+    return ""
+
+
+def tool_broad_secret(tool_name, tool_input, cwd, specs_dir):
+    """Grep/Glob: ripgrep skips git-ignored files by default, but a `glob` that names the file whitelists it (and Glob lists it), and an
+    ignore-bypass option reads it. Blocked when it targets the copied file's folder (or a folder above it)."""
+    copied = load_copied(specs_dir) if specs_dir else []
+    if not copied or not isinstance(tool_input, dict):
+        return ""
+    names = [path.rsplit("/", 1)[-1] for path in copied]
+    if not folder_has_copied(resolve_dir(tool_input.get("path") or ".", cwd), copied):
+        return ""
+    if tool_name == "Grep":
+        if any(re.search(r"no[-_]?ignore|unrestricted", str(key), re.I) and value for key, value in tool_input.items()):
+            return "Grep with the ignore rules switched off reads git-ignored config copies"
+        glob = tool_input.get("glob")
+        if isinstance(glob, str) and glob_names_copied(glob, names):
+            return "Grep glob that singles out a config copy (a glob whitelists a git-ignored file)"
+    if tool_name == "Glob":
+        pattern = tool_input.get("pattern")
+        if isinstance(pattern, str) and glob_names_copied(pattern, names):
+            return "Glob pattern that matches a config copy"
+    return ""
 
 
 def note_identity_gap(specs_dir, profile, payload):
@@ -332,34 +654,158 @@ def note_identity_gap(specs_dir, profile, payload):
         pass
 
 
-def check_scope(target, profile_rules, specs_dir, slug=None):
+SPECS_ONLY_FOLDERS = (".specs/", ".regression/")
+MAP_DOCS_FOLDER = "docs/codebase/"  # the brownfield map (versioned): only profiles carrying the `map-docs` rule may write it
+
+
+def check_specs_only(target, profile_rules, specs_dir, cwd=None):
+    """Spec and map agents write only inside `.specs/`, `.regression/` or `docs/codebase/` (the map) of the repo: never code, never another folder.
+    Profiles with the `map-docs` rule (spec, not planning) may also write `docs/codebase/`, where the codebase map lives.
+    A temp folder is allowed (scratch files); without a located `.specs/` nothing is enforced (the guard never stalls)."""
+    if "specs-only" not in profile_rules or not specs_dir or not target:
+        return []
+    root = norm(os.path.dirname(specs_dir))
+    absolute = normalize_path(target, cwd or root)
+    inside_repo = absolute.startswith(root + "/")
+    if not inside_repo and temp_exempt(absolute):
+        return []
+    relative = absolute[len(root) + 1:] if inside_repo else absolute
+    if relative.startswith(SPECS_ONLY_FOLDERS):
+        return []
+    if "map-docs" in profile_rules and relative.startswith(MAP_DOCS_FOLDER):
+        return []
+    return [("specs-only", "spec and map agents write only inside .specs/ and docs/codebase/ (never code): %s" % relative[:100])]
+
+
+def check_scope(target, profile_rules, specs_dir, slug=None, cwd=None):
     """Edits only inside the PATHS of the executor's feature (or, without identity, of the in-flight features) and only inside the repo."""
     hits = []
     if not specs_dir or not target:
         return hits
     root = norm(os.path.dirname(specs_dir))
-    absolute = norm(target if os.path.isabs(target) else os.path.join(root, target))
-    inside_repo = absolute == root or absolute.startswith(root + "/")
-    if not inside_repo and TEMP_HINT.search(absolute + "/"):
+    absolute = normalize_path(target, cwd or root)
+    inside_repo = inside_any(absolute, project_roots(specs_dir))
+    if not inside_repo and temp_exempt(absolute):
         return hits
     if "repo-only" in profile_rules and not inside_repo:
-        hits.append(("repo-only", "file outside the repo: only repository code"))
+        hits.append(("repo-only", "file outside the project's worktrees: only repository code"))
         return hits
-    relative = absolute[len(root) + 1:] if inside_repo else absolute
-    if relative.startswith(".regression/"):
+    if absolute.startswith(root + "/.regression/"):
         return hits
     scope = load_scope(specs_dir, slug)
     if "path-scope" in profile_rules and scope:
-        allowed = [norm(item) for item in scope]
-        if not any(relative == item or relative.startswith(item.rstrip("/") + "/") for item in allowed):
-            hits.append(("path-scope", "outside the feature's PATHS (%s). Need a file outside the scope? Return NEEDS_CONFIRM" % ", ".join(allowed)[:120]))
+        allowed = [norm(item if os.path.isabs(item) else os.path.join(root, item)) for item in scope]
+        if not any(absolute == item or absolute.startswith(item.rstrip("/") + "/") for item in allowed):
+            shown = [item[len(root) + 1:] if item.startswith(root + "/") else item for item in allowed]
+            hits.append(("path-scope", "outside the feature's PATHS (%s). Need a file outside the scope? Return NEEDS_CONFIRM" % ", ".join(shown)[:120]))
     return hits
+
+
+BUILD_OUTPUT_DIRS = {"bin", "obj", "node_modules", ".pytest_cache", "__pycache__", "dist", "coverage", ".next", ".nuxt", ".venv", "venv",
+                     ".mypy_cache", ".gradle", ".turbo", "testresults", ".vs"}
+STATEMENT_SPLIT_RE = re.compile(r"&&|\|\||;|\n")
+PS_PATH_RE = re.compile(r"-(?:Path|FilePath|LiteralPath)\s+(\"[^\"]+\"|'[^']+'|[^\s;|&<>]+)", re.I)
+
+
+def quoted_ranges(text):
+    """(start, end) of every CLOSED quoted string: a `>` inside one is text, not a redirect (`python -c "print('a > b')"`)."""
+    ranges, quote, start = [], None, 0
+    for index, char in enumerate(text):
+        if quote:
+            if char == quote:
+                ranges.append((start, index))
+                quote = None
+        elif char in "\"'":
+            quote, start = char, index
+    return ranges
+
+
+def confined_write_targets(statement):
+    """Redirect/tee/Set-Content/Out-File/sed -i targets that are really executed (not inside a quoted string), null sinks removed."""
+    spans = quoted_ranges(statement)
+    found = []
+    for pattern in (REDIRECT_RE, CMD_TARGET_RE, SED_INPLACE_RE):
+        for match in pattern.finditer(statement):
+            if any(start < match.start() < end for start, end in spans):
+                continue
+            target = match.group(1).strip("\"'")
+            if target and target.lower() not in NULL_TARGETS:
+                found.append(target)
+    if re.search(r"\b(?:Set-Content|Add-Content|Out-File)\b", statement, re.I):
+        found.extend(match.group(1).strip("\"'") for match in PS_PATH_RE.finditer(statement))
+    return found
+
+
+def check_shell_target(target, cwd, profile_rules, specs_dir, slug):
+    """A shell write is confined like Write/Edit: inside the feature PATHS (path-scope), inside the project's worktrees (repo-only),
+    inside .specs/ and docs/codebase/ (specs-only). Exempt: temp folders, /dev/*, build output folders (bin, obj, node_modules,
+    .pytest_cache...) inside a worktree. A target built from a variable ($env:X, %X%, $(...)) cannot be resolved here and is not judged."""
+    if not specs_dir or not ({"path-scope", "repo-only", "specs-only"} & set(profile_rules)):
+        return []
+    if target.startswith(("/dev/", "$", "%")) or "$(" in target or "`" in target:
+        return []
+    path = os.path.expanduser(target)
+    if os.name == "nt":
+        path = re.sub(r"^/([a-zA-Z])/", r"\1:/", path)  # git-bash style /c/Users/...
+    absolute = norm(path if os.path.isabs(path) else os.path.join(cwd or os.path.dirname(specs_dir), path))
+    roots = project_roots(specs_dir)
+    if inside_any(absolute, roots):
+        relative = next(absolute[len(root) + 1:] for root in sorted(roots, key=len, reverse=True) if absolute.startswith(root + "/"))
+        if BUILD_OUTPUT_DIRS & {fold(part) for part in relative.split("/")[:-1]}:
+            return []
+    hits = list(check_specs_only(absolute, profile_rules, specs_dir))
+    hits.extend(check_scope(absolute, profile_rules, specs_dir, slug))
+    return hits
+
+
+CD_RE = re.compile(r"^(?:cd|pushd|Set-Location|sl)\s+(?:-(?:Path|LiteralPath)\s+)?(\"[^\"]+\"|'[^']+'|\S+)", re.I)
+
+
+def resolve_dir(path, cwd):
+    path = os.path.expanduser(path.strip("\"'"))
+    return norm(path if os.path.isabs(path) else os.path.join(cwd or os.getcwd(), path))
+
+
+def git_command_dirs(segment, cwd):
+    """For a `git ...` segment: (subcommand, folders the command acts on). The folder is the cwd moved by every `-C <path>`;
+    `--git-dir`/`--work-tree` add their own. (None, []) when the segment is not git."""
+    try:
+        tokens = shlex.split(segment, posix=False)
+    except ValueError:
+        tokens = segment.split()
+    if not tokens or not re.match(r"^(?:.*[\\/])?git(?:\.exe)?$", tokens[0].strip("\"'"), re.I):
+        return None, []
+    effective, extra, index = cwd, [], 1
+    while index < len(tokens) and tokens[index].startswith("-"):
+        token = tokens[index]
+        has_value = index + 1 < len(tokens)
+        if token == "-C" and has_value:
+            effective = resolve_dir(tokens[index + 1], effective)
+            index += 2
+            continue
+        if token == "-c" and has_value:
+            index += 2
+            continue
+        inline = re.match(r"^--(?:git-dir|work-tree)=(.+)$", token)
+        if inline:
+            extra.append(resolve_dir(inline.group(1), cwd))
+        elif token in ("--git-dir", "--work-tree") and has_value:
+            extra.append(resolve_dir(tokens[index + 1], cwd))
+            index += 2
+            continue
+        index += 1
+    sub = tokens[index].strip("\"'") if index < len(tokens) else None
+    return sub, [resolve_dir(".", effective)] + extra
 
 
 def check_bash(command, profile_rules, permissions):
     """Returns the list of violated (rule_id, reason). Applies to Bash and PowerShell."""
     hits = []
     cwd = permissions.get("_cwd")
+    specs_dir = permissions.get("_specs_dir")
+    roots = project_roots(specs_dir) if specs_dir else []
+    running_cwd = cwd or (roots[0] if roots else None)
+    start_cwd = running_cwd
     # 1) text of the whole command: catches a push hidden in python -c, $(...), quotes
     if PUSH_RE.search(command):
         if "git-push" in profile_rules:
@@ -370,6 +816,16 @@ def check_bash(command, profile_rules, permissions):
             hits.append(("push-force", "forced push: never"))
     # 2) per segment: write git, add -A, gh, install, credentials
     for segment in split_commands(command):
+        segment_cwd = running_cwd
+        cd_move = CD_RE.match(segment)
+        if cd_move:
+            running_cwd = resolve_dir(cd_move.group(1), running_cwd)
+        if roots and "repo-only" in profile_rules:
+            git_sub, git_dirs = git_command_dirs(segment, segment_cwd)
+            if git_sub and git_sub not in READ_ONLY_GIT:
+                outside = [folder for folder in git_dirs if not inside_any(folder, roots)]
+                if outside:
+                    hits.append(("repo-only", "git %s outside the project's worktrees (%s): the repo of its -C/cwd must be one of them" % (git_sub, outside[0][:80])))
         sub = git_subcommand(segment)
         if sub:
             if sub == "push":
@@ -386,8 +842,8 @@ def check_bash(command, profile_rules, permissions):
                 hits.append(("pr-release", "gh pr/release/gist: leaves the machine; the end-of-flow PR is made by `harness.py deliver`"))
         if INSTALL.search(segment) and "install" in profile_rules:
             hits.append(("install", "installing a dependency: only if the spec asks for it"))
-        if SECRET_HINT.search(segment) and "secrets" in profile_rules:
-            hits.append(("secrets", "credential path (.secrets/shared .env/app data .env or app.json/private key)"))
+        if "secrets" in profile_rules and (SECRET_HINT.search(segment) or mentions_copied_secret(segment, segment_cwd, specs_dir)):
+            hits.append(("secrets", "credential path (.secrets/shared .env/app data .env or app.json/private key/config copied into a worktree)"))
     if "state-script" in profile_rules and STATE_SCRIPT_RE.search(command):
         hits.append(("state-script", "only the orchestrator writes rule, dependency, graph or LOOP.json (harness.py rules write, audit --write/--apply, graph --write, state loop|migrate)"))
     if "delivery" in profile_rules and DELIVERY_RE.search(command):
@@ -396,13 +852,34 @@ def check_bash(command, profile_rules, permissions):
         hits.append(("loop-run", "the loop and the panel are started by the user (or by the orchestrator at the user's request), never by a subagent"))
     if "panel-trigger" in profile_rules and PANEL_TRIGGER_RE.search(command):
         hits.append(("panel-trigger", "panel endpoint that only the user's click triggers (loop, roadmap approval, Act, answer/resume/instruction)"))
+    # 2b) broad reads that reach a copied config file without naming it (rg --no-ignore, grep -r, find -exec cat, globs...)
+    if "secrets" in profile_rules and specs_dir:
+        statement_cwd = start_cwd
+        for statement in STATEMENT_SPLIT_RE.split(command):
+            statement = statement.strip()
+            reason = broad_secret_read(statement, statement_cwd, specs_dir) if statement else ""
+            if reason:
+                hits.append(("secrets", reason))
+            cd_move = CD_RE.match(statement)
+            if cd_move:
+                statement_cwd = resolve_dir(cd_move.group(1), statement_cwd)
+    # 2c) shell writes are confined like Write/Edit (PATHS, worktrees, .specs/), per statement so a `cd` is followed
+    if specs_dir and ({"path-scope", "repo-only", "specs-only"} & set(profile_rules)):
+        statement_cwd = start_cwd
+        for statement in STATEMENT_SPLIT_RE.split(command):
+            statement = statement.strip()
+            for target in confined_write_targets(statement):
+                hits.extend(check_shell_target(target, statement_cwd, profile_rules, specs_dir, permissions.get("_slug")))
+            cd_move = CD_RE.match(statement)
+            if cd_move:
+                statement_cwd = resolve_dir(cd_move.group(1), statement_cwd)
     # 3) shell write to a file that must never be touched
     for target in shell_write_targets(command):
         if APPROVAL_FILE.search(target) and "approval-write" in profile_rules:
             hits.append(("approval-write", "ROADMAP-APPROVED.json is written only by the user's click in the panel"))
         if STATE_FILE.search(target) and "state-write" in profile_rules:
             hits.append(("state-write", "only the orchestrator writes ROADMAP/STATE/RULES/phases and the loop folder (via shell too)"))
-        if SECRET_HINT.search(target) and "secrets" in profile_rules:
+        if "secrets" in profile_rules and (SECRET_HINT.search(target) or mentions_copied_secret(target, running_cwd, specs_dir)):
             hits.append(("secrets", "write to a credential path"))
         for pattern in permissions.get("deny_path_regex", []):
             if project_pattern_matches(pattern, target):
@@ -423,6 +900,24 @@ def project_pattern_matches(pattern, text):
         return False
 
 
+# Grafana (MCP `grafana`): read-only for every profile. Only the read verbs pass; create_/update_/delete_/add_/install_,
+# alerting_manage_*, create/delete_snapshot and a grafana_api_request whose method is not GET are denied (HARD: no PERMISSIONS.json release).
+GRAFANA_PREFIX = "mcp__grafana__"
+GRAFANA_READ_RE = re.compile(r"^(?:get|list|query|search|find|check|analyze|suggest|validate)_|^generate_deeplink$")
+
+
+def grafana_write_reason(tool_name, tool_input):
+    if not tool_name.lower().startswith(GRAFANA_PREFIX):
+        return ""
+    verb = tool_name[len(GRAFANA_PREFIX):].lower()
+    if verb == "grafana_api_request":
+        method = str((tool_input or {}).get("method") or "GET").strip().upper()
+        return "" if method == "GET" else "grafana_api_request with method %s (Grafana is read-only)" % method
+    if verb in ("create_snapshot", "delete_snapshot") or not GRAFANA_READ_RE.match(verb):
+        return "%s writes to Grafana (only read tools are allowed)" % tool_name
+    return ""
+
+
 def is_prod_tool(tool_name):
     lowered = tool_name.lower()
     return any(hint in lowered for hint in prod_hints())
@@ -432,6 +927,10 @@ def check_tool(tool_name, tool_input, profile_rules, permissions):
     hits = []
     if tool_name in ("Bash", "PowerShell"):
         return check_bash(tool_input.get("command", ""), profile_rules, permissions)
+    if "grafana-write" in profile_rules:
+        reason = grafana_write_reason(tool_name, tool_input)
+        if reason:
+            hits.append(("grafana-write", reason))
     if tool_name.startswith("mcp__"):
         short_name = tool_name.rsplit("__", 1)[-1]
         if DB_TOOL.match(tool_name):
@@ -450,17 +949,23 @@ def check_tool(tool_name, tool_input, profile_rules, permissions):
             hits.append(("approval-write", "ROADMAP-APPROVED.json is written only by the user's click in the panel"))
         if STATE_FILE.search(target) and "state-write" in profile_rules:
             hits.append(("state-write", "only the orchestrator writes ROADMAP/STATE/RULES/phases and the loop folder"))
-        if SECRET_HINT.search(target) and "secrets" in profile_rules:
+        if "secrets" in profile_rules and (SECRET_HINT.search(target) or mentions_copied_secret(target, permissions.get("_cwd"), permissions.get("_specs_dir"))):
             hits.append(("secrets", "credential path"))
+        if tool_name in ("Write", "Edit", "NotebookEdit"):
+            hits.extend(check_specs_only(target, profile_rules, permissions.get("_specs_dir"), permissions.get("_cwd")))
         if tool_name in ("Write", "Edit"):
-            hits.extend(check_scope(target, profile_rules, permissions.get("_specs_dir"), permissions.get("_slug")))
+            hits.extend(check_scope(target, profile_rules, permissions.get("_specs_dir"), permissions.get("_slug"), permissions.get("_cwd")))
         for pattern in permissions.get("deny_path_regex", []):
             if project_pattern_matches(pattern, target):
                 hits.append(("project-deny", "path forbidden by the project: %s" % pattern))
     if tool_name in ("Read", "Glob", "Grep"):
         target = json.dumps(tool_input)
-        if SECRET_HINT.search(target) and "secrets" in profile_rules:
+        if "secrets" in profile_rules and (SECRET_HINT.search(target) or mentions_copied_secret(target, permissions.get("_cwd"), permissions.get("_specs_dir"))):
             hits.append(("secrets", "reading a credential"))
+        if "secrets" in profile_rules and tool_name in ("Glob", "Grep"):
+            reason = tool_broad_secret(tool_name, tool_input, permissions.get("_cwd"), permissions.get("_specs_dir"))
+            if reason:
+                hits.append(("secrets", reason))
     return hits
 
 

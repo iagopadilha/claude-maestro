@@ -4,7 +4,7 @@ One file, one or more flows. Each flow is a sequence of observable steps.
 
 ```markdown
 # Flow: <short name>
-ORIGIN: spec <slug> REQ-3 | user request
+ORIGIN: FLOWS.md [<slug>] | spec <slug> REQ-3 | user request
 LAYERS: route | e2e | route+e2e
 APPS: <back>, <front>          # folder names; ENVIRONMENT.md resolves where and how to start
 PRE: <required state: user, tenant, existing data>

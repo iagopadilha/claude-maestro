@@ -1,54 +1,29 @@
-# Template of `.specs/project/TEST-ENVIRONMENT.md` (the project's test environment)
+# Template of `.specs/project/TEST-ENVIRONMENT.md`
 
-A **project** file, never a skill file. Copy this template to `.specs/project/TEST-ENVIRONMENT.md` and replace every `FILL_IN`. The preflight (`harness.py check`, the **Check** button in the panel) refuses to start when the ROADMAP has `regression=yes` (or the loop runs with `--e2e`) and this file is missing or still has `FILL_IN`.
-
-**Why it exists:** validating a route runs the real app and needs headers, users and keys. Without them the loop stops at the baseline and wakes you up for something that was already known when the routes were read. Whoever writes the specs finds this out in Phase 2 and closes it **before** asking for the roadmap approval.
-
-**Secret:** the file may hold DEV values. Check that `.specs/` is in the project's `.gitignore` (`git check-ignore -v .specs/project/TEST-ENVIRONMENT.md`). Never copy a value into evidence, summary, notification or commit (write `***`). Never production.
-
-**Key in your secret manager:** every credential states **the exact key in your secret manager**, the environment and the class that reads it. You need this to know where to take the value from. The project's keys: `CLAUDE.md` (a "Keys in use" section, if the project has one) and the configuration lookups in the code.
+Direct on purpose: a 2 to 3 line summary and small tables of variable NAMES. No prose sections (what it is for, what may be tested, what never to do: obvious). The app copies the block below to `.specs/project/TEST-ENVIRONMENT.md`; the preflight (`harness.py check`) refuses a file that still has `FILL_IN`, holds a plaintext secret or mentions a `$NAME` no `.env` defines (so keep `$` only on names that exist). In `Where to get it` write only the source, never a value: `appsettings: <file>:<Key:Path>` (key found in appsettings*.json, .env.example or config of the repo), `Infisical: <key> (<path/environment>)` (the code reads it from the secret manager; the AI never opens Infisical or a real `.env`), or `FILL_IN` when the source cannot be determined. Values live in `.specs/project/.env.test`, then `~/.loop-harness/.env`; the Test environment tab lets the user fill the missing ones. `python <shared>/testenv.py list --project <root>` shows which names are defined and from which layer, values masked.
 
 ```markdown
-# Test environment (DEV): variables, headers and credentials
+# Test environment (DEV)
 
-> SECRET. Only DEV and localhost. .specs/ is ignored by git. Never copy values into a log, evidence, summary, notification or commit.
-> User authorization (FILL_IN date): the accesses below may be used to validate the routes.
+FILL_IN: 2 to 3 lines: what is tested and against which app or API (DEV and localhost only).
 
-## 1. Where it runs
-| What | Value |
-|---|---|
-| Local app | FILL_IN (https://localhost:PORT, then http://localhost:PORT) |
-| Route prefix | FILL_IN (/api/v1) |
-| SSO / login | FILL_IN (DEV identity provider URL and login route) |
-| Database | FILL_IN (DEV; never production) |
+## Where it runs
+| Item | Variable | Note |
+|------|----------|------|
+| Local app | `$LOCAL_URL` | FILL_IN: port and the command that starts it |
 
-## 2. Credentials and headers
-| For what | Header or call | Value | Key in your secret manager (environment, class that reads it) |
-|---|---|---|---|
-| Admin routes | FILL_IN (e.g. X-Admin-Token) | FILL_IN | FILL_IN (e.g. Authentication:AdminToken, dev, AdminTokenAuthenticationHandler) |
-| Customer routes | FILL_IN (e.g. Authorization: Bearer) | FILL_IN (how to obtain it) | FILL_IN |
-| Webhook / integration | FILL_IN | FILL_IN | FILL_IN |
+## Login (to get the access token)
+| User | Password | Token comes from |
+|------|----------|------------------|
+| `$TEST_USER_1_EMAIL` | `$TEST_USER_1_PASSWORD` | FILL_IN: the login route or page |
 
-## 3. Test users
-| Role | E-mail | Password | For what |
-|---|---|---|---|
-| FILL_IN | FILL_IN | FILL_IN | FILL_IN |
+## API headers and tokens
+| Header or call | Variable | Where to get it |
+|----------------|----------|-----------------|
+| FILL_IN: header name, for example Authorization | `$ACCESS_TOKEN` | FILL_IN: `appsettings: <file>:<Key:Path>` or `Infisical: <key>` |
 
-## 3b. User or account with test data (happy path)
-| User or account | Has which data | For which cases |
-|---|---|---|
-| FILL_IN | FILL_IN (e.g. 12 orders and 3 refunds) | FILL_IN (happy-path RG-xx cases) |
-Checked on FILL_IN (date), by reading the DEV database or asking the user. An account without data only covers edge cases (401, 403, invalid body, empty list). If the service sends e-mail or charges a third party when a record changes, write here how to avoid it.
-
-## 4. What each spec uses
-| Spec | RG cases | Credential |
-|---|---|---|
-| FILL_IN | FILL_IN | FILL_IN |
-
-## 5. Allowed and forbidden
-Allowed (DEV): FILL_IN.
-Forbidden without exception: FILL_IN (e.g. creating a resource billed by a third party; anything in production).
-
-## 6. Pending items
-- FILL_IN (value still missing, and who provides it). Nothing pending: write "none".
+## Test data
+| What | Variable |
+|------|----------|
+| FILL_IN: one row per sample the features need (CNPJ, id, address) | `$SAMPLE_ID` |
 ```

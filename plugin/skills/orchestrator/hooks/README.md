@@ -36,22 +36,46 @@ From `PROFILES` and `HARD` in `guard.py`. O = orchestrator, E = executor, S = sp
 | `pr-release` | `gh pr`, `release`, `repo`, `gist`, `workflow` other than `view`, `list`, `diff`, `status`, `checks` | O E S V | |
 | `prod-write` | write SQL through a database MCP tool whose name contains a production hint (`GUARD_PROD_HINTS`, default `prod,production`), or any write-verb MCP tool on such a server | O E S V | |
 | `outbound-msg` | ticket, issue, chat, mail or comment MCP tools with a create, update, send or post verb | O E S V | |
-| `secrets` | reading, writing or running anything on `.secrets/`, the plugin's `shared/.env`, `~/.loop-harness/.env` or `app.json`, or SSH private keys | O E S V | |
+| `secrets` | reading, writing or running anything on `.secrets/`, the plugin's `shared/.env`, `~/.loop-harness/.env` or `app.json`, SSH private keys, or a config file copied into a worktree (`copied` in `SCOPE.json`, from REPOS.json `copy`), by name or by a recursive/ignore-bypassing search that would reach it (see "Copied config files") | O E S V | |
 | `project-deny` | **your** `deny_bash_regex` and `deny_path_regex` (see the cookbook) | O E S V | |
 | `git-add-all` | `git add .`, `git add -A`/`--all`, `git commit -a` | O | |
 | `git-write` | any git subcommand except `status`, `diff`, `log`, `show`, `rev-parse`, `ls-files`, `blame`, `describe`, `grep`, `shortlog` | E S V | |
 | `dev-write` | write SQL through a non-production database MCP tool | E S V | |
-| `state-write` | writing `ROADMAP.md`, `STATE.md`, `RULES.md`, `phases/`, `archive/` or anything under `.specs/project/loop/` | E S V | |
+| `state-write` | writing `ROADMAP.md`, `FLOWS.md`, `STATE.md`, `RULES.md`, `phases/`, `archive/` or anything under `.specs/project/loop/` | E S V | |
 | `state-script` | `harness.py rules write`, `audit --write/--apply`, `graph --write`, `state loop`/`migrate` | E S V | |
 | `delivery` | `harness.py deliver` / `delivery.py` | E S V | |
 | `loop-run` | `harness.py loop`/`check`/`serve`, `run_loop.py` | E S V | |
 | `install` | `npm`/`pnpm`/`yarn`/`bun` `install`/`add`/`ci`/`update`, `dotnet restore`/`add package`, `pip install` | E | |
-| `path-scope` | `Write`/`Edit` outside the feature's paths in `.specs/project/loop/json/SCOPE.json` | E | |
-| `repo-only` | `Write`/`Edit` outside the repository (temp folders excepted) | E | |
+| `path-scope` | `Write`/`Edit` (and a shell redirect, `tee`, `Set-Content`, `Out-File`, `sed -i`) outside the feature's paths in `.specs/project/loop/json/SCOPE.json` (absolute entries, or relative to the primary root) | E | |
+| `grafana-write` | any `mcp__grafana__*` tool that is not a read: `create_*`, `update_*`, `delete_*`, `add_*`, `install_*`, `alerting_manage_*`, `create_snapshot`/`delete_snapshot`, and `grafana_api_request` with a method other than GET (reads such as `query_loki_*`, `list_*`, `get_*`, `search_*`, `find_*`, `check_*`, `generate_deeplink` stay allowed). No `PERMISSIONS.json` entry releases it | every profile (O E S V and planning) | **yes** |
+| `repo-only` | `Write`/`Edit` (and a shell write) outside the project's worktrees (the primary root plus `roots` of `SCOPE.json`; temp folders excepted), and a git write whose `-C`/cwd is outside them | O E | |
 
 **Hard** rules cannot be lifted by `PERMISSIONS.json`. Every block and every rule you lifted is logged in `.specs/project/loop/internal/guard.log`.
 
 In the headless loop there is a second lock. `claude -p` runs with the `pushurl` of every remote set to an invalid URL (`GIT_CONFIG_*`), so a push fails even if a regex misses it.
+
+## Copied config files: what the `secrets` rule covers and what it does not
+
+A config file copied into a worktree (`copied` in `SCOPE.json`, e.g. `.env.local`) is git-ignored, and the guard keeps agents from reading it. Checked with ripgrep 14.1.1 in a throwaway git repo whose `.gitignore` lists `.env.local`: `rg SECRET` (what the Grep tool runs) **skips** it, and so does `rg --hidden`; `rg --no-ignore` alone still skips it (it is also a hidden file, and that flag does not unhide), but `rg --no-ignore --hidden` and `rg -uu` **read it**; `rg -g '.env*'` **reads it** (a glob whitelists an ignored file, and the Grep tool's `glob` parameter does the same); `grep -r` reads it; the Glob tool **lists** it (names only, it does not honour `.gitignore`). So what is blocked, with the `secrets` rule, when the target folder is or contains the folder of a copied file:
+
+- by name: any tool call or command that names the file (full path in any spelling that normalizes to it, or its path inside the worktree when the cwd is that worktree);
+- Bash/PowerShell: `rg`/`ag`/`ack` with `--no-ignore*`, `-u`/`-uu`, `--unrestricted`, or a `-g/--glob` that singles the file out; `grep -r/-R/--recursive` (unless `--include` excludes it or `--exclude` names it); `git grep --no-index`/`--no-exclude-standard`; `find` feeding `-exec`/`xargs` to a reader (unless every `-name` excludes it); `Get-ChildItem -Recurse` (or `gci -r`, `ls -R`) piped to `Select-String`/`Get-Content`/`cat`/`type`...; `findstr /s`; recursive copy or archive (`cp -r`, `Copy-Item -Recurse`, `xcopy /s`, `robocopy`, `rsync`, `zip`, `tar -c`), which would move the secret to a name the guard does not know; a glob that singles the name out (`cat .env*`, `type *.local`) and, for `Select-String`/`Get-Content`/`findstr`, a bare `*` in that folder;
+- Grep tool: a `glob` that singles the file out, or an ignore-bypass parameter; Glob tool: a pattern that singles the file out (`.env*`, `*.local`; a bare `*` or `**/*.ts` is fine).
+
+A normal source search keeps working: `Grep` without a glob, `rg pattern`, `grep -r pattern src/`, `find . -name '*.ts' -exec grep ...`, builds and tests (a build that loads the file is not a tool call on it).
+
+Residual risk, on purpose and not closed: the check is text analysis, not a sandbox. A target that comes from a variable or sub-shell (`$(...)`, `$env:X`), a script or program that opens the file itself (`python -c`, `node -e`, a test that prints `process.env`), a wildcard such as `cat *` in bash (the shell does not expand it to dotfiles, so it is not flagged), commands this list does not know, and any path that reaches the file through a symlink or junction are not seen. The file is also readable by the build and test tools the executor is allowed to run. The real protection is that these files hold development values only: never copy a production secret into a worktree.
+
+## Locating `.specs/`, path normalization and the temp exemption
+
+- **`LOOP_SPECS_DIR`.** `SCOPE.json`, `PERMISSIONS.json` and `guard.log` live only in the PRIMARY worktree's `.specs/`. A hook whose cwd is another worktree (after a `cd`, or with `--add-dir`) finds no `.specs/` walking up, which would turn path-scope, repo-only and the copied-secrets rules off. The engine therefore exports `LOOP_SPECS_DIR` (absolute path of the primary `.specs` folder) in the `claude -p` environment and the hooks inherit it. When set, it wins over the walk-up; it is honoured only when it is absolute, an existing folder and named `.specs` (anything else is ignored). Without it the old walk-up from the payload `cwd` is unchanged (the app's planning/map jobs rely on that). The project root is always `dirname(specs_dir)`; a relative tool target (`apps/z/a.ts`) is resolved against the hook's cwd, never against the specs root, and then judged against the roots and PATHS.
+- **Normalized comparison of copied secrets.** Every path-looking token of the command or tool input is normalized before it is compared with the `copied` absolute paths: backslashes and `//` collapsed, `.` and `..` resolved, a relative path resolved against the hook cwd, git-bash `/c/...` and WSL `/mnt/c/...` turned into `c:/...` (Windows), case-insensitive. A token that lands inside any listed worktree root with the same tail as a copied file (`.env.local` in the primary root, for instance) counts too. So `R://wt/.env.local`, `R:/wt/./.env.local`, `R:/wt/apps/../.env.local`, `../wt/.env.local` and `/r/wt/.env.local` are all blocked. The old substring match stays as a second net.
+- **Temp exemption.** Writes to a temp folder (a `tmp`, `temp` or `scratchpad` path segment) outside the project's roots are allowed, except when any ancestor folder of the target holds a `.git` entry (folder or file, so linked worktrees count): a path inside a git working tree is code and is never exempt, wherever that repo lives. Genuine temp files (no `.git` above) keep the exemption.
+- **Case.** Paths are lowercased for comparison only where the filesystem is case-insensitive (Windows, macOS: the `CASE_INSENSITIVE` flag of `guard.py`). On a case-sensitive filesystem the original case is kept end to end, so the `.git` ancestor check (an `os.path.exists` on the real path, resolved against the hook cwd) and every other filesystem lookup hit the real file; glob/name matching and the build-output folder names are folded the same way.
+
+## Shell writes are confined like Write/Edit
+
+`>`, `>>`, `tee`, `Set-Content`/`Add-Content`/`Out-File` (also with `-Path`/`-FilePath`/`-LiteralPath`) and `sed -i` get the same confinement as `Write`/`Edit`, per statement (a `cd` before them is followed): an executor (`path-scope`) writes only inside the feature's PATHS, the orchestrator and the executor (`repo-only`) only inside the worktrees, spec and planning (`specs-only`) only inside `.specs/` (and `docs/codebase/` for spec). Exempt: temp folders, `/dev/*`, `nul`, `$null`, and build output folders inside a worktree (`bin`, `obj`, `node_modules`, `.pytest_cache`, `__pycache__`, `dist`, `coverage`, `.next`, `.venv`...). The tools' own writes (`dotnet build` filling `bin/obj`, `pytest` filling `.pytest_cache`) never go through the shell, so they are not seen at all. A `>` inside a quoted string (`python -c "print('a > b')"`) is text, not a redirect. Not covered: a target built from a variable (`$env:X\out`, `$(...)`), and writers other than the ones listed (`cp`, `mv`, `Copy-Item`, `New-Item`, a script that opens the file itself).
 
 ## Fail-open, on purpose
 

@@ -336,5 +336,19 @@ class GraphTests(ReadTestCase):
         self.assertEqual(data["text"], "(ROADMAP has no features)")
 
 
+class PlanningRequiredStateTests(ReadTestCase):
+    def test_state_says_when_the_project_is_in_planning_mode(self):
+        from harness_backend.domain.project import Project
+        from harness_backend.repositories.loop_file_repository import loop_state
+        self.fixture.start()
+        self.assertFalse(self.state()["planning_required"], "a project with a loop worktree already looped")
+        fresh = os.path.join(self.fixture.tmp, "fresh")
+        self.fixture.write(os.path.join(fresh, ".specs", "project", "ROADMAP.md"), "## Stage 1\n- [a] status=pending\n")
+        self.fixture.project_service.register_project(Project(id="p-fresh", name="fresh", repo_path=fresh))
+        self.assertTrue(self.state("p-fresh")["planning_required"])
+        loop_state.approve_roadmap(fresh, "2026-10-16T10:00:00")
+        self.assertFalse(self.state("p-fresh")["planning_required"])
+
+
 if __name__ == "__main__":
     unittest.main()

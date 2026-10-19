@@ -148,6 +148,17 @@ The same rule holds in any layer, e.g. a backend order-sync service (before → 
 - Do not create "for the future" abstractions without a real need now
 - If you want to suggest something extra, ask first
 
+### The project's generic piece before a helper of your own
+- Before creating a function, hook or wrapper for a common task (saving, logging, handling an error, opening a dialog), use the **generic piece the project already has** (base hook, shared service helper, `ErrorHandler`). If it does not cover the case, **improve the generic piece** (everyone gains) instead of opening a private detour
+- `try/catch` does not wrap every call: it lives where the project already handles errors (the service's `catch` with `ErrorHandler`, a central handler). If a failure must not break the flow (e.g. a notification after saving), make it a named step of the flow, not a generic wrapper
+- A private helper only if it really does something (a decision, a validation, an assembly with a rule). Do not create one that is ONLY a filter, ONLY a `try/catch` or ONLY a call plus a log: a short filter stays at the point of use, a reused query goes to the query/service layer
+
+### Environment and base links
+- To know the environment, use the stack's standard variable, never an invented key: in Vite `import.meta.env.MODE` / `import.meta.env.DEV`; in Next/Node `NODE_ENV`. Development uses the dev base; any other value uses production
+- Base URLs live as constants in **one place** of the project (`constants/` or `lib/`), never scattered or hard-coded in components
+- Anything that needs a link to another app or portal asks **one single link builder** (a module that picks the base by environment and assembles the path, e.g. `buildTrackingUrl(type, id)`); a new link becomes a function in it
+- Exception, commented in the code: a public static file that exists in only one environment
+
 ### On-screen text always translated
 - Every visible text goes through i18next: `const { t } = useTranslation()` and `t('key', 'Default text')`
 - Never `t('key') ?? 'Text'`: `t` returns the key itself, so the default never shows
@@ -221,6 +232,7 @@ Read `references/recipes-structure-toast-forms-grid.md` **before** creating a ne
 - [ ] Toast from the shared module, without repeating a message, also for front-end errors?
 - [ ] Is the layout responsive (phone, tablet and desktop)?
 - [ ] Does the visual follow the UI best practices (or the project's design system)?
+- [ ] Did I use the project's generic piece before creating a helper, with no `try/catch` wrapping each call, and base URLs/links in one place?
 - [ ] Was any unnecessary abstraction created (YAGNI)?
 - [ ] Did I refactor or split code that already worked? Did I state the regression: old x new compared (snapshots, requests, console, texts) or offered (`references/behavior-regression.md`)?
 

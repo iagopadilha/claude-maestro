@@ -29,6 +29,7 @@ JOB_WAIT_TIMEOUT_SECONDS = 30
 FAKE_LOG_VARIABLE = "FAKE_CLAUDE_LOG"
 FAKE_FAIL_VARIABLE = "FAKE_CLAUDE_FAIL"
 FAKE_DELAY_VARIABLE = "FAKE_CLAUDE_DELAY"
+FAKE_MAP_MODE_VARIABLE = "FAKE_CLAUDE_MAP_MODE"  # "nothing" = writes no map document; "touch-code" = also edits src/app.py
 FAKE_SESSION = "fake-roadmap-session-1"
 LOOP_DIR_PARTS = (".specs", "project", "loop")
 
@@ -52,7 +53,24 @@ def write(path, text):
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(text)
 result = "nothing"
-if prompt.startswith("/orchestrator roadmap"):
+session = "fake-roadmap-session-1"
+if "dontAsk" in argv:  # planning chat (/orchestrator plan): stdin = first prompt + text, or just the text when resumed
+    session = "fake-planning-session-1"
+    write(os.path.join(project, "PROJECT.md"), "# Project\n\n**Vision:** a to-do app.\n")
+    questions = "- Which database? | recommended: SQLite\n" if "ASK" in stdin_text else "- none\n"
+    write(os.path.join(project, "ROADMAP.md"), "# Roadmap\n\n## Stage 1 — Base\n\n"
+          "- [api-base] status=pending scope=Medium kind=back paths=src/api\n"
+          "- [screen-base] status=pending scope=Small kind=front paths=src/web deps=api-base\n\n"
+          "## Open questions\n\n" + questions)
+    write(os.path.join(project, "FLOWS.md"), "# Flows\n\n## [api-base] API\n1. GET /items\n2. Expected: 200\n\n"
+          "## [screen-base] Screen\n1. Open /\n2. Expected: the list\n")
+    if "TOUCH-OUTSIDE" in stdin_text:
+        write(os.path.join("src", "evil.txt"), "created outside the documents\n")
+        write(os.path.join(".", "README.md"), "changed by the planning chat\n")
+        write(os.path.join(project, "STATE.md"), "changed\n")
+        write(os.path.join(".specs", "project", "loop", "json", "ROADMAP-APPROVED.json"), "{}")
+    result = "planned: " + stdin_text.strip().splitlines()[-1]
+elif prompt.startswith("/orchestrator roadmap"):
     tokens = prompt.split()
     goal = open(tokens[tokens.index("--goal-file") + 1], encoding="utf-8").read()
     write(os.path.join(project, "PROJECT.md"), "# Project\n\n" + goal)
@@ -60,21 +78,49 @@ if prompt.startswith("/orchestrator roadmap"):
           "- [api-base] status=pending scope=Medium kind=back paths=src/api\n"
           "- [screen-base] status=pending scope=Small kind=front paths=src/web deps=api-base\n\n"
           "## Open questions\n\n- Which database to use?\n")
+    write(os.path.join(project, "FLOWS.md"), "# Flows\n\n## [api-base] API\n1. GET /items\n2. Expected: 200\n\n"
+          "## [screen-base] Screen\n1. Open /\n2. Expected: the list\n")
     result = "roadmap generated"
 elif prompt.startswith("/orchestrator map"):
-    write(os.path.join(".specs", "codebase", "STACK.md"), "# Stack\n\nPython.\n")
+    map_mode = os.environ.get("FAKE_CLAUDE_MAP_MODE", "")
+    if map_mode != "nothing":
+        write(os.path.join("docs", "codebase", "STACK.md"), "# Stack\n\nPython.\n")
+    if map_mode == "touch-code":
+        write(os.path.join("src", "app.py"), "print('changed by the map job')\n")
     result = "mapped"
 elif "--resume" in argv:
     path = os.path.join(project, "ROADMAP.md")
     text = open(path, encoding="utf-8").read()
     write(path, text.replace("## Open questions", "- [extra] status=pending scope=Small kind=back paths=src/extra\n\n## Open questions"))
     result = "roadmap refined"
-print(json.dumps({"type": "result", "is_error": False, "result": result, "session_id": "fake-roadmap-session-1", "total_cost_usd": 0.42}))
+print(json.dumps({"type": "result", "is_error": False, "result": result, "session_id": session, "total_cost_usd": 0.42}))
 '''
 
+FILLED_PROJECT = "# Project\n\n**Vision:** a to-do app for the team.\n\n## Where to look\n\n- Limits and \"never X\": `RULES.md`.\n"
 TWO_FEATURE_ROADMAP = ("# Roadmap\n\n## Stage 1 — Base\n\n"
                        "- [api-base] status=pending scope=Medium kind=back paths=src/api\n"
                        "- [screen-base] status=pending scope=Small kind=front paths=src/web deps=api-base\n")
+
+
+def build_flows_for(roadmap_text):
+    """FLOWS.md with a 2-step flow for every feature of the ROADMAP text."""
+    from harness_backend.repositories.specs_file_repository import loop_state
+    features, _ = loop_state.parse_roadmap(roadmap_text)
+    return "# Flows\n\n" + "".join("## [%s] Flow of %s\n1. Do it\n2. Expected: it works\n\n" % (slug, slug) for slug in features)
+
+
+def write_planning_documents(work_dir, roadmap_text=None):
+    """PROJECT.md filled in (no FILL_IN) and FLOWS.md covering every ROADMAP feature: the planning gates of the approval."""
+    project_dir = os.path.join(work_dir, ".specs", "project")
+    if roadmap_text is not None:
+        write_file(os.path.join(project_dir, "ROADMAP.md"), roadmap_text)
+    write_file(os.path.join(project_dir, "PROJECT.md"), FILLED_PROJECT)
+    write_file(os.path.join(project_dir, "FLOWS.md"), build_flows_for(read_file(os.path.join(project_dir, "ROADMAP.md"))))
+
+
+def mark_loop_already_ran(work_dir):
+    """meta.json with a turn: the project already ran a loop, so it is out of planning mode even without an approval."""
+    write_file(loop_file_path(work_dir, "json", "meta.json"), json.dumps({"turns": 1}))
 
 
 def delete_folder(path):
@@ -131,15 +177,18 @@ class ProjectsTestCase(unittest.TestCase):
         self.projects_dir = os.path.join(self.temporary_dir, "projects")
         os.makedirs(self.projects_dir)
         self.original_env = {name: os.environ.get(name) for name in
-                             ("LOOP_DATA_DIR", "LOOP_SKILL_DIR", FAKE_LOG_VARIABLE, FAKE_FAIL_VARIABLE, FAKE_DELAY_VARIABLE)}
+                             ("LOOP_DATA_DIR", "LOOP_SKILL_DIR", "LOOP_USER_SHARED_DIR", "LOOP_CLAUDE_CONFIG_FILE", FAKE_LOG_VARIABLE, FAKE_FAIL_VARIABLE, FAKE_DELAY_VARIABLE, FAKE_MAP_MODE_VARIABLE)}
         skill_dir = os.path.join(self.temporary_dir, "skill")
         write_file(os.path.join(skill_dir, "SKILL.md"), "# fake skill\n")
         write_file(os.path.join(skill_dir, "hooks", "guard.py"), "import sys\nsys.exit(2)\n")
         self.fake_claude_path = os.path.join(self.temporary_dir, "fake_claude.py")
         write_file(self.fake_claude_path, FAKE_CLAUDE_CODE)
         self.claude_calls_path = os.path.join(self.temporary_dir, "claude_calls.jsonl")
-        os.environ.update({"LOOP_DATA_DIR": self.data_dir, "LOOP_SKILL_DIR": skill_dir, FAKE_LOG_VARIABLE: self.claude_calls_path})
-        for name in (FAKE_FAIL_VARIABLE, FAKE_DELAY_VARIABLE):
+        self.user_shared_dir = os.path.join(self.temporary_dir, "user-shared")  # the user-level shared .env lives here, never in the real home
+        self.claude_config_path = os.path.join(self.temporary_dir, "claude.json")  # fake ~/.claude.json (the user's MCP servers)
+        os.environ.update({"LOOP_DATA_DIR": self.data_dir, "LOOP_SKILL_DIR": skill_dir, FAKE_LOG_VARIABLE: self.claude_calls_path,
+                           "LOOP_USER_SHARED_DIR": self.user_shared_dir, "LOOP_CLAUDE_CONFIG_FILE": self.claude_config_path})
+        for name in (FAKE_FAIL_VARIABLE, FAKE_DELAY_VARIABLE, FAKE_MAP_MODE_VARIABLE):
             os.environ.pop(name, None)
         self.config = load_app_config(user_data_dir=self.data_dir, claude_binary=self.fake_claude_path, open_browser=False)
         self.log = StructuredLog(self.config.logs_dir)
@@ -216,12 +265,13 @@ class ProjectsTestCase(unittest.TestCase):
 
     # ------------------------------------------------ project scenarios
     def create_ready_project(self, name="ready", approve=True, conformance="LEGACY"):
-        """Git repo with .specs/ initialized, Conformance, ROADMAP with 2 features (and approved, when asked)."""
+        """Git repo with .specs/ initialized, Conformance, ROADMAP with 2 features, PROJECT.md filled in and FLOWS.md (and
+        approved, when asked)."""
         repo = create_git_repo(os.path.join(self.projects_dir, name))
         project_id = self.open_project(repo)
         status, body = self.request("POST", "/p/%s/api/structure/initialize" % project_id, {"conformance": conformance})
         self.assertEqual(status, 200, body)
-        write_file(os.path.join(repo, ".specs", "project", "ROADMAP.md"), TWO_FEATURE_ROADMAP)
+        write_planning_documents(repo, TWO_FEATURE_ROADMAP)
         if approve:
             status, body = self.request("POST", "/p/%s/api/roadmap/approve" % project_id, {"confirm": True})
             self.assertEqual(status, 200, body)

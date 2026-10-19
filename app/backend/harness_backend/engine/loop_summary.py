@@ -78,6 +78,31 @@ def sections(text):
     return {key: "\n".join(value).strip() for key, value in found.items()}
 
 
+def add_repositories_section(add, meta, primary_root):
+    """Multi-repo only (meta.json has a `repos` map): one block per repo with branch, push, PR and its own commits."""
+    repos = meta.get("repos")
+    if not isinstance(repos, dict) or not repos:
+        return
+    add("")
+    add("## Repositories")
+    for name in sorted(repos, key=lambda key: not repos[key].get("primary")):
+        entry = repos[name]
+        worktree = primary_root if entry.get("primary") else (entry.get("worktree") or "")
+        delivery = load_json(os.path.join(worktree, ".specs", "project", "loop", "json", "delivery.json")) if worktree else {}
+        add("")
+        add("### %s%s" % (name, " (primary)" if entry.get("primary") else ""))
+        add("")
+        add("- Branch: `%s`%s" % (entry.get("branch") or "not reported", (" (forked from `%s`)" % entry["base"]) if entry.get("base") else ""))
+        add("- Work folder: `%s`" % (worktree or "not reported"))
+        add("- Branch push: %s" % (delivery.get("push") or "not done"))
+        if delivery.get("pr"):
+            add("- **PR: %s** (%s)" % (delivery["pr"], delivery.get("pr_status", "")))
+        base = delivery.get("base") or entry.get("base")
+        commits = git(worktree, "log", "--oneline", "--no-decorate", (base + ".." + (entry.get("branch") or "HEAD")) if base else "-30") if worktree and os.path.isdir(worktree) else ""
+        add("")
+        add("```\n%s\n```" % (commits or "no commits found"))
+
+
 def main():
     args = sys.argv[1:]
     if not args:
@@ -163,6 +188,8 @@ def main():
     add("## Loop commits")
     add("")
     add("```\n%s\n```" % (commits or "no commits found"))
+
+    add_repositories_section(add, meta, root)
 
     phases = sorted(glob.glob(os.path.join(specs, "project", "phases", "stage-*.md")))
     for path in phases:

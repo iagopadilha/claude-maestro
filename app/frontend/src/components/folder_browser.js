@@ -1,6 +1,6 @@
 /* In-app folder browser (fallback for the native dialog): GET /api/app/system/folders?path= lists only
    subfolders and marks the ones with .specs / git. Pasting a path also works. */
-import { h, fill } from '../util/dom.js';
+import { html, useState, useEffect, useRef } from '../util/preact.js';
 import { appApi } from '../api/api_client.js';
 import { openDialog } from './dialog.js';
 
@@ -36,66 +36,74 @@ function normalizeListing(r, requested) {
   };
 }
 
+/** Content of the folder dialog. onValue(path) runs whenever the path the main button would use changes. */
+export function FolderBrowser({ initial = '', explanation = '', onValue }) {
+  const [L, setL] = useState(null);
+  const [field, setField] = useState('');
+  const [filter, setFilter] = useState('');
+  const [state, setState] = useState('');
+  const seq = useRef(0);
+
+  async function go(path) {
+    const mine = ++seq.current;
+    setState('loading…');
+    try {
+      const r = await appApi.get('system/folders?path=' + encodeURIComponent(path || ''), 15000);
+      if (mine !== seq.current) return;
+      const next = normalizeListing(r, path);
+      setL(next); setField(next.current); setFilter('');
+      const marks = [next.currentHasSpecs ? 'has .specs (a loop project)' : '', next.currentHasGit ? 'is a git repository' : ''].filter(Boolean).join(' · ');
+      setState((marks ? 'This folder ' + marks + '.' : '') + (next.truncated ? ' The list was truncated; filter or paste a path.' : ''));
+    } catch (e) {
+      if (mine !== seq.current) return;
+      setState('Could not open it: ' + e.message);
+    }
+  }
+  useEffect(() => { go(initial); return () => { seq.current += 1; }; }, []);
+  const value = field.trim() || (L ? L.current : '');
+  useEffect(() => { if (onValue) onValue(value); }, [value]);
+
+  const f = filter.trim().toLowerCase();
+  const items = L ? L.items : [];
+  const vis = items.filter((x) => !f || x.name.toLowerCase().includes(f));
+  return html`
+    ${explanation ? html`<p class="dlg-text">${explanation}</p>` : null}
+    <div class="fb-bar">
+      <button type="button" class="btn btn-sm btn-ghost" title="parent folder" disabled=${L ? !L.current : null} onClick=${() => go(L ? L.parent || '' : '')}>↑ Up</button>
+      <input type="text" class="fb-field mono" id="fb-field" aria-label="Folder path (you can paste one)" placeholder=${'paste a path, e.g. C:\\Users\\you\\projects\\app'} autocomplete="off" spellcheck="false"
+        value=${field} onInput=${(e) => setField(e.currentTarget.value)}
+        onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); go(e.currentTarget.value.trim()); } }} />
+      <button type="button" class="btn btn-sm" onClick=${() => go(field.trim())}>Go</button>
+    </div>
+    <div class="fb-shortcuts">${(L ? L.shortcuts : []).map((a) => html`<button key=${a.path} type="button" class="btn btn-sm btn-ghost" title=${a.path} onClick=${() => go(a.path)}>${a.name}</button>`)}</div>
+    <div class="fb-bar">
+      <input type="search" class="fb-filter" placeholder="filter…" aria-label="Filter subfolders" autocomplete="off" value=${filter} onInput=${(e) => setFilter(e.currentTarget.value)} />
+      <span class="fb-legend"><span class="fb-tag specs">.specs</span> already has a loop · <span class="fb-tag git">git</span> repository</span>
+    </div>
+    <div class="fb-list" role="list" aria-label="Subfolders">
+      ${!L ? null : vis.length
+        ? vis.map((x) => html`<div key=${x.path} role="listitem"><button type="button" class="fb-item" title=${x.path} onClick=${() => go(x.path)}>
+            <span class="fb-ic" aria-hidden="true">▸</span><span class="fb-name">${x.name}</span>
+            ${x.hasSpecs ? html`<span class="fb-tag specs">.specs</span>` : null}${x.hasGit ? html`<span class="fb-tag git">git</span>` : null}
+          </button></div>`)
+        : html`<div class="fb-empty">${f ? 'no subfolder with that name' : 'no subfolders'}</div>`}
+    </div>
+    <div class="fb-state" aria-live="polite">${state}</div>`;
+}
+
 /** Opens the browser. Resolves with the chosen path or null. */
 export function pickFolder({ title = 'Choose a folder', buttonText = 'Use this folder', initial = '', explanation = '' } = {}) {
   return new Promise((resolve) => {
-    let chosen = null, seq = 0, current = '';
-    const field = h('input', { type: 'text', class: 'fb-field mono', id: 'fb-field', 'aria-label': 'Folder path (you can paste one)', placeholder: 'paste a path, e.g. C:\\Users\\you\\projects\\app', autocomplete: 'off', spellcheck: 'false' });
-    const btnGo = h('button', { type: 'button', class: 'btn btn-sm' }, 'Go');
-    const btnUp = h('button', { type: 'button', class: 'btn btn-sm btn-ghost', title: 'parent folder' }, '↑ Up');
-    const filter = h('input', { type: 'search', class: 'fb-filter', placeholder: 'filter…', 'aria-label': 'Filter subfolders', autocomplete: 'off' });
-    const shortcuts = h('div', { class: 'fb-shortcuts' });
-    const list = h('div', { class: 'fb-list', role: 'list', 'aria-label': 'Subfolders' });
-    const state = h('div', { class: 'fb-state', 'aria-live': 'polite' });
-    let last = [];
-
-    function drawList() {
-      const f = filter.value.trim().toLowerCase();
-      const vis = last.filter((x) => !f || x.name.toLowerCase().includes(f));
-      fill(list, vis.length ? vis.map((x) => h('div', { role: 'listitem' }, h('button', { type: 'button', class: 'fb-item', title: x.path, onclick: () => go(x.path) },
-        h('span', { class: 'fb-ic', 'aria-hidden': 'true', text: '▸' }), h('span', { class: 'fb-name', text: x.name }),
-        x.hasSpecs ? h('span', { class: 'fb-tag specs', text: '.specs' }) : null, x.hasGit ? h('span', { class: 'fb-tag git', text: 'git' }) : null)))
-        : [h('div', { class: 'fb-empty', text: f ? 'no subfolder with that name' : 'no subfolders' })]);
-    }
-    async function go(path) {
-      const mine = ++seq;
-      state.textContent = 'loading…';
-      try {
-        const r = await appApi.get('system/folders?path=' + encodeURIComponent(path || ''), 15000);
-        if (mine !== seq) return;
-        const L = normalizeListing(r, path);
-        current = L.current; field.value = L.current; last = L.items; filter.value = '';
-        btnUp.disabled = !L.current;
-        btnUp.onclick = () => go(L.parent || '');
-        fill(shortcuts, L.shortcuts.map((a) => h('button', { type: 'button', class: 'btn btn-sm btn-ghost', title: a.path, onclick: () => go(a.path) }, a.name)));
-        const marks = [L.currentHasSpecs ? 'has .specs (a loop project)' : '', L.currentHasGit ? 'is a git repository' : ''].filter(Boolean).join(' · ');
-        state.textContent = (marks ? 'This folder ' + marks + '.' : '') + (L.truncated ? ' The list was truncated; filter or paste a path.' : '');
-        drawList();
-        d.setActions(actions());
-      } catch (e) {
-        if (mine !== seq) return;
-        state.textContent = 'Could not open it: ' + e.message;
-      }
-    }
-    const actions = () => [
+    let chosen = null, d = null;
+    const actions = (value) => [
       { text: 'Cancel' },
-      { text: buttonText, cls: 'btn-primary', disabled: !(field.value.trim() || current), onClick: (api) => { chosen = field.value.trim() || current; api.close(); } },
+      { text: buttonText, cls: 'btn-primary', disabled: !value, onClick: (api) => { chosen = value; api.close(); } },
     ];
-    btnGo.addEventListener('click', () => go(field.value.trim()));
-    field.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(field.value.trim()); } });
-    field.addEventListener('input', () => d.setActions(actions()));
-    filter.addEventListener('input', drawList);
-    const d = openDialog({
+    d = openDialog({
       title, width: 640, cls: 'dlg-folders',
-      content: [
-        explanation ? h('p', { class: 'dlg-text', text: explanation }) : null,
-        h('div', { class: 'fb-bar' }, btnUp, field, btnGo), shortcuts,
-        h('div', { class: 'fb-bar' }, filter, h('span', { class: 'fb-legend' }, h('span', { class: 'fb-tag specs', text: '.specs' }), ' already has a loop · ', h('span', { class: 'fb-tag git', text: 'git' }), ' repository')),
-        list, state,
-      ],
-      actions: actions(),
+      content: html`<${FolderBrowser} initial=${initial} explanation=${explanation} onValue=${(v) => { if (d) d.setActions(actions(v)); }} />`,
+      actions: actions(''),
       onClose: () => resolve(chosen),
     });
-    go(initial);
   });
 }

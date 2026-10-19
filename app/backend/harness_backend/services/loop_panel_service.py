@@ -95,7 +95,7 @@ def parse_answers(text):
 
 class LoopPanelService:
     def __init__(self, loop_status_service, loop_file_repository, roadmap_view_service, turn_service, agent_history_service, activity_monitor,
-                 guard_event_service):
+                 guard_event_service, planning_requirement_service):
         self.loop_status_service = loop_status_service
         self.loop_file_repository = loop_file_repository
         self.roadmap_view_service = roadmap_view_service
@@ -103,6 +103,7 @@ class LoopPanelService:
         self.agent_history_service = agent_history_service
         self.activity_monitor = activity_monitor
         self.guard_event_service = guard_event_service
+        self.planning_requirement_service = planning_requirement_service
 
     def build_state(self, context, project_url):
         work_dir = context.work_dir
@@ -128,6 +129,7 @@ class LoopPanelService:
                          if line.strip().startswith(VALIDATE_LINE_PREFIX)],
             "recent_actions": self.list_recent_actions(work_dir),
             "roadmap_approval": self.loop_file_repository.read_roadmap_approval(work_dir),
+            "planning_required": self.planning_requirement_service.is_planning_required(context),
             "answers": parse_answers(self.loop_file_repository.read_state_file(work_dir, "ANSWERS.md")),
             "turns": self.turn_service.list_turns(work_dir, turn if running else None),
             "quarantine": self.build_quarantine(features),

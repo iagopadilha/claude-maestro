@@ -7,8 +7,10 @@ from .project_responses import project_to_dict, respond_converting_errors
 
 
 class ProjectController:
-    def __init__(self, project_service, project_progress_service, specs_structure_service, folder_picker_service, log):
+    def __init__(self, project_service, project_progress_service, specs_structure_service, folder_picker_service, log,
+                 specs_reset_service=None):
         self.project_service = project_service
+        self.specs_reset_service = specs_reset_service
         self.project_progress_service = project_progress_service
         self.specs_structure_service = specs_structure_service
         self.folder_picker_service = folder_picker_service
@@ -20,6 +22,7 @@ class ProjectController:
         router.add("POST", "/api/app/projects/create", self.create_project)
         router.add("POST", "/api/app/projects/pick-folder", self.pick_folder)
         router.add("POST", "/api/app/projects/{project_id}/forget", self.forget_project)
+        router.add("POST", "/api/app/projects/{project_id}/reset-specs", self.reset_specs)
         router.add("GET", "/api/app/system/folders", self.list_folders)
         router.add("GET", "/p/{project_id}/api/progress", self.get_progress)
         router.add("POST", "/p/{project_id}/api/structure/initialize", self.initialize_structure)
@@ -61,6 +64,13 @@ class ProjectController:
             self.project_service.forget_project(request.route_params["project_id"])
             return Response.json(200, {"ok": True})
         return respond_converting_errors(forget)
+
+    def reset_specs(self, request):
+        """Moves the planning/loop state to `.specs/.trash/<stamp>/`; the body must carry `confirm` = the project name."""
+        def reset():
+            context = self.project_service.get_project_context(request.route_params["project_id"])
+            return Response.json(200, self.specs_reset_service.reset_specs(context, request.body.get("confirm")))
+        return respond_converting_errors(reset)
 
     def list_folders(self, request):
         return respond_converting_errors(lambda: Response.json(200, self.folder_picker_service.list_subfolders(

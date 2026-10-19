@@ -1,24 +1,38 @@
 /* "Files" tab: .specs explorer (GET specs/tree) grouped into Project, Codebase, Features (with status)
    and Loop, with a markdown reader and editing (PUT specs/file). */
-import { h } from '../../util/dom.js';
+import { html, useEffect } from '../../util/preact.js';
 import { confirmDialog } from '../../components/dialog.js';
-import { createFileTree, normalizeTree, walkTree } from '../../components/file_tree.js';
-import { createMarkdownEditor } from '../../components/markdown_editor.js';
-import { ctx, ui, sigs } from './context.js';
-import { renderCenter } from './center.js';
+import { FileTree, fileTreeStore, normalizeTree, walkTree } from '../../components/file_tree.js';
+import { MarkdownEditor, markdownEditorStore } from '../../components/markdown_editor.js';
+import { ctx, ui, lastN } from './context.js';
+import { renderAll, requestRender } from '../project_panel.js';
 import { reloadProgress } from './progress_trail.js';
 
 const TREE_STALE_MS = 10000;
-const fv = { root: null, tree: null, editor: null, status: null, loading: false, loadedAt: 0, error: null, pending: null, promise: null };
+// tree and editor stores outlive the tab: switching views keeps the open file, the draft and the open folders
+const fv = { tree: null, editor: null, loading: false, loadedAt: 0, error: null, pending: null, promise: null };
 
-function build() {
-  fv.editor = createMarkdownEditor({ api: ctx.api, onSave: () => { loadTree(true); reloadProgress(); } });
-  fv.tree = createFileTree({ onOpen: (node) => openCarefully(node.path, { editable: node.editable, reason: node.reason }) });
-  fv.status = h('div', { class: 'files-status', 'aria-live': 'polite' });
-  const btn = h('button', { type: 'button', class: 'btn btn-sm btn-ghost', title: 'reads the tree again', onclick: () => loadTree(true) }, 'Refresh');
-  fv.root = h('div', { class: 'files' },
-    h('aside', { class: 'files-side', 'aria-label': '.specs tree' }, h('div', { class: 'files-side-h' }, h('span', { class: 'small-label', text: '.specs' }), btn), fv.status, fv.tree.element),
-    fv.editor.element);
+function parts() {
+  if (fv.tree) return;
+  fv.editor = markdownEditorStore({ api: ctx.api, onSave: () => { loadTree(true); reloadProgress(); } });
+  fv.tree = fileTreeStore({ onOpen: (node) => openCarefully(node.path, { editable: node.editable, reason: node.reason }) });
+}
+function runPending() { if (fv.pending) { const p = fv.pending; fv.pending = null; p(); } }
+
+/** Content of #canvas in the "Files" view (div.files): the .specs tree on the side and the markdown editor.
+    Showing it (and a new turn while shown) reads the tree again when it is stale. */
+export function Files() {
+  parts();
+  useEffect(() => { loadTree(false).then(runPending); }, [lastN(), ui.pastN, ui.pinLast]);
+  return html`<div class="files">
+    <aside class="files-side" aria-label=".specs tree">
+      <div class="files-side-h"><span class="small-label">.specs</span>
+        <button type="button" class="btn btn-sm btn-ghost" title="reads the tree again" onClick=${() => loadTree(true)}>Refresh</button></div>
+      <div class=${'files-status' + (fv.error ? ' err' : '')} aria-live="polite">${fv.loading ? 'loading…' : fv.error || null}</div>
+      <${FileTree} store=${fv.tree} />
+    </aside>
+    <${MarkdownEditor} store=${fv.editor} />
+  </div>`;
 }
 
 async function openCarefully(path, options) {
@@ -32,8 +46,9 @@ async function openCarefully(path, options) {
 
 export async function loadTree(force) {
   if (fv.loading) return fv.promise;
+  parts();
   if (!force && Date.now() - fv.loadedAt < TREE_STALE_MS) return null;
-  fv.loading = true; fv.error = null; refreshStatus();
+  fv.loading = true; fv.error = null; requestRender(); // may run inside the Files effect
   fv.promise = (async () => {
     try {
       const r = await ctx.api.get('specs/tree', 15000);
@@ -42,29 +57,12 @@ export async function loadTree(force) {
       fv.loadedAt = Date.now();
     } catch (e) {
       fv.error = e.status === 404 ? (/project/i.test(e.message) ? e.message : 'There is no .specs in this project yet (or the server does not offer the tree). Use the trail at the top to initialize the structure.') : e.message;
-    } finally { fv.loading = false; refreshStatus(); }
+    } finally { fv.loading = false; renderAll(); }
   })();
   return fv.promise;
 }
-function refreshStatus() {
-  if (!fv.status) return;
-  fv.status.textContent = fv.loading ? 'loading…' : fv.error || '';
-  fv.status.className = 'files-status' + (fv.error ? ' err' : '');
-}
 
-/** Element of the tab (the center shows it full size). Loads the tree when it is stale. */
-export function filesView() {
-  if (!fv.root) build();
-  loadTree(false).then(() => {
-    if (fv.pending) { const p = fv.pending; fv.pending = null; p(); }
-  });
-  return fv.root;
-}
-
-function goToFiles() {
-  if (!fv.root) build();
-  ui.view = 'files'; sigs.center = null; renderCenter();
-}
+function goToFiles() { ui.view = 'files'; renderAll(); }
 
 /** "view spec": opens the Files tab on the feature spec (spec.md in the feature folder; otherwise the first file). */
 export function openFeatureSpec(slug) {
@@ -78,7 +76,7 @@ export function openFeatureSpec(slug) {
     if (target) openCarefully(target.path, { editable: target.editable, reason: target.reason });
     else fv.editor.showMessage(`Feature ${slug} has no spec yet (.specs/features/${slug}/spec.md). The spec-writer creates that file when the loop reaches it.`);
   };
-  loadTree(true).then(() => { if (fv.pending) { const p = fv.pending; fv.pending = null; p(); } });
+  loadTree(true).then(runPending);
 }
 
 /** Opens (or prepares to create) a project file by name, e.g. TEST-ENVIRONMENT.md. */
@@ -96,5 +94,5 @@ export function openProjectFile(name) {
     const path = sibling ? sibling.path.replace(/PROJECT\.md$/i, name) : 'project/' + name;
     openCarefully(path, { isNew: true });
   };
-  loadTree(true).then(() => { if (fv.pending) { const p = fv.pending; fv.pending = null; p(); } });
+  loadTree(true).then(runPending);
 }

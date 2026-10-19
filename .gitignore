@@ -1,4 +1,13 @@
 __pycache__/
 *.pyc
 .env
+.env.*
+!.env.example
+.specs/project/.env.test
 .specs/
+# local-only extensions of one machine (private channels/providers) and their tests: never committed
+app/backend/harness_backend/engine/local_ext/
+app/backend/tests/engine/test_local_*.py
+
+# Playwright CLI session artifacts (screenshots, snapshots)
+.playwright-cli/

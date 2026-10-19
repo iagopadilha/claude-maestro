@@ -9,19 +9,24 @@ import re
 from typing import Protocol
 
 from ..domain.project_errors import InvalidPathError, LoopRunningError
-from ..repositories.specs_file_repository import classify_structure, list_test_environment_problems, loop_state
+from ..repositories.specs_file_repository import classify_structure, list_test_environment_problems, loop_state, run_hints
 
 CONFORMANCE_VALUES = ("STANDARD", "LEGACY")
 CONFORMANCE_LINE_PATTERN = re.compile(r"^Conformance:\s*(STANDARD|LEGACY)", re.M)  # the same check as run_loop --check
-STRUCTURE_FOLDERS = ("project", "codebase", "features")
-PROJECT_TEMPLATE_FILES = ("PROJECT.md", "ROADMAP.md", "STATE.md")
+STRUCTURE_FOLDERS = ("project", "features")  # `.specs/codebase` is no longer created (the map lives in docs/codebase); old projects keep theirs
+PROJECT_TEMPLATE_FILES = ("PROJECT.md", "ROADMAP.md", "STATE.md", "FLOWS.md")
 RULES_FILE_NAME = "RULES.md"
 TEST_ENVIRONMENT_FILE_NAME = "TEST-ENVIRONMENT.md"
 RULES_TEMPLATE_NAME = "PROJECT_RULES.md"
 TEST_ENVIRONMENT_TEMPLATE_NAME = "TEST_ENVIRONMENT.md"
+ENV_TEST_FILE_NAME = ".env.test"
+ENV_TEST_TEMPLATE_NAME = "ENV_TEST.example"
+ENV_IGNORE_LINES = (".env", ".env.*", "!.env.example", ".specs/project/.env.test", ".specs/project/ACCESS.json")
 SPECS_TEMPLATES_DIR_NAME = "specs"
 RULES_IMPORT_LINE = loop_state.RULES_IMPORT
 SPECS_IGNORE_LINE = ".specs/"
+TRASH_RELATIVE_DIR = ".specs/.trash"  # where "Reset specs" moves the old state; git-ignored, never read by the app
+TRASH_IGNORE_LINE = TRASH_RELATIVE_DIR + "/"
 SPECS_IGNORE_VARIANTS = (".specs", ".specs/", "/.specs", "/.specs/", ".specs/*", "/.specs/*")
 MARKDOWN_BLOCK_PATTERN = re.compile(r"```markdown\r?\n(.*?)\r?\n```", re.S)
 EXAMPLE_RULE_LINE_PATTERN = re.compile(r"^\|\s*R-\d+\s*\|")
@@ -125,11 +130,13 @@ class SpecsStructureService:
             (created if self.specs_file_repository.create_file_if_missing(path, content) else existing).append(
                 self.relative_to_project(project_dir, path))
         changed += self.ensure_specs_in_gitignore(project_dir)
+        changed += self.ensure_env_files_in_gitignore(project_dir)
         changed += self.ensure_rules_in_claude_md(project_dir, name)
+        changed += self.ensure_run_block(project_dir)
         if conformance_value:
             self.write_conformance(project_dir, conformance_value)
             changed.append("CLAUDE.md (Conformance: %s)" % conformance_value)
-        if self.roadmap_requires_test_environment(project_dir) and self.create_test_environment_template(project_dir):
+        if self.create_test_environment_template(project_dir):  # always: the planning chat edits it (it cannot create files)
             created.append(".specs/project/" + TEST_ENVIRONMENT_FILE_NAME)
         self.log.info("specs_structure_initialized", folder=project_dir, created=len(created), changed=len(changed))
         return {"created": created, "changed": changed, "existing": existing, "conformance": self.get_conformance(project_dir)}
@@ -145,8 +152,27 @@ class SpecsStructureService:
     def create_test_environment_template(self, project_dir):
         """Creates `.specs/project/TEST-ENVIRONMENT.md` from the template (with FILL_IN). False when it already existed."""
         content = extract_markdown_block(self.read_template(TEST_ENVIRONMENT_TEMPLATE_NAME)) or MINIMAL_TEST_ENVIRONMENT
+        self.create_env_test_template(project_dir)
         return self.specs_file_repository.create_file_if_missing(
             os.path.join(project_dir, ".specs", "project", TEST_ENVIRONMENT_FILE_NAME), content)
+
+    def create_env_test_template(self, project_dir):
+        """Creates `.specs/project/.env.test` (the project's test VALUES, commented out) and makes sure git ignores it."""
+        self.ensure_env_files_in_gitignore(project_dir)
+        return self.specs_file_repository.create_file_if_missing(
+            os.path.join(project_dir, ".specs", "project", ENV_TEST_FILE_NAME), self.read_template(ENV_TEST_TEMPLATE_NAME))
+
+    def ensure_env_files_in_gitignore(self, project_dir):
+        """Appends the missing secret-file lines (`.env`, `.env.*`, `!.env.example`, `.specs/project/.env.test`, `.specs/project/ACCESS.json`) to .gitignore."""
+        path = os.path.join(project_dir, ".gitignore")
+        text = self.specs_file_repository.read_text(path) or ""
+        present = {line.strip() for line in text.splitlines()}
+        missing = [line for line in ENV_IGNORE_LINES if line not in present]
+        if not missing:
+            return []
+        separator = "" if not text or text.endswith("\n") else "\n"
+        self.specs_file_repository.append_text(path, separator + "\n".join(missing) + "\n")
+        return [".gitignore (env files)"]
 
     def ensure_specs_in_gitignore(self, project_dir):
         path = os.path.join(project_dir, ".gitignore")
@@ -156,6 +182,23 @@ class SpecsStructureService:
         separator = "" if not text or text.endswith("\n") else "\n"
         self.specs_file_repository.append_text(path, separator + SPECS_IGNORE_LINE + "\n")
         return [".gitignore (.specs/)"]
+
+    def ensure_specs_trash_in_gitignore(self, project_dir):
+        """`.specs/.trash/` must never reach git. Nothing to add when the whole `.specs/` is already ignored."""
+        path = os.path.join(project_dir, ".gitignore")
+        text = self.specs_file_repository.read_text(path)
+        if text is not None and (ignores_specs(text) or TRASH_IGNORE_LINE in {line.strip() for line in text.splitlines()}):
+            return []
+        separator = "" if not text or text.endswith("\n") else "\n"
+        self.specs_file_repository.append_text(path, separator + TRASH_IGNORE_LINE + "\n")
+        return [".gitignore (.specs/.trash/)"]
+
+    def ensure_run_block(self, project_dir):
+        """CLAUDE.md gets the generated "How to run" block (https profile first); rewritten when the project changed."""
+        changed, conflicts = run_hints.write_block(project_dir)
+        for line in conflicts:
+            self.log.warn("claude_md_run_line_without_https", folder=project_dir, line=line[:160])
+        return ["CLAUDE.md (How to run)"] if changed else []
 
     def ensure_rules_in_claude_md(self, project_dir, project_name):
         """CLAUDE.md imports RULES.md (read in every session). Appends the line; never rewrites what exists."""

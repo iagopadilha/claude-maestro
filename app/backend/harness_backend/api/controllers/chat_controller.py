@@ -1,4 +1,5 @@
-"""Read-only chat routes of a project: chat/send, chat/job/<job>, chat/threads and chat/thread/<thread>."""
+"""Read-only chat routes of a project: chat/send, chat/job/<job>, chat/threads and chat/thread/<thread>. chat/send is refused
+in planning mode (409 `planning_required`): the planning screen has its own chat."""
 from .loop_commands_controller import PROJECT_ROUTE_PREFIX, respond_with_project_context
 
 
@@ -7,9 +8,10 @@ def parse_turn_from_query(text):
 
 
 class ChatController:
-    def __init__(self, project_service, chat_service):
+    def __init__(self, project_service, chat_service, planning_requirement_service):
         self.project_service = project_service
         self.chat_service = chat_service
+        self.planning_requirement_service = planning_requirement_service
 
     def register_routes(self, router):
         router.add("POST", PROJECT_ROUTE_PREFIX + "/chat/send", self.send_question)
@@ -19,7 +21,8 @@ class ChatController:
 
     def send_question(self, request):
         return respond_with_project_context(self.project_service, request,
-                                            lambda context: self.chat_service.send_question(context, request.body))
+                                            lambda context: self.chat_service.send_question(context, request.body),
+                                            self.planning_requirement_service)
 
     def get_job(self, request):
         job_id = request.route_params["job_id"]

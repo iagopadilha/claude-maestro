@@ -24,6 +24,9 @@ export function getToken() {
   return '';
 }
 
+/** 409 code:"planning_required" (the project is still in planning mode): one plain message for every caller. */
+export const PLANNING_REQUIRED_MESSAGE = 'This project is still being planned: finish the plan and approve the roadmap on the planning screen first.';
+
 async function readJson(res) { try { return await res.json(); } catch (_) { return null; } }
 
 /** JSON request. GET without token; POST/PUT/DELETE with X-Monitor-Token. HTTP error or {ok:false} becomes ApiError. */
@@ -45,7 +48,8 @@ export async function requestJson(method, url, body, options = {}) {
     });
     const data = await readJson(res);
     if (!res.ok || (method !== 'GET' && data && data.ok === false)) {
-      throw new ApiError((data && data.error) || 'HTTP ' + res.status, res.status, data);
+      const msg = data && data.code === 'planning_required' ? PLANNING_REQUIRED_MESSAGE : (data && data.error) || 'HTTP ' + res.status;
+      throw new ApiError(msg, res.status, data);
     }
     return data == null ? {} : data;
   } catch (e) {
@@ -82,11 +86,13 @@ export function createProjectClient(projectId) {
   return buildClient(`/p/${projectId}/api/`);
 }
 
-/** "Disconnected" banner: shows/hides it and writes the detail, without losing what is on screen. */
+/** Detail line of the "app disconnected" banner. */
+export const disconnectedDetail = (message) => `retrying every 5 s${message ? ' (' + message + ')' : ''}. The screen below is the last one received.`;
+/** "Disconnected" banner (hub): shows/hides it and writes the detail, without losing what is on screen. */
 export function showDisconnectedBanner(banner, detail, disconnected, message) {
   if (!banner) return;
   banner.hidden = !disconnected;
-  if (detail) detail.textContent = disconnected ? `retrying every 5 s${message ? ' (' + message + ')' : ''}. The screen below is the last one received.` : '';
+  if (detail) detail.textContent = disconnected ? disconnectedDetail(message) : '';
 }
 
 /**

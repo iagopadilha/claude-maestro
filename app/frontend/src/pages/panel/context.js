@@ -18,6 +18,7 @@ export const STATUS = {
   error: { label: 'Error', c: '#F06A5E', bg: '#1E1413', line: '#5A2A26' },
   stopped: { label: 'Stopped', c: '#C9C4BE', bg: '#1E2024', line: '#3A3E45' },
   no_loop: { label: 'No loop', c: '#8B9098', bg: '#15171A', line: '#2A2D33' },
+  planning: { label: 'Planning', c: '#F2B544', bg: '#2A2416', line: '#4A3D1C' }, // planning mode (state.planning_required)
 };
 export const ROLE_DESC = {
   orchestrator: 'roadmap · dispatch · commit · checkpoint',
@@ -43,19 +44,11 @@ export const ui = {
   hist: { data: null, key: undefined, loading: false, err: null, ver: 0 }, logLoading: null,
   pausePending: false, confirmShutdown: false, freeText: '', resuming: null, busy: {},
   qSent: {}, agentLog: null, showNew: false, hov: null, attach: [], chatGeneral: false,
+  closed: null, // full-screen notice over the panel: { kind: 'notfound', message } | { kind: 'shutdown' }
 };
 
-/** ctx.state = last /state; ctx.api = project client; ctx.progress = last GET progress. */
-export const ctx = { state: null, api: null, projectId: null, progress: null, offline: false };
-
-// ---------- regions with a signature (no DOM rebuild without a change) ----------
-export const sigs = {};
-export function region(key, data, fn) {
-  const sig = JSON.stringify(data);
-  if (sigs[key] === sig) return;
-  sigs[key] = sig;
-  fn();
-}
+/** ctx.state = last /state; ctx.api = project client; ctx.progress = last GET progress; offline/offlineMsg = polling lost. */
+export const ctx = { state: null, api: null, projectId: null, progress: null, offline: false, offlineMsg: null };
 
 // ---------- derived ----------
 export const loop = () => (ctx.state && ctx.state.loop) || {};

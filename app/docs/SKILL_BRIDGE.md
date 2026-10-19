@@ -6,7 +6,7 @@ loop engine (`run_loop.py` and its satellite scripts), the local HTTP server and
 machine with your own Claude subscription through the `claude` CLI (no API token).
 
 This document says how the skill locates the app, which commands it runs, what stays in the plugin and the headless
-roadmap mode the app calls.
+roadmap and planning modes the app calls.
 
 ## 1. How the skill finds the app
 
@@ -73,8 +73,8 @@ A script name in the skill text (`run_loop.py`, `loop_state.py`, `delivery.py`, 
 `python <app>/backend/harness_backend/engine/<script>.py <args>` works too.
 
 `.specs` templates live in `<app>/templates/` (`PROJECT_RULES.md`, `TEST_ENVIRONMENT.md`, `specs/PROJECT.md`,
-`ROADMAP.md`, `STATE.md`); the panel's **Initialize structure** button creates `.specs/` from them without overwriting
-anything, links `@.specs/project/RULES.md` from `CLAUDE.md` and puts `.specs/` in `.gitignore`.
+`ROADMAP.md`, `FLOWS.md`, `STATE.md`); the panel's **Initialize structure** button creates `.specs/` from them without overwriting
+anything, links `@.specs/project/RULES.md` from `CLAUDE.md` and puts `.specs/` in `.gitignore`. `PROJECT.md` is a short context file for the loop's subagents (a Vision line plus pointers to `docs/codebase/`, `RULES.md`, `STATE.md`, `ROADMAP.md`, `FLOWS.md`, `TEST-ENVIRONMENT.md`); the project's limits live in `RULES.md`. `TEST-ENVIRONMENT.md` and `.env.test` are created together with the other files.
 
 Test suites: `python -m unittest discover -s "<app>/backend/tests" -t "<app>/backend"` (engine and app) and
 `python -m unittest discover -s "<plugin>/skills/orchestrator/hooks" -p test_guard.py` (guard).
@@ -107,19 +107,38 @@ inside the **repo** folder (never the loop worktree), with `--permission-mode au
   Written by the harness app on <ISO date>
   ```
 - `--map-first` is added when the user ticked the option. The skill runs Phase 1 (mapping) first when it is there, or
-  when the repo has code and `.specs/codebase/` is empty.
-- The skill writes `.specs/project/PROJECT.md` and `.specs/project/ROADMAP.md` (stages `## Stage N — Name`, one line per
-  feature, `status=pending`), puts every doubt in the `## Open questions` section of the ROADMAP instead of asking,
+  when the repo has code and `docs/codebase/` (or the legacy `.specs/codebase/`) is empty.
+- The skill writes `.specs/project/PROJECT.md`, `.specs/project/ROADMAP.md` (stages `## Stage N — Name`, one line per
+  feature, `status=pending`) and `.specs/project/FLOWS.md` (one `## [slug]` flow per feature), puts every doubt in the `## Open questions` section of the ROADMAP instead of asking,
   **never approves** the roadmap (never writes `ROADMAP-APPROVED.json`), never runs the loop, does not start the panel
   and does not commit.
 - **Refine** (`POST /p/<id>/api/roadmap/refine`, the **Refine roadmap** button) resumes the SAME claude session
   (`--resume <session_id>` of the last roadmap job) with the user's request through stdin, after this fixed prefix:
-  "Continue in this session's `/orchestrator roadmap --headless` mode: adjust .specs/project/ROADMAP.md (and PROJECT.md if
-  needed) following the request below, in the grammar of references/state.md. Do not ask (doubts go to the
+  "Continue in this session's `/orchestrator roadmap --headless` mode: adjust .specs/project/ROADMAP.md and
+  .specs/project/FLOWS.md (one flow per feature), and PROJECT.md if needed, following the request below, in the grammar of references/state.md. Do not ask (doubts go to the
   `## Open questions` section of the ROADMAP), never approve the roadmap, and finish." followed by `User request:`.
 - **Map** (`POST /p/<id>/api/codebase/map`, the **Map** button) runs `claude -p "/orchestrator map"` without MCP.
 - Jobs are recorded in `.specs/project/loop/internal/jobs/<id>.json`; the claude `session_id` stays in that file and is
   never returned by the API.
+- While the project is in planning mode (below) generate and refine refuse with `planning_required`: the planning chat
+  replaces them.
+
+## 5b. The planning mode: `/orchestrator plan --headless`
+
+Who calls it: the app's **planning screen** (`POST /p/<id>/api/planning/send`), shown instead of the panel while the
+project has no approved roadmap and never ran a loop. One `claude -p` session per conversation: the first message is
+`/orchestrator plan --headless` followed by the user's text, every next message `--resume`s the same session (thread in
+`.specs/project/loop/internal/planning/thread.json`; **New conversation** clears it, the documents stay). Account default
+model, US$ 2 per message, 10-minute timeout, no MCP, no Bash; the only writes allowed are the three documents.
+
+- Each turn the skill (`references/planning.md`) re-reads `PROJECT.md`, `ROADMAP.md` and `FLOWS.md` (and
+  `docs/codebase/`, or the legacy `.specs/codebase/`, when present), updates them incrementally and replies with what changed and the 1 to 3 most
+  important questions. Unlike `roadmap --headless`, it **asks**: the reply is the conversation. Unanswered doubts stay in
+  the ROADMAP's `## Open questions`; an answer moves into the documents and the question leaves the list.
+- It never approves, never starts or checks a loop, runs no subagent and writes nothing else.
+- The app owns the gates (`GET /p/<id>/api/planning`): prerequisites (git, `.specs/`, `Conformance:`, the codebase map
+  when the repo has code), project context (PROJECT.md), features, fields, open questions and a flow (≥ 2 steps) per feature. **Approve
+  roadmap** is refused (`planning_gates`) until all of them pass. Format of `FLOWS.md`: the skill's `references/state.md`.
 
 ## 6. What the app guarantees
 

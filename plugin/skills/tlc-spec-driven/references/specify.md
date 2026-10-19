@@ -39,6 +39,10 @@ Every spec opens with a small metadata block. It costs five lines and lets anyth
 
 DEPS is **between features**. Dependencies between tasks inside one feature stay in `tasks.md` (`Depends on`, `[P]`). The graph of feature DEPS must have no cycles.
 
+### 1c. Declare Test Prerequisites (when the feature will be checked by running the app)
+
+If the feature will be validated by `curl`, E2E or a regression script (routes, screens, webhooks), decide **now** what that check needs, not when the check fails. List in the spec, per acceptance case: the header or auth scheme, the test user or company **that already has the records the happy path needs**, any key or secret (name the **exact key in the secret store**, with environment and the class that reads it), anything that must not fire (e-mail or charge to a third party), and what is forbidden to exercise. Put the shared part in `.specs/project/TEST-ENVIRONMENT.md` (model: `<app>/templates/TEST_ENVIRONMENT.md` of the Loop Harness app) and link it from the spec. What cannot be filled from the code, memory or the DEV database becomes an `OPEN_QUESTION` for the user, asked together with the roadmap approval. Never write a secret value into the spec or into TEST-ENVIRONMENT.md: refer to credentials only by `$NAME`; values live in the git-ignored `.specs/project/.env.test` or `~/.loop-harness/.env` (test users are `;`-separated lists, see `${CLAUDE_PLUGIN_ROOT}/shared/testenv.py`). Why: a run that stops later because a credential or test data was missing was knowable while reading the routes.
+
 ### 2. Capture User Stories with Priorities
 
 **P1 = MVP** (must ship), **P2** (should have), **P3** (nice to have)

@@ -46,6 +46,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -58,12 +59,18 @@ import delivery  # noqa: E402  (push of the feature branch + PR to the integrati
 import graph_view  # noqa: E402  (progress drawing: text, short, Mermaid)
 import audit_deps  # noqa: E402  (forgotten dependency between features)
 import monitor_proc  # noqa: E402  (loop web panel: starts detached, independent of this process)
+import access_settings  # noqa: E402  (ACCESS.json: grafana_read / shared_fallback of the Test environment tab)
+import grafana_access  # noqa: E402  (read-only Grafana/Loki MCP for the turn, only when the project opted in)
+import credential_check  # noqa: E402  (TEST-ENVIRONMENT.md names only: no plaintext secret, every $NAME defined in an .env)
 import cli_output  # noqa: E402  (one tolerant parser of the `claude -p` JSON output, shared with the app)
-from harness_backend.config import skill_locator  # noqa: E402
+import project_repos  # noqa: E402  (REPOS.json: the project's repos; one primary repo when the file is absent)
+import detect_setup  # noqa: E402  (automatic setup command and local files to copy of a repo)
+from harness_backend.config import app_config, skill_locator  # noqa: E402
 
 APP_ROOT_DIR = app_paths.APP_ROOT_DIR
 APP_CLI = os.path.join(APP_ROOT_DIR, "harness.py")  # the command the user pastes: `python <app>/harness.py loop <repo> ...`
 IS_WIN = os.name == "nt"
+MAX_NAMED_FEATURES = 6
 ACTIVE = {}  # run in progress (repo, opts, notify): lets us notify even when the script dies before finish()
 # blocked is NOT progress: it scores 0, otherwise a loop that only blocks features would look like it advances (closes the roadmap but delivers nothing)
 RANK = {"pending": 0, "speccing": 1, "specced": 2, "approved": 3, "building": 4, "verified": 6, "blocked": 0}
@@ -73,6 +80,13 @@ EXIT = {"done": 0, "awaiting_user": 10, "error": 20}
 DISABLED_PUSH_URL = "push-disabled-by-loop://use-delivery.py"
 PAUSE_REASON = "paused by the user in the panel; click Resume in the panel or run the command again"
 PAUSE_NEXT = "resume when the user wants"
+HEAVY_FOLDERS = ("node_modules", "bin", "obj", "dist")  # never copied into a worktree (they stay with --setup)
+LAST_RUN_NAME = "last-run.json"  # written by close_loop in the primary repo; names the branch a new start re-attaches to
+MIN_GIT_WORKTREE_VERSION = (2, 5)
+# Command line of `claude -p`: what the loop never needs is refused by the CLI itself, not only by the guard hook.
+# No allow-list on purpose: under --permission-mode auto it would only pre-approve, and a narrow one would stop a normal turn.
+LOOP_DISALLOWED_TOOLS = ["WebFetch", "WebSearch", "NotebookEdit", "Bash(ssh *)", "Bash(scp *)", "Bash(sftp *)"]
+EMPTY_MCP_CONFIG = '{"mcpServers":{}}'  # no MCP server in the headless turn (any MCP denial already stops the loop as risky)
 
 
 def run(args, cwd=None, timeout=120):
@@ -358,10 +372,28 @@ def test_environment_problems(root, opts):
     if not os.path.exists(path):
         return ["the ROADMAP has regression=yes (or --e2e), but .specs/project/TEST-ENVIRONMENT.md is missing (template: the app's "
                 "templates/TEST_ENVIRONMENT.md): without headers, users and secret manager keys the loop stops at the baseline"]
-    pending = len(re.findall(r"FILL_IN", read(path)))
+    text = read(path)
+    pending = len(re.findall(r"FILL_IN", text))
     if pending:
         return [".specs/project/TEST-ENVIRONMENT.md still has %d FILL_IN field(s): complete it before running" % pending]
-    return []
+    return credential_check.credential_problems(root, text)
+
+
+def test_environment_stop_reason(root, opts, problems):
+    """Text of the stop notice when the test environment blocks the start: WHO asked for the tests, WHAT is missing and WHERE the
+    values go (project .env.test first, then the machine defaults in ~/.loop-harness/.env). Empty when the problem is not that one."""
+    if not problems:
+        return ""
+    features = loop_state.parse_roadmap(read(os.path.join(root, ".specs", "project", "ROADMAP.md")))[0]
+    asked = [slug for slug, fields in features.items() if fields.get("regression") in ("yes", "baseline")]
+    who = ("regression=yes on: " + ", ".join(asked[:MAX_NAMED_FEATURES])) if asked else "the loop was started with --e2e"
+    return ("The loop did NOT start (nothing was spent): the real-app tests were requested (%s) but the test environment cannot run.\n"
+            "Missing: %s\n"
+            "Where: names go in .specs/project/TEST-ENVIRONMENT.md (names only); values go in .specs/project/.env.test of the project "
+            "(define it in .env.test), or in the machine defaults in ~/.loop-harness/.env (generic test user = TEST_USER_1_*). The user's shared "
+            "account (plugin shared/.env and ~/.claude/skills/_shared/.env) only counts after you accept the shared fallback in the "
+            "Test environment tab (.specs/project/ACCESS.json). "
+            "Fix it and start the loop again, or remove regression=yes from the ROADMAP." % (who, "; ".join(problems)))
 
 
 def nothing_left_to_do(done, total, opts, state=None, tiebreak_possible=False):
@@ -372,11 +404,58 @@ def nothing_left_to_do(done, total, opts, state=None, tiebreak_possible=False):
     return bool(total) and done == total and not (opts.option or opts.answer) and not will_auto_answer and not tiebreak_possible
 
 
+def approval_problems(root, answering=False):
+    """The roadmap must have been approved by the user (ROADMAP-APPROVED.json). When answering a question (--answer/--option)
+    the signature is not compared (the loop may legitimately change rows mid-run), but the approval file must exist: an
+    answer never starts a loop on a roadmap nobody approved."""
+    if answering:
+        if os.path.isfile(loop_state.loop_path(root, loop_state.APPROVAL_NAME)):
+            return []
+        return ["roadmap never approved: an answer does not replace the approval (Approve roadmap button in the panel)"]
+    approval = loop_state.roadmap_approval(root)
+    if approval["approved"]:
+        return []
+    return ["roadmap not approved: %s (Approve roadmap button in the panel)" % approval["reason"]]
+
+
+def repo_names_of(repos):
+    """Repo names for the grammar check; None for a single-repo project (today's behaviour: no prefix validation)."""
+    return [item.name for item in repos] if len(repos) > 1 else None
+
+
+def extra_repos_preflight(repos, opts):
+    """Preflight of the NON-primary repos of a multi-repo project (the primary is checked by preflight itself). Every message names
+    the repo. Returns (problems, warnings); empty for a single-repo project. Creates nothing."""
+    problems, warns = [], []
+    for item in repos:
+        if item.primary:
+            continue
+        tag = "repo %s: " % item.name
+        if not os.path.isdir(item.path):
+            problems.append(tag + "folder %s is missing (moved or deleted); remove it from the project or restore it" % item.path)
+            continue
+        if git(item.path, "rev-parse", "--is-inside-work-tree")[1] != "true":
+            problems.append(tag + "%s is not a git repository" % item.path)
+            continue
+        if not re.search(r"^Conformance:\s*(STANDARD|LEGACY)", read(os.path.join(item.path, "CLAUDE.md")), re.M):
+            problems.append(tag + "its CLAUDE.md has no `Conformance: STANDARD|LEGACY` line (harness.py classify %s --write STANDARD|LEGACY)" % item.path)
+        worktree = item.loop_worktree_path()
+        if not os.path.isdir(worktree):
+            if not git(item.path, "branch", "--show-current")[1]:
+                problems.append(tag + "no current branch (detached HEAD)")
+            if git(item.path, "status", "--porcelain", "--untracked-files=no")[1]:
+                warns.append(tag + "the folder has UNcommitted changes; the worktree is born from the last commit and does NOT carry them.")
+        if opts.push and not git(item.path, "remote", "get-url", "origin")[1]:
+            warns.append(tag + "no `origin` remote: nowhere to push its feature branch")
+    return problems, warns
+
+
 def preflight(repo, opts):
     """Checks everything the loop needs and returns (problems, warnings). Creates nothing."""
     problems, warns = [], []
     work = worktree_of(repo)
     root = work if os.path.isdir(work) else repo
+    repos = project_repos.load_repos(repo)
     if not (opts.claude or shutil.which("claude")):
         problems.append("`claude` command not found on PATH")
     if git(repo, "rev-parse", "--is-inside-work-tree")[1] != "true":
@@ -387,11 +466,14 @@ def preflight(repo, opts):
         _, dirty, _ = git(repo, "status", "--porcelain", "--untracked-files=no")
         if dirty:
             warns.append("the repo has UNcommitted changes; the worktree is born from the last commit and does NOT carry them. Commit or stash first if you need them.")
+    extra_problems, extra_warns = extra_repos_preflight(repos, opts)
+    problems += extra_problems
+    warns += extra_warns
     if not os.path.exists(os.path.join(root, ".specs", "project", "ROADMAP.md")):
         problems.append("missing .specs/project/ROADMAP.md: generate and APPROVE the roadmap first (panel, or a normal /orchestrator conversation)")
     else:
         grammar = loop_state.parse_roadmap(read(os.path.join(root, ".specs", "project", "ROADMAP.md")))
-        problems += ["ROADMAP outside the grammar: " + item for item in grammar[1] + loop_state.check_fields(grammar[0])]
+        problems += ["ROADMAP outside the grammar: " + item for item in grammar[1] + loop_state.check_fields(grammar[0], repo_names_of(repos))]
         score, total, done = roadmap_score(root)
         if not total:
             problems.append("ROADMAP.md has no feature line (`- [slug] status=...`)")
@@ -402,10 +484,8 @@ def preflight(repo, opts):
         else:
             note = " (answering the loop's question: the answer may reopen a quarantined feature)" if done == total else ""
             print("[check] ROADMAP: %d features, %d closed, %d to do%s" % (total, done, total - done, note))
-    if os.path.exists(os.path.join(root, ".specs", "project", "ROADMAP.md")) and not (opts.option or opts.answer):
-        approval = loop_state.roadmap_approval(root)
-        if not approval["approved"]:
-            problems.append("roadmap not approved: %s (Approve roadmap button in the panel)" % approval["reason"])
+    if os.path.exists(os.path.join(root, ".specs", "project", "ROADMAP.md")):
+        problems += approval_problems(root, answering=bool(opts.option or opts.answer))
     if not re.search(r"^Conformance:\s*(STANDARD|LEGACY)", read(os.path.join(root, "CLAUDE.md")), re.M):
         problems.append("CLAUDE.md has no `Conformance: STANDARD|LEGACY` line (harness.py classify <repo> --write STANDARD|LEGACY, or the Conformance button in the panel)")
     problems += test_environment_problems(root, opts)
@@ -481,8 +561,130 @@ def find_dotnet(repo, max_depth=3):
 
 
 # ---------------------------------------------------------------- worktree (script only)
-def ensure_worktree(repo, opts):
-    """Creates the sibling worktree and the loop branch ONCE. Reuses it if it exists. Never recreates it every turn."""
+def step(tag, kind, text):
+    """One plain-text step line for the panel: `[loop] [<repo>] <kind>: <text>` (tag only in a multi-repo project, so a single-repo
+    project keeps today's output). Kinds: check | warn | worktree-add | reattach | copy | setup | ready | reuse | error. Flushed at once."""
+    print(("[loop] [%s] %s: %s" % (tag, kind, text)) if tag else ("[loop] %s: %s" % (kind, text)), flush=True)
+
+
+def branch_exists(repo, branch):
+    return bool(branch) and git(repo, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch)[0] == 0
+
+
+def last_run_entry(primary_repo, name):
+    """What the last Close loop recorded for repo `name` ({"branch", "base", ...}) in the primary repo's last-run.json, or {}."""
+    entry = (load_json(loop_state.loop_path(primary_repo, LAST_RUN_NAME)).get("repos") or {}).get(name)
+    return entry if isinstance(entry, dict) else {}
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return "sha256:" + digest.hexdigest()
+
+
+def copy_local_files(repo, work, names, tag):
+    """Copies the ticked git-ignored files (REPOS.json `copy`) from the user's repo into the worktree. Files only, relative to the repo,
+    never inside node_modules/bin/obj/dist. Never overwrites. Returns {name: sha256 of the SOURCE} (Close loop compares against it)."""
+    hashes, skipped = {}, []
+    for name in names:
+        relative = str(name).replace("\\", "/").strip().strip("/")
+        source, target = os.path.join(repo, relative), os.path.join(work, relative)
+        inside = os.path.realpath(source).startswith(os.path.realpath(repo) + os.sep)
+        heavy = bool(set(HEAVY_FOLDERS).intersection(relative.split("/")))
+        if not relative or not inside or heavy or not os.path.isfile(source):
+            skipped.append(relative)
+            continue
+        if not os.path.exists(target):
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(source, target)
+        hashes[relative] = file_sha256(source)
+    if skipped:
+        step(tag, "warn", "not copied (missing, a folder or a generated folder): " + ", ".join(skipped))
+    return hashes
+
+
+def git_version_problem(cwd):
+    """Reason when git is older than 2.5 (no `git worktree`), else ""."""
+    found = re.search(r"(\d+)\.(\d+)", git(cwd, "--version")[1])
+    if not found:
+        return "could not read the git version"
+    version = (int(found.group(1)), int(found.group(2)))
+    return "" if version >= MIN_GIT_WORKTREE_VERSION else "git %d.%d is too old for worktrees (needs 2.5 or newer)" % version
+
+
+def worktree_never_ran(work):
+    """True while no loop ran in the worktree: no LOOP.json, no turn record, no lock and `turns` 0 in meta.json (a bare worktree)."""
+    loop_folder = os.path.dirname(os.path.dirname(loop_state.loop_path(work, "meta.json")))
+    if os.path.exists(os.path.join(loop_folder, "json", "LOOP.json")) or os.path.exists(os.path.join(loop_folder, "internal", "LOOP.lock")):
+        return False
+    if glob.glob(os.path.join(loop_folder, "internal", "turns", "*.json")):
+        return False
+    turns = load_json(loop_state.loop_path(work, "meta.json")).get("turns")
+    return not (isinstance(turns, int) and not isinstance(turns, bool) and turns > 0)
+
+
+def refresh_unused_worktree(repo, work, meta_path):
+    """A reused worktree that never ran a loop gets `.specs`, `CLAUDE.md` and `.claude` copied again from the primary repo: the copy made at
+    creation can be stale (the plan kept changing in the primary while the worktree waited). What the worktree itself holds under
+    `.specs/project/loop` (meta.json, a PAUSE, MONITOR.json, LOOP-CMD.json, the relaunch log...) is put back over the fresh copy; only the roadmap
+    approval always follows the primary (an approval reset there must not survive here)."""
+    if not worktree_never_ran(work):
+        return
+    loop_folder = os.path.dirname(os.path.dirname(meta_path))
+    keep_folder = tempfile.mkdtemp(prefix="loop-refresh-")
+    kept = os.path.join(keep_folder, "loop")
+    try:
+        if os.path.isdir(loop_folder):
+            shutil.copytree(loop_folder, kept)
+        refreshed = []
+        for name in (".specs", "CLAUDE.md", ".claude"):
+            source, target = os.path.join(repo, name), os.path.join(work, name)
+            if not os.path.exists(source):
+                continue
+            if os.path.isdir(target):
+                shutil.rmtree(target, ignore_errors=True)
+            elif os.path.exists(target):
+                os.remove(target)
+            shutil.copytree(source, target) if os.path.isdir(source) else shutil.copy2(source, target)
+            refreshed.append(name)
+        loop_state.migrate_layout(work)
+        if os.path.isdir(kept):
+            shutil.copytree(kept, loop_folder, dirs_exist_ok=True, ignore=shutil.ignore_patterns("ROADMAP-APPROVED.json"))
+        if refreshed:
+            print("[loop] refreshed from the repo (the worktree never ran a loop): %s" % ", ".join(refreshed), flush=True)
+    finally:
+        shutil.rmtree(keep_folder, ignore_errors=True)
+
+
+def resolve_setup(item, cli_setup=""):
+    """(command, auto): the stored setup always wins, then the CLI one, else what the repo's manifests say (nothing runs to detect)."""
+    stored = item.setup or cli_setup
+    if stored:
+        return stored, False
+    detected = detect_setup.detect_setup(item.path)
+    return detected or "", bool(detected)
+
+
+def resolve_copy(item):
+    """Files to copy into the worktree: the stored list when configured (`[]` = none), else the suggested git-ignored local config."""
+    if item.copy_configured or item.copy:
+        return list(item.copy)
+    if not os.path.isdir(item.path):
+        return []
+    code, output, _ = git(item.path, *detect_setup.IGNORED_FILES_ARGUMENTS)
+    return [entry["path"] for entry in detect_setup.suggest_copy_files(item.path, output if code == 0 else "")]
+
+
+def ensure_worktree(repo, opts, tag="", copy_files=(), copy_hashes=None, setup=None, setup_auto=False):
+    """Creates the sibling worktree and the loop branch ONCE. Reuses it if it exists. Never recreates it every turn.
+    When a previous Close loop recorded a branch that still exists (last-run.json) and the folder is gone, the worktree is re-attached
+    to that branch instead of creating a new one (a new branch only with --branch). `tag` = the repo name in a multi-repo project (step
+    lines get the `[<repo>]` tag); `copy_files`/`copy_hashes` = the ticked git-ignored files and where their hashes are returned;
+    `setup` = the one-time command (None = the CLI --setup)."""
+    setup = opts.setup if setup is None else setup
     work = worktree_of(repo)
     meta_path = loop_state.loop_path(work, "meta.json")
     if os.path.isdir(work):
@@ -490,19 +692,55 @@ def ensure_worktree(repo, opts):
         meta = load_json(meta_path)
         _, current, _ = git(work, "branch", "--show-current")
         if not meta.get("branch") or current != meta["branch"]:
+            if tag:
+                step(tag, "error", "folder %s already exists but is not this loop's worktree (current branch: %s)" % (work, current))
             sys.exit("folder %s already exists but is not this loop's worktree (current branch: %s). Remove or rename it and run again." % (work, current))
-        print("[loop] reusing worktree %s on branch %s" % (work, meta["branch"]))
+        if not opts.dry_run:
+            refresh_unused_worktree(repo, work, meta_path)
+        if tag:
+            step(tag, "reuse", "worktree %s on branch %s" % (work, meta["branch"]))
+            step(tag, "ready", "path=%s branch=%s base=%s" % (work, meta["branch"], meta.get("base", "")))
+        else:
+            print("[loop] reusing worktree %s on branch %s" % (work, meta["branch"]))
         return work, meta
+    if tag:
+        problem = git_version_problem(repo)
+        if problem:
+            step(tag, "error", problem)
+            sys.exit("repo %s: %s" % (tag, problem))
     code, base, err = git(repo, "branch", "--show-current")
     if code != 0 or not base:
+        if tag:
+            step(tag, "error", "repo has no current branch (detached HEAD?): %s" % err)
         sys.exit("repo has no current branch (detached HEAD?): %s" % err)
-    branch = opts.branch or "loop/" + datetime.datetime.now().strftime("%Y%m%d-%H%M")
+    if tag:
+        step(tag, "check", "git ok; current branch %s" % base)
+        if git(repo, "status", "--porcelain", "--untracked-files=no")[1]:
+            step(tag, "warn", "your folder has uncommitted changes; the worktree does not carry them")
+    recorded = last_run_entry(repo, tag or project_repos.short_name_of(repo))
+    reattach = "" if opts.branch else (recorded.get("branch") if branch_exists(repo, recorded.get("branch")) else "") or ""
+    branch = reattach or opts.branch or "loop/" + datetime.datetime.now().strftime("%Y%m%d-%H%M")
+    if reattach:
+        base = recorded.get("base") or base
     if opts.dry_run:
-        print("[dry-run] git worktree add -b %s %s %s" % (branch, work, base))
+        print("[dry-run] git worktree add %s%s %s" % ("" if reattach else "-b %s " % branch, work, reattach or base))
         return work, {"branch": branch, "base": base, "worktree": work, "copied": []}
-    code, _, err = git(repo, "worktree", "add", "-b", branch, work, base)
-    if code != 0:
-        sys.exit("failed to create worktree: " + err)
+    if reattach:
+        git(repo, "worktree", "prune")  # the removed folder may still be registered against the branch
+        code, _, err = git(repo, "worktree", "add", work, branch)
+        if code != 0:
+            if tag:
+                step(tag, "error", "failed to re-attach worktree: " + err)
+            sys.exit("failed to re-attach worktree to %s: %s" % (branch, err))
+        step(tag, "reattach", "%s (existing branch recorded by the last Close loop; no new branch)" % branch)
+    else:
+        if tag:
+            step(tag, "worktree-add", "git worktree add -b %s %s %s" % (branch, work, base))
+        code, _, err = git(repo, "worktree", "add", "-b", branch, work, base)
+        if code != 0:
+            if tag:
+                step(tag, "error", "failed to create worktree: " + err)
+            sys.exit("failed to create worktree: " + err)
     copied = []
     for name in (".specs", "CLAUDE.md", ".claude"):
         source, target = os.path.join(repo, name), os.path.join(work, name)
@@ -510,19 +748,128 @@ def ensure_worktree(repo, opts):
             shutil.copytree(source, target) if os.path.isdir(source) else shutil.copy2(source, target)
             copied.append(name)
     loop_state.migrate_layout(work)  # .specs copied from a repo still in an older layout
+    hashes = copy_local_files(repo, work, copy_files, tag) if copy_files else {}
+    if copy_hashes is not None:
+        copy_hashes.update(hashes)
     meta = {
         "branch": branch, "base": base, "worktree": work, "repo": repo, "copied": copied,
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"), "turns": 0, "cost_usd": 0.0,
         "note": "worktree used ONLY by run_loop.py; the orchestrator commits here and never pushes",
     }
     save_json(meta_path, meta)
-    print("[loop] worktree created: %s (branch %s, base %s; copied from the repo: %s)" % (work, branch, base, ", ".join(copied) or "nothing"))
-    if opts.setup:
-        print("[loop] one-time setup: %s" % opts.setup)
-        code = subprocess.run(opts.setup, cwd=work, shell=True).returncode
+    if tag:
+        step(tag, "copy", ", ".join(copied + list(hashes)) or "nothing")
+    else:
+        print("[loop] worktree created: %s (branch %s, base %s; copied from the repo: %s)" % (work, branch, base, ", ".join(copied) or "nothing"))
+    if setup:
+        note = " (auto-detected)" if setup_auto else ""
+        step(tag, "setup", setup + note) if tag else print("[loop] one-time setup: %s" % setup)
+        code = subprocess.run(setup, cwd=work, shell=True).returncode
         if code != 0:
-            sys.exit("setup failed (code %s); fix it and run again (the worktree already exists)" % code)
+            if tag:
+                step(tag, "error", "setup failed (code %s)" % code)
+            sys.exit("%ssetup failed (code %s); fix it and run again (the worktree already exists)" % ("repo %s: " % tag if tag else "", code))
+    if tag:
+        step(tag, "ready", "path=%s branch=%s base=%s" % (work, branch, base))
     return work, meta
+
+
+def ensure_extra_worktree(item, opts, branch, known):
+    """Worktree of a NON-primary repo, on the same loop branch as the primary. `known` = what meta.repos recorded on a previous run.
+    Born from the user's folder; only the ticked `copy` files are copied (no .specs, CLAUDE.md or .claude: the loop runs in the primary).
+    Returns the meta.repos entry. Every step is a `[loop] [<repo>] <kind>: <text>` line."""
+    name, work = item.name, item.loop_worktree_path()
+    entry = {"path": item.path, "worktree": work, "branch": branch, "base": known.get("base", ""), "primary": False, "copied": dict(known.get("copied") or {})}
+    if os.path.isdir(work):
+        _, current, _ = git(work, "branch", "--show-current")
+        if current != branch:
+            step(name, "error", "folder %s already exists but is not this loop's worktree (current branch: %s, expected %s)" % (work, current, branch))
+            sys.exit("repo %s: folder %s already exists but is not this loop's worktree (current branch: %s). Remove or rename it and run again." % (name, work, current))
+        entry["base"] = entry["base"] or git(item.path, "branch", "--show-current")[1]
+        step(name, "reuse", "worktree %s on branch %s" % (work, branch))
+        step(name, "ready", "path=%s branch=%s base=%s" % (work, branch, entry["base"]))
+        return entry
+    problem = git_version_problem(item.path)
+    if problem:
+        step(name, "error", problem)
+        sys.exit("repo %s: %s" % (name, problem))
+    code, base, err = git(item.path, "branch", "--show-current")
+    if code != 0 or not base:
+        step(name, "error", "repo has no current branch (detached HEAD?): %s" % err)
+        sys.exit("repo %s has no current branch (detached HEAD?): %s" % (name, err))
+    entry["base"] = base
+    step(name, "check", "git ok; current branch %s" % base)
+    if git(item.path, "status", "--porcelain", "--untracked-files=no")[1]:
+        step(name, "warn", "your folder has uncommitted changes; the worktree does not carry them")
+    recorded = last_run_entry(opts.repo_path, name)
+    reattach = branch_exists(item.path, branch) and recorded.get("branch") == branch
+    if reattach:
+        entry["base"] = recorded.get("base") or base
+    if opts.dry_run:
+        print("[dry-run] [%s] git worktree add %s%s %s" % (name, "" if reattach else "-b %s " % branch, work, branch if reattach else base))
+        return entry
+    if reattach:
+        git(item.path, "worktree", "prune")
+        code, _, err = git(item.path, "worktree", "add", work, branch)
+        if code == 0:
+            step(name, "reattach", "%s (existing branch recorded by the last Close loop; no new branch)" % branch)
+    else:
+        step(name, "worktree-add", "git worktree add -b %s %s %s" % (branch, work, base))
+        code, _, err = git(item.path, "worktree", "add", "-b", branch, work, base)
+    if code != 0:
+        step(name, "error", "failed to create worktree: " + err)
+        sys.exit("repo %s: failed to create worktree: %s" % (name, err))
+    entry["copied"] = copy_local_files(item.path, work, resolve_copy(item), name)
+    step(name, "copy", ", ".join(entry["copied"]) or "nothing")
+    setup, auto = resolve_setup(item)
+    if setup:
+        step(name, "setup", setup + (" (auto-detected)" if auto else ""))
+        code = subprocess.run(setup, cwd=work, shell=True).returncode
+        if code != 0:
+            step(name, "error", "setup failed (code %s)" % code)
+            sys.exit("repo %s: setup failed (code %s); fix it and run again (the worktree already exists)" % (name, code))
+    elif opts.setup:
+        step(name, "warn", "--setup (%s) runs only in the primary repo; set this repo's own setup in the repository manager" % opts.setup)
+    step(name, "ready", "path=%s branch=%s base=%s" % (work, branch, entry["base"]))
+    return entry
+
+
+def ensure_worktrees(repo, opts):
+    """One worktree per repo of the project, all on the same loop branch; returns (primary worktree, meta). A project without
+    REPOS.json (or with one repo) goes through ensure_worktree alone: same lines, same meta.json as before. A multi-repo project adds
+    `meta["repos"] = {name: {path, worktree, branch, base, primary, copied}}`; the top-level fields still describe the primary."""
+    repos = project_repos.load_repos(repo)
+    if len(repos) == 1:
+        return ensure_worktree(repo, opts)
+    primary = project_repos.primary_of(repos)
+    hashes = {}
+    primary_setup, primary_auto = resolve_setup(primary, opts.setup)
+    work, meta = ensure_worktree(repo, opts, tag=primary.name, copy_files=resolve_copy(primary), copy_hashes=hashes,
+                                setup=primary_setup, setup_auto=primary_auto)
+    previous = meta.get("repos") or {}
+    entries = {primary.name: {"path": repo, "worktree": work, "branch": meta["branch"], "base": meta.get("base", ""), "primary": True,
+                              "copied": hashes or dict((previous.get(primary.name) or {}).get("copied") or {})}}
+    opts.repo_path = repo
+    only = getattr(opts, "only_repos", None)
+    for item in repos:
+        if not item.primary:
+            if only and item.name not in only:  # --repos: the others keep what meta.repos already recorded
+                if previous.get(item.name):
+                    entries[item.name] = previous[item.name]
+                continue
+            entries[item.name] = ensure_extra_worktree(item, opts, meta["branch"], previous.get(item.name) or {})
+    meta["repos"] = entries
+    if not opts.dry_run:
+        save_json(loop_state.loop_path(work, "meta.json"), meta)
+    return work, meta
+
+
+def loop_worktrees(work, meta):
+    """[(repo name, worktree path)] the loop works in, primary first. A single-repo project (no meta.repos) = [("", work)]."""
+    entries = meta.get("repos") or {}
+    if not entries:
+        return [("", work)]
+    return [(name, entry.get("worktree") or work) for name, entry in sorted(entries.items(), key=lambda pair: not pair[1].get("primary"))]
 
 
 # ---------------------------------------------------------------- state
@@ -538,10 +885,44 @@ def roadmap_score(work):
     return score, total, verified
 
 
-def fingerprint(work):
+def fingerprint(work, meta=None):
     _, head, _ = git(work, "rev-parse", "HEAD")
+    head += "".join(value for name, value in sorted((heads_of(work, meta) or {}).items()))  # a commit in any worktree is a change
     text = read(os.path.join(work, ".specs", "project", "ROADMAP.md")) + read(os.path.join(work, ".specs", "project", "STATE.md")) + head
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
+def heads_of(work, meta):
+    """{repo name: HEAD of its worktree} for a multi-repo project; None for a single-repo one (its snapshots stay as they were)."""
+    if not (meta or {}).get("repos"):
+        return None
+    return {name: git(path, "rev-parse", "HEAD")[1] for name, path in loop_worktrees(work, meta)}
+
+
+def count_new_commits(prev, work, meta, head_now):
+    """Commits made since the previous turn's snapshot, summed over EVERY worktree of the project (a commit in any listed one counts)."""
+    if not prev:
+        return 0
+    _, count, _ = git(work, "rev-list", "--count", "%s..%s" % (prev["head"], head_now))
+    total = int(count) if count.isdigit() else 0
+    before = prev.get("heads") or {}
+    for name, path in loop_worktrees(work, meta)[1:]:  # the primary is already counted above
+        if before.get(name):
+            _, extra, _ = git(path, "rev-list", "--count", "%s..HEAD" % before[name])
+            total += int(extra) if extra.isdigit() else 0
+    return total
+
+
+def dirty_worktrees(work, meta):
+    """[(repo name, rows)] of every worktree with changes outside .specs/. The name is "" for a single-repo project."""
+    dirty = []
+    for name, path in loop_worktrees(work, meta):
+        ignore = set(meta.get("copied", []))
+        ignore.update((meta.get("repos", {}).get(name) or {}).get("copied") or {})
+        rows = dirty_outside_specs(path, ignore)
+        if rows:
+            dirty.append((name, rows))
+    return dirty
 
 
 def dirty_outside_specs(work, ignore):
@@ -622,13 +1003,13 @@ def acquire_lock(work):
 
 
 # ---------------------------------------------------------------- one turn
-def plan_flags(work, wave):
+def plan_flags(work, wave, primary_name=""):
     """Deterministic scheduler: the script computes the turn's phase and features (loop_state.next_work); the orchestrator executes.
     With no readable ROADMAP or nothing to dispatch, returns empty and the orchestrator decides as before."""
     features, _ = loop_state.parse_roadmap(read(os.path.join(work, ".specs", "project", "ROADMAP.md")))
     if not features:
         return ""
-    plan = loop_state.next_work(features, wave, headless=True)
+    plan = loop_state.next_work(features, wave, headless=True, primary_name=primary_name)
     flags = " --phase %s" % plan["phase"]
     if plan["slugs"]:
         flags += " --ready %s" % ",".join(plan["slugs"])
@@ -674,7 +1055,7 @@ def pause_on_quarantine(specs, prev, state, opts):
     if not fresh:
         return ""
     if not getattr(opts, "pause_on_blocked", False):
-        plan = loop_state.next_work(new, getattr(opts, "wave", 1), headless=True)
+        plan = loop_state.next_work(new, getattr(opts, "wave", 1), headless=True, primary_name=getattr(opts, "primary_name", ""))
         if not plan.get("stuck_by_blocked"):
             return ""
     why = str(state.get("reason") or "").strip()
@@ -801,12 +1182,33 @@ def try_gate_tiebreak(work, turn, opts, meta, auto_state):
     return True
 
 
+def grafana_read_arguments(opts):
+    """(mcp config, allowed tools, denied tools) of the turn. Opt-in per project (ACCESS.json `grafana_read`): the Grafana MCP server
+    alone, and only the read-only Loki tools; every other MCP stays out. Anything unusable keeps the empty config (never a guess)."""
+    root = getattr(opts, "access_root", "")
+    if not root or not access_settings.read_access(root)[access_settings.GRAFANA_READ_KEY]:
+        return EMPTY_MCP_CONFIG, [], []
+    config_path = grafana_access.write_mcp_config(app_config.get_user_data_dir())
+    if not config_path:
+        print("[loop] warn: grafana_read is on in ACCESS.json but the `grafana` MCP server was not found in ~/.claude.json: continuing without it")
+        return EMPTY_MCP_CONFIG, [], []
+    return config_path, list(grafana_access.READ_TOOLS), list(grafana_access.DENIED_WRITE_TOOLS)
+
+
 def claude_command(opts, prompt):
     binary = opts.claude or shutil.which("claude") or "claude"
     base = [sys.executable, binary] if binary.endswith(".py") else [binary]
+    # T23: each non-primary worktree is granted as `--add-dir=<path>` (the `=` form: the flag is variadic and would swallow what follows)
+    extra_dirs = ["--add-dir=%s" % path for path in getattr(opts, "extra_worktrees", None) or []]
+    mcp_config, allowed_tools, denied_tools = grafana_read_arguments(opts)
+    allowed = ["--allowedTools"] + allowed_tools if allowed_tools else []
     return base + [
         "-p", prompt, "--output-format", "json", "--permission-mode", opts.permission_mode,
         "--permission-prompts", "none", "--max-budget-usd", str(opts.budget),
+    ] + extra_dirs + [
+        "--strict-mcp-config", "--mcp-config", mcp_config,
+    ] + allowed + [
+        "--disallowedTools", ",".join(LOOP_DISALLOWED_TOOLS + denied_tools),  # last and as ONE argument: the option is variadic
     ]
 
 
@@ -816,6 +1218,9 @@ def push_lock_env(cwd):
     env = dict(os.environ)
     env["LOOP_HEADLESS"] = "1"
     env.setdefault("LOOP_APP_HOME", APP_ROOT_DIR)  # the headless turn finds the app without depending on config.json
+    specs_dir = os.path.join(os.path.abspath(cwd), ".specs")  # cwd = the PRIMARY worktree (run_turn is called with `work`)
+    if os.path.isdir(specs_dir):
+        env["LOOP_SPECS_DIR"] = specs_dir  # the guard finds SCOPE.json even when its cwd is a second worktree
     _, remotes, _ = git(cwd, "remote")
     names = remotes.split()
     try:
@@ -948,7 +1353,7 @@ def finish(work, meta, status, reason, opts):
             meta["push"] = "refused: " + problem
         else:
             try:
-                delivered = delivery.finalize(work, meta["branch"])
+                delivered = delivery.finalize_project(work, meta)
             except Exception as error:  # the delivery never takes the notice down
                 delivered = {"push": "FAILED: delivery.py: %s" % str(error)[:200], "pr": None, "pr_status": "not created"}
             meta["push"], meta["pr"], meta["pr_status"] = delivered["push"], delivered["pr"], delivered["pr_status"]
@@ -1009,6 +1414,8 @@ def main():
     parser.add_argument("--summary-dir", default="", help="folder of the final summary (default: loop-summary/ in the current directory)")
     parser.add_argument("--check", action="store_true", help="only checks the preflight, prints the ready command and exits (creates nothing)")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--ensure-worktrees", action="store_true", help="only creates (or re-attaches) the worktrees as the loop start does, prints the `[loop] [<repo>] <kind>: <text>` lines and exits; no preflight, no turn")
+    parser.add_argument("--repos", default="", help="with --ensure-worktrees: comma-separated repo names to create (the primary is always ensured)")
     parser.add_argument("--continue-on-blocked", action="store_true", help="a quarantined feature NEVER pauses the loop, not even when another depends on it")
     parser.add_argument("--pause-on-blocked", action="store_true", help="a quarantined feature ALWAYS pauses and notifies (default: only pauses when another feature depends on the blocked one)")
     parser.add_argument("--allow-silent", action="store_true", help="testing only: waives the mandatory notice channels (LOOP_NOTIFY_REQUIRED)")
@@ -1028,6 +1435,17 @@ def main():
         sys.exit("%s is not a git repository" % repo)
     if opts.rewind is not None:
         return rewind(repo, opts)
+    if opts.ensure_worktrees:
+        ACTIVE["notify"] = False
+        opts.only_repos = [name.strip() for name in opts.repos.split(",") if name.strip()] or None
+        opts.repo_path = repo
+        try:
+            ensure_worktrees(repo, opts)
+        except SystemExit as stop:
+            if isinstance(stop.code, str):
+                print("[loop] error: %s" % stop.code, flush=True)
+            return 1 if stop.code in (None, 0) or isinstance(stop.code, str) else int(stop.code)
+        return 0
     problems, warns = preflight(repo, opts)
     for item in warns:
         print("[check] WARNING:", item)
@@ -1038,8 +1456,19 @@ def main():
             print("[check] READY. Command:\n  %s" % ready_command(repo, opts))
         return 1 if problems else 0
     if problems:
-        sys.exit("pre-flight failed, the loop did not start. Problems: " + "; ".join(problems))
-    work, meta = ensure_worktree(repo, opts)
+        work_now = worktree_of(repo)
+        env_problems = test_environment_problems(work_now if os.path.isdir(work_now) else repo, opts)
+        env_reason = test_environment_stop_reason(work_now if os.path.isdir(work_now) else repo, opts, env_problems)
+        others = [item for item in problems if item not in env_problems]
+        # the test environment text goes FIRST: the notice clips the reason and this is the part the user has to act on
+        sys.exit("pre-flight failed, the loop did not start. " + (env_reason + " " if env_reason else "")
+                 + ("Problems: " + "; ".join(others) if others else ("Problems: " + "; ".join(problems) if not env_reason else "")))
+    repos = project_repos.load_repos(repo)
+    opts.repo_names, opts.primary_name = repo_names_of(repos), (project_repos.primary_of(repos).name if len(repos) > 1 else "")
+    work, meta = ensure_worktrees(repo, opts)
+    opts.access_root = work  # ACCESS.json of the project, read at every turn (the user may toggle it between turns)
+    opts.extra_worktrees = [item["worktree"] for item in (meta.get("repos") or {}).values()
+                            if isinstance(item, dict) and not item.get("primary") and item.get("worktree")]
     if opts.dry_run:
         print("[dry-run] turn 1 command:", " ".join(claude_command(opts, "/orchestrator continue --headless --turn 1 --wave %d" % opts.wave)))
         return 0
@@ -1064,7 +1493,7 @@ def main():
     stall, last_score, last_print, limit_hits = 0, roadmap_score(work)[0], "", 0
     cost = float(meta.get("cost_usd", 0))
     if not loop_state.load_snapshot(work, turn):  # baseline: state before this run's first turn (return point for --rewind)
-        loop_state.snapshot(work, turn, git(work, "rev-parse", "HEAD")[1])
+        loop_state.snapshot(work, turn, git(work, "rev-parse", "HEAD")[1], heads_of(work, meta))
     try:
         while True:
             paused = pause_requested(work, turn)  # before spending the next turn
@@ -1072,9 +1501,9 @@ def main():
                 print("[loop] PAUSE found: stopping before turn %d" % (turn + 1))
                 return finish(work, meta, "awaiting_user", paused, opts)
             turn += 1
-            rows = dirty_outside_specs(work, set(meta.get("copied", [])))
-            if rows:
-                return finish(work, meta, "error", "dirty tree outside .specs/ before turn %d (no automatic reset): %s" % (turn, "; ".join(rows[:5])), opts)
+            for dirty_name, rows in dirty_worktrees(work, meta):
+                where = "in repo %s " % dirty_name if dirty_name else ""
+                return finish(work, meta, "error", "dirty tree outside .specs/ %sbefore turn %d (no automatic reset): %s" % (where, turn, "; ".join(rows[:5])), opts)
             _, current, _ = git(work, "branch", "--show-current")
             if current != meta["branch"]:
                 code, _, err = git(work, "checkout", meta["branch"])
@@ -1084,7 +1513,7 @@ def main():
             if applied:
                 print("[loop] forgotten dependencies applied to the ROADMAP before the turn: " + "; ".join(applied))
             prompt = "/orchestrator continue --headless --turn %d --wave %d --branch %s%s%s" % (
-                turn, opts.wave, meta["branch"], " --e2e" if opts.e2e else "", plan_flags(work, opts.wave))
+                turn, opts.wave, meta["branch"], " --e2e" if opts.e2e else "", plan_flags(work, opts.wave, opts.primary_name))
             started = time.time()
             print("[loop] turn %d | %s" % (turn, datetime.datetime.now().strftime("%H:%M:%S")))
             code, out, err, timed_out = run_turn(claude_command(opts, prompt), work, opts.timeout)
@@ -1127,20 +1556,18 @@ def main():
 
             state = load_json(loop_state.state_file(work, "LOOP.json"))
             if state.get("turn") != turn or state.get("status") not in STATUS_OK:
-                loop_state.snapshot(work, turn, git(work, "rev-parse", "HEAD")[1])  # the turn ran: the return point exists even with a bad LOOP.json
+                loop_state.snapshot(work, turn, git(work, "rev-parse", "HEAD")[1], heads_of(work, meta))  # the turn ran: the return point exists even with a bad LOOP.json
                 return finish(work, meta, "error", "LOOP.json missing, stale or invalid after turn %d (got status=%r turn=%r; expected turn=%d and status in %s). "
                               "The orchestrator must write it with: python loop_state.py loop <root> --status S --turn %d ..." % (
                                   turn, state.get("status"), state.get("turn"), turn, sorted(STATUS_OK), turn), opts)
             # typed state: legal edges, tries, verified only with a commit, paths; saves this turn's snapshot for --rewind
             prev = loop_state.load_snapshot(work, turn - 1)
             _, head_now, _ = git(work, "rev-parse", "HEAD")
-            new_commits = 0
-            if prev:
-                _, count, _ = git(work, "rev-list", "--count", "%s..%s" % (prev["head"], head_now))
-                new_commits = int(count) if count.isdigit() else 0
+            new_commits = count_new_commits(prev, work, meta, head_now)
             violations = loop_state.validate(read(os.path.join(prev["dir"], "ROADMAP.md")) if prev else "",
-                                             read(os.path.join(specs, "ROADMAP.md")), state, new_commits, os.path.exists(loop_state.state_file(work, "ANSWERS.md")))
-            loop_state.snapshot(work, turn, head_now)
+                                             read(os.path.join(specs, "ROADMAP.md")), state, new_commits, os.path.exists(loop_state.state_file(work, "ANSWERS.md")),
+                                             opts.repo_names, opts.primary_name)
+            loop_state.snapshot(work, turn, head_now, heads_of(work, meta))
             try:
                 graph_view.write(work)  # .specs/project/loop/GRAPH.md always current
             except OSError:
@@ -1178,7 +1605,7 @@ def main():
                 if try_gate_tiebreak(work, turn, opts, meta, auto_state):
                     continue
                 return finish(work, meta, "done", "all features verified or blocked (%d/%d)" % (done, total), opts)
-            printed = fingerprint(work)
+            printed = fingerprint(work, meta)
             if printed == last_print:
                 return finish(work, meta, "error", "identical state (ROADMAP+STATE+HEAD) in 2 consecutive turns: the loop is not advancing", opts)
             last_print = printed

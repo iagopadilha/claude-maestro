@@ -54,11 +54,11 @@ Plan and implement projects with precision. Granular tasks. Clear dependencies. 
 ```
 .specs/
 ├── project/
-│   ├── PROJECT.md      # Vision & goals
+│   ├── PROJECT.md      # Vision & goals (Loop Harness: short context for subagents, see references/project-init.md)
 │   ├── RULES.md       # Limiting rules of the app: ALWAYS read, any phase/feature (model: ${CLAUDE_PLUGIN_ROOT}/shared/PROJECT_RULES.md)
 │   ├── ROADMAP.md      # Features & milestones
 │   └── STATE.md        # Memory: decisions, blockers, lessons, todos, deferred ideas
-├── codebase/           # Brownfield analysis (existing projects)
+├── codebase/           # LEGACY location of the brownfield map; new maps go to docs/codebase/ at the project root
 │   ├── STACK.md
 │   ├── ARCHITECTURE.md
 │   ├── CONVENTIONS.md
@@ -87,7 +87,7 @@ Plan and implement projects with precision. Granular tasks. Clear dependencies. 
 
 **Existing codebase:**
 
-1. Map codebase → 7 brownfield docs
+1. Map codebase → 7 brownfield docs in `docs/codebase/` at the project root (versioned; generic, stable, NOT a source of truth: the code wins; read on demand, only the one the task needs; update the one a feature really changes, briefly, in the same change). A project that already has `.specs/codebase/` keeps working: read `docs/codebase/` first and fall back to it
 2. Initialize project → PROJECT.md + ROADMAP.md
 3. For each feature → same adaptive workflow
 
@@ -187,7 +187,7 @@ When researching, designing, or making any technical decision, follow this chain
 
 ```
 Step 1: Codebase → check existing code, conventions, and patterns already in use
-Step 2: Project docs → README, docs/, inline comments, .specs/codebase/
+Step 2: Project docs → README, docs/, inline comments, docs/codebase/ (fallback .specs/codebase/; read on demand, the code wins)
 Step 3: Context7 MCP → resolve library ID, then query for current API/patterns
 Step 4: Web search → official docs, reputable sources, community patterns
 Step 5: Flag as uncertain → "I'm not certain about X — here's my reasoning, but verify"

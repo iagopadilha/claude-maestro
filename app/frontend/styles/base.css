@@ -1,10 +1,24 @@
 /* Base: dark theme tokens (IBM Plex, amber #F2B544), reset, buttons, notices. Shared by the hub and the panel. */
 :root{
-  --bg:#0E0F11; --panel:#15171A; --panel2:#1B1D21; --line:#24272C; --line2:#2A2D33; --line3:#3A3E45;
+  /* surfaces: page bg < panel (cards) < panel2 (raised/inputs) < panel3 (chips, hover); panel0 = sunken wells */
+  --bg:#0E0F11; --panel0:#121417; --panel:#15171A; --panel2:#1B1D21; --panel3:#1F2226; --black:#000;
+  /* borders: line = hairline, line2 = card, line3 = control, line4 = control hover/strong */
+  --line:#24272C; --line2:#2A2D33; --line3:#3A3E45; --line4:#6B7079;
+  /* text: text = body, text2 = secondary, muted = labels/hints, dim = disabled/placeholder */
   --text:#E6E6E3; --text2:#C9C4BE; --muted:#8B9098; --dim:#7D838C;
-  --amber:#F2B544; --amber-soft:#FFD27A; --amber-bg:#2A2416; --amber-line:#4A3D1C;
-  --green:#5BD38A; --green-bg:#15251C; --red:#F06A5E; --red-bg:#1E1413; --red-line:#5A2A26;
-  --blue:#8AA4FF; --blue-bg:#1A1F2B; --violet:#A58BFF; --cyan:#5CC8D6;
+  /* accent / warn (amber): brand, primary action, pending, attention */
+  --amber:#F2B544; --amber-soft:#FFD27A; --amber-bg0:#1A170F; --amber-bg1:#1B1A12; --amber-bg:#2A2416; --amber-line:#4A3D1C;
+  --amber-glow:rgba(242,181,68,.2); --amber-ring:rgba(242,181,68,.4);
+  /* ok (green): success, done, approved; ink = text on solid green */
+  --green:#5BD38A; --green-soft:#7BE3A5; --green-bg:#15251C; --green-line:#2C5A40; --green-ink:#08170E;
+  /* bad (red): error, destructive, blocked; text = readable on red-bg, soft = lighter text, ink = text on solid red */
+  --red:#F06A5E; --red-hover:#FF8A7F; --red-bg:#1E1413; --red-line:#5A2A26; --red-line-dim:#3A2523; --red-text:#FFB4AC; --red-soft:#FFD2CD; --red-ink:#1A0B09;
+  --red-glow:rgba(240,106,94,.18);
+  /* info (blue): chat/inform; violet = planning intro; cyan = secondary status */
+  --blue:#8AA4FF; --blue-dim:#5F7AA8; --blue-bg:#1A1F2B; --blue-line:#33405C;
+  --violet:#A58BFF; --violet-bg:#201B2C; --violet-line:#3A2F5C; --cyan:#5CC8D6;
+  /* overlays: shadow = drop shadows, scrim = modal backdrop, hover-wash = subtle light tint on rows/lanes */
+  --shadow:rgba(0,0,0,.45); --scrim:rgba(8,9,10,.85); --hover-wash:rgba(255,255,255,.02); --hover-wash2:rgba(255,255,255,.04);
   --sans:'IBM Plex Sans',system-ui,sans-serif; --mono:'IBM Plex Mono',ui-monospace,Consolas,monospace;
 }
 *{box-sizing:border-box;}
@@ -25,7 +39,7 @@ a{color:var(--amber);text-decoration:none;} a:hover{color:var(--amber-soft);text
 
 /* banner offline */
 .banner{display:flex;align-items:center;gap:10px;padding:8px 20px;font-size:12px;}
-.banner-offline{background:var(--red-bg);border-bottom:1px solid var(--red-line);color:#FFB4AC;}
+.banner-offline{background:var(--red-bg);border-bottom:1px solid var(--red-line);color:var(--red-text);}
 
 /* header */
 .header{display:flex;align-items:center;gap:24px;padding:12px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap;}
@@ -38,7 +52,7 @@ a{color:var(--amber);text-decoration:none;} a:hover{color:var(--amber-soft);text
 .dot{width:7px;height:7px;border-radius:50%;background:var(--amber);flex:none;display:inline-block;}
 .dot-red{background:var(--red);}
 .dot.pulse{animation:pulse 1.6s ease-in-out infinite;}
-@keyframes pulse{0%,100%{box-shadow:0 0 0 3px rgba(242,181,68,.2);}50%{box-shadow:0 0 0 6px rgba(242,181,68,.2);}}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 3px var(--amber-glow);}50%{box-shadow:0 0 0 6px var(--amber-glow);}}
 .limits{display:flex;gap:22px;flex-wrap:wrap;}
 .limit{display:flex;flex-direction:column;gap:4px;min-width:96px;}
 .limit-label{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);}
@@ -49,16 +63,16 @@ a{color:var(--amber);text-decoration:none;} a:hover{color:var(--amber-soft);text
 .spacer{flex:1;}
 .header-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .confirm-inline{display:flex;gap:8px;align-items:center;padding:4px 6px 4px 10px;border:1px solid var(--red-line);background:var(--red-bg);border-radius:8px;}
-.confirm-inline span{font-size:12px;color:#FFB4AC;}
+.confirm-inline span{font-size:12px;color:var(--red-text);}
 
 /* buttons */
 .btn{font:500 12px var(--sans);padding:7px 12px;white-space:nowrap;border-radius:6px;border:1px solid var(--line3);background:var(--panel);color:var(--text);cursor:pointer;}
-.btn:hover:not(:disabled){border-color:#6B7079;}
+.btn:hover:not(:disabled){border-color:var(--line4);}
 .btn:disabled{opacity:.55;cursor:not-allowed;}
 .btn-primary{background:var(--amber);border-color:var(--amber);color:var(--bg);font-weight:600;}
 .btn-primary:hover:not(:disabled){background:var(--amber-soft);border-color:var(--amber-soft);}
-.btn-danger{background:var(--red);border-color:var(--red);color:#1A0B09;font-weight:600;}
-.btn-danger:hover:not(:disabled){background:#FF8A7F;border-color:#FF8A7F;}
+.btn-danger{background:var(--red);border-color:var(--red);color:var(--red-ink);font-weight:600;}
+.btn-danger:hover:not(:disabled){background:var(--red-hover);border-color:var(--red-hover);}
 .btn-ghost{background:transparent;}
 .btn-sm{padding:4px 9px;font-size:11px;}
 .btn-pending{background:var(--amber-bg);border-color:var(--amber-line);color:var(--amber);}
@@ -67,11 +81,11 @@ a{color:var(--amber);text-decoration:none;} a:hover{color:var(--amber-soft);text
 
 /* toasts */
 .toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:420px;}
-.toast{padding:10px 14px;border-radius:8px;background:var(--panel2);border:1px solid var(--line3);font-size:12px;line-height:1.4;word-break:break-word;box-shadow:0 6px 20px rgba(0,0,0,.5);}
-.toast.err{border-color:var(--red);background:var(--red-bg);color:#FFD2CD;}
+.toast{padding:10px 14px;border-radius:8px;background:var(--panel2);border:1px solid var(--line3);font-size:12px;line-height:1.4;word-break:break-word;box-shadow:0 6px 20px var(--shadow);}
+.toast.err{border-color:var(--red);background:var(--red-bg);color:var(--red-soft);}
 .toast.ok{border-color:var(--green);background:var(--green-bg);}
 
-.closed{position:fixed;inset:0;background:rgba(14,15,17,.94);display:grid;place-items:center;z-index:100;}
+.closed{position:fixed;inset:0;background:var(--scrim);display:grid;place-items:center;z-index:100;}
 .closed-card{padding:28px 32px;border:1px solid var(--line3);border-radius:12px;background:var(--panel);max-width:440px;text-align:center;display:flex;flex-direction:column;gap:8px;}
 .closed-title{font-size:18px;font-weight:600;}
 

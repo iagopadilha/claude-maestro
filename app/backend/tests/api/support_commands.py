@@ -134,6 +134,7 @@ class Fixture:
         os.makedirs(self.repo)
         os.makedirs(loop_state.turns_dir(self.work))
         self.write(os.path.join(self.project_dir, "ROADMAP.md"), roadmap)
+        self.write(loop_state.loop_path(self.work, "meta.json"), json.dumps({"turns": 1}))  # a worktree where a loop ran (a bare one is not the work dir)
         self.output_dir = os.path.join(self.tmp, "output")
         self.transcripts = os.path.join(self.tmp, "claude-projects-empty")
         self.scripts = {}

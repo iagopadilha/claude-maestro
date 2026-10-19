@@ -1,15 +1,17 @@
-/* Panel center: tabs Current turn | History | Dependencies | Files | Whiteboard. */
-import { $, h, fill } from '../../util/dom.js';
-import { isNum, list } from '../../util/format.js';
-import { createWhiteboard } from '../../components/whiteboard.js';
-import { ctx, ui, region, pal, lastN, FEATURE_STATUSES } from './context.js';
-import { agentsModel, dgRender, dgFit, zoomAt, plainCanvas, fullCanvas, emptyMsg } from './turn_diagram.js';
-import { histView, loadHist, openHist } from './history.js';
-import { dependenciesView, zoomDependencies, fitDependencies, dependenciesScale } from './dependencies.js';
-import { filesView } from './files.js';
+/* Panel center: tabs Current turn | History | Dependencies | Roadmap & specs | Files | Whiteboard, and the #canvas content of each view. */
+import { html, useEffect } from '../../util/preact.js';
+import { isNum } from '../../util/format.js';
+import { Whiteboard, whiteboardStore } from '../../components/whiteboard.js';
+import { ctx, ui, pal, lastN, FEATURE_STATUSES } from './context.js';
+import { renderAll } from '../project_panel.js';
+import { agentsModel, TurnView, EmptyMsg, dgFit, zoomAt, showZoom } from './turn_diagram.js';
+import { History, loadHist, openHist } from './history.js';
+import { Dependencies, zoomDependencies, fitDependencies, dependenciesScale } from './dependencies.js';
+import { Files } from './files.js';
+import { RoadmapChat } from './roadmap_chat.js';
 import { backToLive } from './timeline.js';
 
-const VIEWS = [['turn', 'tab-turn'], ['hist', 'tab-hist'], ['deps', 'tab-deps'], ['files', 'tab-files'], ['board', 'tab-board']];
+const TABS = [['turn', 'tab-turn', 'Current turn'], ['hist', 'tab-hist', 'History'], ['deps', 'tab-deps', 'Dependencies'], ['roadmap', 'tab-roadmap', 'Roadmap & specs'], ['files', 'tab-files', 'Files'], ['board', 'tab-board', 'Whiteboard']];
 const TURN_LEGEND = [['running', '#F2B544'], ['done', '#5BD38A'], ['queued', '#8AA4FF'], ['idle', '#7D838C'], ['blocked/failed', '#F06A5E']];
 let board = null;
 
@@ -25,62 +27,78 @@ const CAPTIONS = {
   turn: () => (ui.pastN != null ? `pipeline of turn ${ui.pastN}: one lane per feature` : 'pipeline of this turn: one lane per feature, left to right'),
   hist: () => 'every turn and its agents · click an agent to see its full log',
   deps: () => 'one column per stage; inside a stage, each feature sits to the right of what it waits on · hover to see the path, click to open',
+  roadmap: () => 'stages and features defined earlier · change a spec with the AI, then tell the loop to redo the affected work',
   files: () => 'everything the loop writes in .specs, in one place · read or edit what the app allows',
   board: () => 'free project board · saves itself on the server',
 };
+const pastVisible = (view) => ui.pastN != null && (view === 'turn' || view === 'deps' || view === 'hist');
 
+/** The board store lives for the whole page (the tab mounts and unmounts its view). */
 export function getBoard() {
-  if (!board) board = createWhiteboard({ api: ctx.api });
+  if (!board) board = whiteboardStore({ api: ctx.api });
   return board;
 }
 
-export function renderCenter() {
-  const state = ctx.state;
-  if (!state) return;
-  const view = ui.view, hs = ui.hist;
-  const model = view === 'turn' ? agentsModel() : null;
-  const depsSig = view === 'deps' ? [list(ui.past ? ui.past.features : state.features).map((f) => [f.id, f.status, f.stage, f.deps, f.name]), state.stages && state.stages.map((e) => [e.n, e.title]), state.counts, ui.sel] : null;
-  const data = { view, past: ui.pastN, sel: view === 'turn' ? ui.sel : null, ln: lastN(), pl: ui.pinLast, m: model, d: depsSig,
-    hv: view === 'hist' ? [hs.ver, ui.histOpen, !hs.data && hs.loading, state.turns && state.turns.length] : null };
-  region('center', data, () => {
-    const wrap = document.querySelector('.canvas-wrap'), top = wrap ? wrap.scrollTop : 0;
-    for (const [k, id] of VIEWS) { const b = $(id); b.setAttribute('aria-selected', String(view === k)); b.tabIndex = view === k ? 0 : -1; }
-    $('caption').textContent = (CAPTIONS[view] || (() => ''))();
-    $('zoom-ctl').hidden = !(view === 'deps' || (view === 'turn' && model && model.mode !== 'plain'));
-    const pb = $('past-bar');
-    if (ui.pastN != null && (view === 'turn' || view === 'deps' || view === 'hist')) {
-      pb.hidden = false;
-      const last = lastN(), fresh = isNum(last) && isNum(ui.pinLast) && last > ui.pinLast;
-      fill(pb, h('span', { text: `Snapshot of turn ${ui.pastN} · read-only` }),
-        h('button', { type: 'button', class: 'btn btn-sm btn-ghost', onclick: backToLive }, 'back to the latest turn'),
-        fresh ? h('button', { type: 'button', class: 'btn btn-sm past-new', onclick: backToLive }, `new turn ${last} available`) : null);
-    } else { pb.hidden = true; fill(pb); }
-    if (view === 'hist') histView();
-    else if (view === 'deps') fullCanvas(dependenciesView());
-    else if (view === 'files') fullCanvas(filesView());
-    else if (view === 'board') { const q = getBoard(); fullCanvas(q.element); q.open(false); }
-    else if (model.mode === 'plain') plainCanvas(emptyMsg(model.msg));
-    else dgRender(model);
-    fill($('legend'), legendItems(view).map((it) => {
-      const mark = it.line ? h('span', { class: 'sw-line' + (it.dashed ? ' dashed' : '') }) : h('span', { class: 'dot' });
-      if (it.line) mark.style.color = it.color; else mark.style.background = it.color;
-      return h('div', {}, mark, it.label);
-    }));
-    $('legend').hidden = !legendItems(view).length;
-    if (wrap && view === 'hist') wrap.scrollTop = top;
-  });
+function pickView(view) {
+  if (view === 'hist') { openHist(); return; }
+  ui.view = view; renderAll();
+  if (view === 'turn' && ui.pastN != null) loadHist();
 }
 
-export function initCenter() {
-  $('tab-turn').addEventListener('click', () => { ui.view = 'turn'; renderCenter(); if (ui.pastN != null) loadHist(); });
-  $('tab-deps').addEventListener('click', () => { ui.view = 'deps'; renderCenter(); });
-  $('tab-hist').addEventListener('click', openHist);
-  $('tab-files').addEventListener('click', () => { ui.view = 'files'; renderCenter(); });
-  $('tab-board').addEventListener('click', () => { ui.view = 'board'; renderCenter(); });
-  const showScale = () => { if (ui.view === 'deps') $('zoom-val').textContent = Math.round(dependenciesScale() * 100) + '%'; };
-  $('zoom-in').addEventListener('click', () => { if (ui.view === 'deps') zoomDependencies(1.2); else zoomAt(1.2); showScale(); });
-  $('zoom-out').addEventListener('click', () => { if (ui.view === 'deps') zoomDependencies(1 / 1.2); else zoomAt(1 / 1.2); showScale(); });
-  $('zoom-fit').addEventListener('click', () => { if (ui.view === 'deps') fitDependencies(); else dgFit(); showScale(); });
+/** What the center shows now: the turn model and the container flags (#zoom-ctl, #past-bar, #legend, canvas mode).
+    kind: 'plain' = text flow (history, empty message), 'full' = the view fills the pane, 'dg' = pan/zoom diagram. */
+export function centerModel() {
+  const view = ui.view, model = view === 'turn' ? agentsModel() : null;
+  const kind = view === 'hist' || (model && model.mode === 'plain') ? 'plain' : view === 'turn' ? 'dg' : 'full';
+  return { view, model, kind, zoom: view === 'deps' || kind === 'dg', past: pastVisible(view), legend: legendItems(view).length > 0 };
+}
+
+/** Content of #center-tabs (role=tablist; arrows handled by bindTabKeys in project_panel.js). */
+export function CenterTabs({ view = ui.view }) {
+  return TABS.map(([k, id, label]) => html`<button key=${k} type="button" role="tab" id=${id} class="seg-btn" aria-selected=${String(view === k)}
+    tabIndex=${view === k ? 0 : -1} onClick=${() => pickView(k)}>${label}</button>`);
+}
+/** Content of #caption. */
+export const Caption = ({ view = ui.view }) => (CAPTIONS[view] || (() => ''))();
+/** Content of #past-bar (the container is hidden outside a snapshot). */
+export function PastBar() {
+  const last = lastN(), fresh = isNum(last) && isNum(ui.pinLast) && last > ui.pinLast;
+  return html`<span>${`Snapshot of turn ${ui.pastN} · read-only`}</span>
+    <button type="button" class="btn btn-sm btn-ghost" onClick=${() => backToLive()}>back to the latest turn</button>
+    ${fresh ? html`<button type="button" class="btn btn-sm past-new" onClick=${() => backToLive()}>${`new turn ${last} available`}</button>` : null}`;
+}
+/** Content of #legend. */
+export function Legend({ view = ui.view }) {
+  return legendItems(view).map((it) => html`<div key=${(it.line ? 'line:' : 'dot:') + it.label}>${it.line
+    ? html`<span class=${'sw-line' + (it.dashed ? ' dashed' : '')} style=${{ color: it.color }} />`
+    : html`<span class="dot" style=${{ background: it.color }} />`}${it.label}</div>`);
+}
+
+// section.wb is a direct child of .canvas (CSS .canvas.full>*); showing the tab (or a new turn while shown) opens the board
+function Board() {
+  const b = getBoard();
+  useEffect(() => { b.open(false); }, [lastN(), ui.pastN, ui.pinLast]);
+  return html`<${Whiteboard} store=${b} />`;
+}
+
+/** Content of #canvas for the current view (cm = centerModel()). Each view mounts when shown and unmounts when
+    left; its state (pan/zoom, open file and draft, board) lives in module stores, so coming back restores it. */
+export function CenterCanvas({ cm }) {
+  if (cm.view === 'hist') return html`<${History} />`;
+  if (cm.view === 'deps') return html`<${Dependencies} />`;
+  if (cm.view === 'roadmap') return html`<${RoadmapChat} />`;
+  if (cm.view === 'files') return html`<${Files} />`;
+  if (cm.view === 'board') return html`<${Board} />`;
+  if (cm.model.mode === 'plain') return html`<${EmptyMsg} text=${cm.model.msg} />`;
+  return html`<${TurnView} model=${cm.model} />`;
+}
+
+/** Zoom buttons of #zoom-ctl: the dependency graph or the turn diagram. */
+export function zoomCenter(f) {
+  if (ui.view === 'deps') { zoomDependencies(f); showZoom(dependenciesScale()); } else zoomAt(f);
+}
+export function fitCenter() {
+  if (ui.view === 'deps') { fitDependencies(); showZoom(dependenciesScale()); } else dgFit();
 }
 
 /** Light polling of the board: only with the Whiteboard tab open (and the page visible). */

@@ -15,6 +15,7 @@ When dispatching `executor-generic`, include in the prompt a line `SKILL: <name>
 - Path of the spec and, if they exist, of `design.md` and `tasks.md`. **Path, not content.**
 - The literal `PATHS` list, with the instruction not to leave it, and the line `SCOPE_FEATURE: <slug>` (the guard reads it to limit editing to this feature's `PATHS` only, not the union of the wave).
 - A warning when another executor is running in parallel on the same tree, with the neighbor's paths.
+- Multi-repo project: the worktree path of every repo the `PATHS` touch (from `meta.repos`), the `PATHS` as absolute paths in those worktrees, and the `repo-order=` of the feature. Dispatch the repos of one feature in that order (producer before consumer); the executor edits only inside those worktrees and never in the user's original repo folders.
 - The verifier's `FAIL` block or the reviewer's `FINDINGS`, when it is a resend.
 
 ## Collision between features

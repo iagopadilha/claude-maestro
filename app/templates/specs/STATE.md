@@ -14,6 +14,10 @@ step
 
 none (roadmap not generated yet)
 
+## Codebase map
+
+Mapped in `docs/codebase/` (see its `README.md` for the mapped commit). Read only the document the task needs, never all.
+
 ## Open questions
 
 - none

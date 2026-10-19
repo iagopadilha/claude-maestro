@@ -29,10 +29,12 @@ Curl alone **is not E2E**. A report with only curl says "routes validated", neve
 
 Two sources, and they can be combined:
 
-- **From what was implemented.** Read the spec (acceptance criteria, requirement IDs) and the feature's diff. Derive one flow per observable criterion.
+- **From what was implemented.** If the project has `.specs/project/FLOWS.md` with a `## [<slug>]` section for the feature, start from it: its numbered steps are the flow and its `Expected:` lines the expected results. Then read the spec (acceptance criteria, requirement IDs) and the feature's diff, and derive one flow per observable criterion the section does not cover.
 - **From what the user asks.** Free text ("log in, open flow X, filter by Y, check column Z"). Turn it into a script.
 
 The script follows `references/FLOW_FORMAT.md`. Save it in `.specs/features/<slug>/flows.md` when there is a feature; without a feature, in `.playwright-cli/flows/<name>.md` or at the path the user gives. If the flow came from the user and is ambiguous (no login data, no success criterion), ask before running. If it came from the spec, proceed without asking.
+
+**Credentials and headers come from `.specs/project/TEST-ENVIRONMENT.md`** (when it exists): app and auth URLs, DEV test users, the header of each route group, webhook signature and the list of what must not be exercised. Read it before building the script. The file carries only **NAMES** (`$ADMIN_TOKEN`, `$TEST_USER_1_EMAIL`); values live in `.specs/project/.env.test` or `~/.loop-harness/.env` (git-ignored; never read or write those `.env` files). Run commands through `python ${CLAUDE_PLUGIN_ROOT}/shared/testenv.py exec --project <root> '<command with $NAME>'` (single quotes): it fills the values and masks the output. A name missing? `testenv.py check --project <root>` lists it. A secret value never goes into evidence, the report or the summary (write `***`). If the script needs a credential the file lacks (or still says `FILL IN`): do not guess or log in another way; return `UNVERIFIED` with the list of what is missing and the **secret-store key** of each item, so the orchestrator can close it before the next round.
 
 ## Hard rules
 

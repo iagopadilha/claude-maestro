@@ -163,6 +163,31 @@ class LoopControlTests(CommandsTestCase):
         self.assertEqual(argv, [self.fixture.repo, "--check", "--wave", "2", "--no-push", "--setup", "npm ci"])
         self.assertFalse(os.path.exists(self.fixture.at("LOOP.lock")))
 
+    def write_roadmap(self, text):
+        self.fixture.write(os.path.join(self.fixture.project_dir, "ROADMAP.md"), text)
+
+    def check_argv_for(self, body):
+        status, _ = self.fixture.call("/api/loop/check", "POST", body)
+        self.assertEqual(status, 200)
+        return self.read_record("check_argv.json")
+
+    def test_e2e_comes_from_the_roadmap_when_the_body_does_not_send_it(self):
+        self.prepare_fake()
+        self.write_roadmap("# Roadmap\n\n**Goal:** x\n\n**E2E:** yes\n")
+        self.assertEqual(self.check_argv_for({"wave": 2}), [self.fixture.repo, "--check", "--wave", "2", "--e2e"])
+
+    def test_e2e_no_or_absent_in_the_roadmap_adds_no_flag(self):
+        self.prepare_fake()
+        self.write_roadmap("# Roadmap\n\n**Goal:** x\n\n**E2E:** no\n")
+        self.assertEqual(self.check_argv_for({}), [self.fixture.repo, "--check"])
+
+    def test_e2e_in_the_body_wins_over_the_roadmap(self):
+        self.prepare_fake()
+        self.write_roadmap("**E2E:** yes\n")
+        self.assertEqual(self.check_argv_for({"e2e": False}), [self.fixture.repo, "--check"])
+        self.write_roadmap("**E2E:** no\n")
+        self.assertEqual(self.check_argv_for({"e2e": True}), [self.fixture.repo, "--check", "--e2e"])
+
     def test_ready_check_with_the_command_on_the_same_line(self):
         self.prepare_fake("[check] READY. Command: python run_loop.py repo\n")
         data = self.fixture.call("/api/loop/check", "POST", {})[1]

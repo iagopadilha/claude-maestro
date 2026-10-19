@@ -1,15 +1,13 @@
 /* Act mode: concrete actions on the current version (back-end whitelist), always with an explicit confirmation. */
-import { h } from '../../util/dom.js';
+import { html, useState } from '../../util/preact.js';
 import { num, txt, list, httpUrl, shortPath, fmtHour } from '../../util/format.js';
 import { toast } from '../../components/toast.js';
 import { copyText } from '../../components/copy.js';
 import { ctx } from './context.js';
-import { schedulePoll } from '../project_panel.js';
-import { renderComposer } from './chat.js';
+import { renderAll, schedulePoll } from '../project_panel.js';
 
 const ACTION_TIMEOUT_MS = 15 * 60 * 1000; // cleaning worktrees backs up first: it can take a while
 export const actState = { actions: null, loading: false, err: null, card: null, seq: 0 };
-export const actSignature = () => [actState.actions, actState.loading, actState.err, actState.card && { ...actState.card, sel: null, typed: null }, ctx.state && ctx.state.recent_actions];
 const FALLBACK_TITLES = { deliver: 'Deliver: push the branch + PR to the integration branch', summary: 'Generate the loop summary', push: 'Push the feature branches (no PR)', clean_worktrees: 'Clean loop worktrees (backup first)' };
 const WORKTREE_ACTIONS = ['push', 'clean_worktrees'];
 const KNOWN_ACTIONS = ['deliver', 'summary', 'push', 'clean_worktrees'];
@@ -17,10 +15,10 @@ const INSTRUCTION_MESSAGES = { note: 'Noted for the next turn.', answer: 'Answer
 
 export async function loadActions() {
   if (actState.loading) return;
-  actState.loading = true; actState.err = null; renderComposer();
+  actState.loading = true; actState.err = null; renderAll();
   try { const r = await ctx.api.get('actions', 70000); actState.actions = list(r && r.actions); }
   catch (e) { actState.err = e.status === 404 ? 'The server does not offer the action list yet.' : e.message; }
-  finally { actState.loading = false; renderComposer(); }
+  finally { actState.loading = false; renderAll(); }
 }
 const findAction = (id) => list(actState.actions).find((a) => a.id === id) || { id, title: FALLBACK_TITLES[id] || id, available: true, preview: {} };
 function openAction(action, extra) {
@@ -28,12 +26,12 @@ function openAction(action, extra) {
   const wts = list(action.preview && action.preview.worktrees), want = list(extra && extra.targets);
   let sel = [];
   if (WORKTREE_ACTIONS.includes(action.id)) sel = want.length ? wts.filter((w) => want.some((x) => x === w.path || shortPath(x) === shortPath(w.path) || x === w.branch)).map((w) => w.path) : action.id === 'push' ? wts.map((w) => w.path) : [];
-  actState.card = { kind: 'confirm', action, sel, typed: {}, ...(extra || {}) }; renderComposer();
+  actState.card = { kind: 'confirm', action, sel, typed: {}, ...(extra || {}) }; renderAll();
 }
-function cancelAction() { actState.seq += 1; actState.card = null; renderComposer(); }
+function cancelAction() { actState.seq += 1; actState.card = null; renderAll(); }
 export async function proposeAction(text) {
   const seq = ++actState.seq;
-  actState.card = { kind: 'proposing', text }; renderComposer();
+  actState.card = { kind: 'proposing', text }; renderAll();
   try {
     let r = await ctx.api.post('action/propose', { text });
     let guard = 0;
@@ -54,8 +52,8 @@ export async function proposeAction(text) {
     if (seq !== actState.seq) return;
     const p = r.proposal || {};
     if (KNOWN_ACTIONS.includes(p.action)) openAction(findAction(p.action), { text, explanation: p.explanation, confidence: p.confidence, cost: r.cost_usd, targets: list(p.targets) });
-    else { actState.card = { kind: 'none', text, explanation: p.explanation }; renderComposer(); }
-  } catch (e) { if (seq === actState.seq) { actState.card = { kind: 'result', action: { id: 'propose', title: 'Understand the request' }, ok: false, error: e.message }; renderComposer(); } }
+    else { actState.card = { kind: 'none', text, explanation: p.explanation }; renderAll(); }
+  } catch (e) { if (seq === actState.seq) { actState.card = { kind: 'result', action: { id: 'propose', title: 'Understand the request' }, ok: false, error: e.message }; renderAll(); } }
 }
 async function sendAsInstruction() {
   const c = actState.card; if (!c || c.kind !== 'none') return;
@@ -64,7 +62,7 @@ async function sendAsInstruction() {
     const msg = INSTRUCTION_MESSAGES[r.action] || 'Instruction sent.';
     toast(msg, 'ok'); actState.card = null; schedulePoll(800);
   } catch (e) { toast('Instruction not sent: ' + e.message, 'err'); }
-  renderComposer();
+  renderAll();
 }
 const dirtySel = (c) => list(c.action.preview && c.action.preview.worktrees).filter((w) => c.sel.includes(w.path) && w.dirty);
 const typedOk = (c) => dirtySel(c).every((w) => (c.typed[w.path] || '').trim() === w.branch);
@@ -76,7 +74,7 @@ async function runAction() {
   const body = { action: action.id, confirm: true };
   if (wt) { body.targets = c.sel.slice(); if (action.id === 'clean_worktrees' && dirtySel(c).length) body.force = true; }
   const seq = ++actState.seq;
-  actState.card = { kind: 'running', action }; renderComposer();
+  actState.card = { kind: 'running', action }; renderAll();
   try {
     const r = await ctx.api.post('action/run', body, ACTION_TIMEOUT_MS);
     if (seq === actState.seq) actState.card = { kind: 'result', action, ok: true, res: r };
@@ -85,129 +83,128 @@ async function runAction() {
     if (seq === actState.seq) actState.card = { kind: 'result', action, ok: false, error: e.message, output: e.body && e.body.output ? String(e.body.output) : '', push: e.body && e.body.push ? String(e.body.push) : '', rows: list(e.body && e.body.results) };
   }
   schedulePoll(400);
-  renderComposer(); loadActions();
+  renderAll(); loadActions();
 }
-function pre(text) { return text ? h('pre', { class: 'ac-pre', text: String(text) }) : null; }
-function row(k, v) { return v == null || v === '' ? null : h('div', { class: 'ac-row' }, h('span', { class: 'ac-k', text: k }), h('span', { class: 'ac-v', text: String(v) })); }
-function previewRows(a) {
-  const p = a.preview || {}, kids = [];
+
+const Spinner = () => html`<div class="spinner" aria-hidden="true"></div>`;
+const Pre = ({ text }) => (text ? html`<pre class="ac-pre">${String(text)}</pre>` : null);
+const Row = ({ k, v }) => (v == null || v === '' ? null : html`<div class="ac-row"><span class="ac-k">${k}</span><span class="ac-v">${String(v)}</span></div>`);
+function PreviewRows({ a }) {
+  const p = a.preview || {};
   if (a.id === 'deliver') {
-    kids.push(row('branch', p.branch), row('base', p.base || 'integration branch'));
-    const pr = httpUrl(p.existing_pr);
-    kids.push(h('div', { class: 'ac-row' }, h('span', { class: 'ac-k', text: 'PR' }), pr ? h('a', { href: pr, target: '_blank', rel: 'noopener noreferrer', text: pr.replace(/^https?:\/\/(www\.)?github\.com\//i, '') }) : h('span', { class: 'ac-v', text: p.existing_pr ? String(p.existing_pr) : 'none yet (will be created)' })));
-    const of = list(p.open_features);
-    kids.push(row('open features', of.length ? of.join(', ') : 'none'));
-    if (p.push) kids.push(h('div', { class: 'ac-k', text: 'what delivery.py will do (dry-run)' }), pre(p.push));
-  } else if (a.id === 'summary') kids.push(row('destination', p.destination));
-  else if (!WORKTREE_ACTIONS.includes(a.id)) for (const [k, v] of Object.entries(p)) kids.push(row(k, typeof v === 'object' ? JSON.stringify(v) : v));
-  return kids;
+    const pr = httpUrl(p.existing_pr), of = list(p.open_features);
+    return html`<${Row} k="branch" v=${p.branch} /><${Row} k="base" v=${p.base || 'integration branch'} />
+      <div class="ac-row"><span class="ac-k">PR</span>${pr ? html`<a href=${pr} target="_blank" rel="noopener noreferrer">${pr.replace(/^https?:\/\/(www\.)?github\.com\//i, '')}</a>`
+        : html`<span class="ac-v">${p.existing_pr ? String(p.existing_pr) : 'none yet (will be created)'}</span>`}</div>
+      <${Row} k="open features" v=${of.length ? of.join(', ') : 'none'} />
+      ${p.push ? html`<div class="ac-k">what delivery.py will do (dry-run)</div><${Pre} text=${p.push} />` : null}`;
+  }
+  if (a.id === 'summary') return html`<${Row} k="destination" v=${p.destination} />`;
+  if (WORKTREE_ACTIONS.includes(a.id)) return null;
+  return Object.entries(p).map(([k, v]) => html`<${Row} key=${k} k=${k} v=${typeof v === 'object' ? JSON.stringify(v) : v} />`);
 }
-// worktree table with checkboxes; updates the button and the confirmation block without rebuilding the card
-function worktreeTable(c, onChange) {
+// worktree table with checkboxes; a change re-renders only the confirmation card
+function WorktreeTable({ c, onChange }) {
   const wts = list(c.action.preview && c.action.preview.worktrees);
-  if (!wts.length) return h('div', { class: 'ac-expl ac-off', text: 'No loop worktree found.' });
-  const rows = wts.map((w) => {
-    const cb = h('input', { type: 'checkbox', 'aria-label': 'select ' + shortPath(w.path) });
-    cb.checked = c.sel.includes(w.path);
-    cb.addEventListener('change', () => { c.sel = cb.checked ? [...c.sel.filter((x) => x !== w.path), w.path] : c.sel.filter((x) => x !== w.path); onChange(); });
-    return h('tr', {}, h('td', {}, cb), h('td', { class: 'ac-td-p', title: w.path, text: shortPath(w.path).split('/').pop() }), h('td', { class: 'ac-td-b', text: txt(w.branch) }),
-      h('td', {}, w.dirty ? h('span', { class: 'ac-tag bad', text: 'dirty' }) : h('span', { class: 'ac-tag', text: 'clean' })),
-      h('td', { class: 'ac-td-n', text: num(w.unpushed_commits) }), h('td', {}, w.has_specs ? h('span', { class: 'ac-tag', text: 'yes' }) : h('span', { class: 'ac-tag', text: 'no' })));
-  });
-  return h('div', { class: 'ac-tw' }, h('table', { class: 'ac-table' },
-    h('thead', {}, h('tr', {}, h('th', {}), h('th', { text: 'worktree' }), h('th', { text: 'branch' }), h('th', { text: 'changes' }), h('th', { text: 'unpushed' }), h('th', { text: 'specs' }))), h('tbody', {}, rows)));
+  if (!wts.length) return html`<div class="ac-expl ac-off">No loop worktree found.</div>`;
+  const toggle = (w, on) => { c.sel = on ? [...c.sel.filter((x) => x !== w.path), w.path] : c.sel.filter((x) => x !== w.path); onChange(); };
+  return html`<div class="ac-tw"><table class="ac-table">
+    <thead><tr><th></th><th>worktree</th><th>branch</th><th>changes</th><th>unpushed</th><th>specs</th></tr></thead>
+    <tbody>${wts.map((w) => html`<tr key=${w.path}>
+      <td><input type="checkbox" aria-label=${'select ' + shortPath(w.path)} checked=${c.sel.includes(w.path)} onChange=${(e) => toggle(w, e.currentTarget.checked)} /></td>
+      <td class="ac-td-p" title=${w.path}>${shortPath(w.path).split('/').pop()}</td><td class="ac-td-b">${txt(w.branch)}</td>
+      <td>${w.dirty ? html`<span class="ac-tag bad">dirty</span>` : html`<span class="ac-tag">clean</span>`}</td>
+      <td class="ac-td-n">${num(w.unpushed_commits)}</td><td>${w.has_specs ? html`<span class="ac-tag">yes</span>` : html`<span class="ac-tag">no</span>`}</td>
+    </tr>`)}</tbody></table></div>`;
 }
-function resultRows(r, c) {
+function ResultRows({ r, c }) {
   const rows = list((r && r.results) || (c && c.rows));
   if (!rows.length) return null;
-  return h('div', { class: 'ac-res' }, rows.map((x) => {
-    const bad = !!x.error || x.ok === false || x.deleted === false, okv = !bad;
-    return h('div', { class: 'ac-res-row ' + (okv ? 'ok' : 'bad') },
-      h('span', { class: 'ac-res-i', text: okv ? '✓' : '✗' }), h('span', { class: 'ac-res-p', title: x.path, text: shortPath(x.path) || txt(x.branch) }),
-      h('span', { class: 'ac-res-s', text: x.error ? 'error: ' + x.error : x.deleted ? 'deleted' : x.ok ? 'ok' : x.deleted === false ? 'not deleted' : 'ok' }),
-      x.output ? h('span', { class: 'ac-res-o', text: String(x.output) }) : null);
-  }));
+  return html`<div class="ac-res">${rows.map((x, i) => {
+    const okv = !(!!x.error || x.ok === false || x.deleted === false);
+    return html`<div key=${i} class=${'ac-res-row ' + (okv ? 'ok' : 'bad')}>
+      <span class="ac-res-i">${okv ? '✓' : '✗'}</span><span class="ac-res-p" title=${x.path}>${shortPath(x.path) || txt(x.branch)}</span>
+      <span class="ac-res-s">${x.error ? 'error: ' + x.error : x.deleted ? 'deleted' : x.ok ? 'ok' : x.deleted === false ? 'not deleted' : 'ok'}</span>
+      ${x.output ? html`<span class="ac-res-o">${String(x.output)}</span>` : null}
+    </div>`;
+  })}</div>`;
 }
-function actionCard() {
-  const c = actState.card;
+function ConfirmCard({ c }) {
+  const [, bump] = useState(0);
+  const changed = () => bump((x) => x + 1);
+  const a = c.action, off = a.available === false, wt = WORKTREE_ACTIONS.includes(a.id), danger = a.id === 'clean_worktrees';
+  const ds = danger ? dirtySel(c) : [];
+  const ok = !off && !(wt && !c.sel.length) && !(danger && !typedOk(c));
+  const backupDir = a.preview && a.preview.backup_dir;
+  return html`<div class=${'ac-card ' + (danger ? 'ac-danger' : 'ac-confirm')}>
+    <div class="ac-kick">${danger ? 'DESTRUCTIVE ACTION · CONFIRM CAREFULLY' : 'CONFIRM BEFORE RUNNING'}</div>
+    <div class="ac-title">${a.title || a.id}</div>
+    ${c.explanation ? html`<div class="ac-expl">${`The AI understood: ${c.explanation}${c.confidence ? ' (confidence ' + c.confidence + ')' : ''}`}</div>` : null}
+    <div class="ac-prev"><${PreviewRows} a=${a} /></div>
+    ${danger ? html`<ul class="ac-warnlist">
+      <li>${`Before deleting, the system saves a backup (summary + specs + loops) in ${backupDir ? String(backupDir) : 'the app output folder, as loop-<project>-<date>'}.`}</li>
+      <li>The branch and its commits are NOT deleted; only the worktree folder.</li>
+      <li>No worktree comes selected: choose what to delete.</li>
+    </ul>` : null}
+    ${wt ? html`<${WorktreeTable} c=${c} onChange=${changed} />` : null}
+    ${danger ? html`<div class="ac-dirty" hidden=${!ds.length}>${ds.length ? [
+      html`<div class="ac-expl">These worktrees have uncommitted changes, which will be lost. To delete them anyway, type the branch name of each one:</div>`,
+      ...ds.map((w) => html`<label key=${w.path} class="ac-type-l"><span class="mono">${w.branch}</span>
+        <input type="text" class="ac-type" placeholder=${w.branch} aria-label=${'type ' + w.branch} autocomplete="off" spellcheck=${false}
+          value=${c.typed[w.path] || ''} onInput=${(e) => { c.typed[w.path] = e.currentTarget.value; changed(); }} /></label>`),
+    ] : null}</div>` : null}
+    ${off ? html`<div class="ac-expl ac-off">${'Unavailable now: ' + txt(a.unavailable_reason)}</div>` : html`<div class="ac-expl">This runs now. Nothing happens before your click.</div>`}
+    <div class="ac-btns">
+      <button type="button" class=${'btn btn-sm ' + (danger ? 'btn-danger' : 'btn-go')} id="ac-go" disabled=${!ok} onClick=${runAction}>${danger ? 'Delete selected worktrees' : a.id === 'push' ? 'Push selected branches' : 'Confirm and run'}</button>
+      <button type="button" class="btn btn-sm" onClick=${cancelAction}>Cancel</button>
+    </div>
+  </div>`;
+}
+function ActionCard({ c }) {
   if (!c) return null;
-  const close = h('button', { type: 'button', class: 'btn btn-sm btn-ghost', onclick: cancelAction }, 'Close');
-  if (c.kind === 'proposing') return h('div', { class: 'ac-card' }, h('div', { class: 'ac-msg' }, h('div', { class: 'spinner', 'aria-hidden': 'true' }), h('span', { text: 'understanding the request…' })), h('div', { class: 'ac-quote', text: c.text }));
-  if (c.kind === 'running') return h('div', { class: 'ac-card' + (c.action.id === 'clean_worktrees' ? ' ac-danger' : '') }, h('div', { class: 'ac-title', text: c.action.title || c.action.id }),
-    h('div', { class: 'ac-msg' }, h('div', { class: 'spinner', 'aria-hidden': 'true' }), h('span', { text: c.action.id === 'clean_worktrees' ? 'backing up and deleting… (may take a few minutes)' : 'running… (may take up to 3 min)' })));
-  if (c.kind === 'none') return h('div', { class: 'ac-card ac-warn' }, h('div', { class: 'ac-title', text: 'This is not a ready-made action.' }),
-    c.explanation ? h('div', { class: 'ac-expl', text: String(c.explanation) }) : null, h('div', { class: 'ac-quote', text: c.text }),
-    h('div', { class: 'ac-btns' }, h('button', { type: 'button', class: 'btn btn-sm btn-primary', onclick: sendAsInstruction }, 'Send as an instruction to the loop'), close));
+  const close = html`<button type="button" class="btn btn-sm btn-ghost" onClick=${cancelAction}>Close</button>`;
+  if (c.kind === 'proposing') return html`<div class="ac-card"><div class="ac-msg"><${Spinner} /><span>understanding the request…</span></div><div class="ac-quote">${c.text}</div></div>`;
+  if (c.kind === 'running') return html`<div class=${'ac-card' + (c.action.id === 'clean_worktrees' ? ' ac-danger' : '')}><div class="ac-title">${c.action.title || c.action.id}</div>
+    <div class="ac-msg"><${Spinner} /><span>${c.action.id === 'clean_worktrees' ? 'backing up and deleting… (may take a few minutes)' : 'running… (may take up to 3 min)'}</span></div></div>`;
+  if (c.kind === 'none') return html`<div class="ac-card ac-warn"><div class="ac-title">This is not a ready-made action.</div>
+    ${c.explanation ? html`<div class="ac-expl">${String(c.explanation)}</div>` : null}<div class="ac-quote">${c.text}</div>
+    <div class="ac-btns"><button type="button" class="btn btn-sm btn-primary" onClick=${sendAsInstruction}>Send as an instruction to the loop</button>${close}</div></div>`;
   if (c.kind === 'result') {
     const ok = c.ok, r = c.res || {}, pr = httpUrl(r.pr);
     const backup = (list(r.results)[0] || {}).backup;
-    return h('div', { class: 'ac-card ' + (ok ? 'ac-ok' : 'ac-bad') },
-      h('div', { class: 'ac-title', text: `${ok ? 'Done' : 'Did not run'} · ${c.action.title || c.action.id}` }),
-      ok ? null : h('div', { class: 'ac-expl', text: String(c.error || 'unknown error') }),
-      resultRows(r, c),
-      backup ? h('div', { class: 'ac-bk' }, h('div', { class: 'ac-k', text: 'backup saved in' }), h('div', { class: 'ac-bk-row' }, h('code', { class: 'ac-bk-p', text: String(backup) }),
-        h('button', { type: 'button', class: 'btn btn-sm', onclick: () => copyText(String(backup), 'Backup path copied.') }, 'Copy path'))) : null,
-      pr ? h('div', { class: 'ac-row' }, h('span', { class: 'ac-k', text: 'PR' }), h('a', { href: pr, target: '_blank', rel: 'noopener noreferrer', text: pr })) : (r.pr ? row('PR', r.pr) : null),
-      row('PR status', r.pr_status),
-      r.push ? h('div', {}, h('div', { class: 'ac-k', text: 'push' }), pre(r.push)) : null, c.push ? h('div', {}, h('div', { class: 'ac-k', text: 'push' }), pre(c.push)) : null,
-      r.output ? h('div', {}, h('div', { class: 'ac-k', text: 'output' }), pre(r.output)) : null, c.output ? h('div', {}, h('div', { class: 'ac-k', text: 'output' }), pre(c.output)) : null,
-      h('div', { class: 'ac-btns' }, close));
+    const out = (k, t) => (t ? html`<div><div class="ac-k">${k}</div><${Pre} text=${t} /></div>` : null);
+    return html`<div class=${'ac-card ' + (ok ? 'ac-ok' : 'ac-bad')}>
+      <div class="ac-title">${`${ok ? 'Done' : 'Did not run'} · ${c.action.title || c.action.id}`}</div>
+      ${ok ? null : html`<div class="ac-expl">${String(c.error || 'unknown error')}</div>`}
+      <${ResultRows} r=${r} c=${c} />
+      ${backup ? html`<div class="ac-bk"><div class="ac-k">backup saved in</div><div class="ac-bk-row"><code class="ac-bk-p">${String(backup)}</code>
+        <button type="button" class="btn btn-sm" onClick=${() => copyText(String(backup), 'Backup path copied.')}>Copy path</button></div></div>` : null}
+      ${pr ? html`<div class="ac-row"><span class="ac-k">PR</span><a href=${pr} target="_blank" rel="noopener noreferrer">${pr}</a></div>` : r.pr ? html`<${Row} k="PR" v=${r.pr} />` : null}
+      <${Row} k="PR status" v=${r.pr_status} />
+      ${out('push', r.push)}${out('push', c.push)}${out('output', r.output)}${out('output', c.output)}
+      <div class="ac-btns">${close}</div>
+    </div>`;
   }
-  const a = c.action, off = a.available === false, wt = WORKTREE_ACTIONS.includes(a.id), danger = a.id === 'clean_worktrees';
-  const go = h('button', { type: 'button', class: 'btn btn-sm ' + (danger ? 'btn-danger' : 'btn-go'), id: 'ac-go', onclick: runAction }, danger ? 'Delete selected worktrees' : a.id === 'push' ? 'Push selected branches' : 'Confirm and run');
-  const dirtyBox = h('div', { class: 'ac-dirty' });
-  const refresh = () => {
-    let ok = !off;
-    if (wt && !c.sel.length) ok = false;
-    if (danger) {
-      const ds = dirtySel(c);
-      dirtyBox.hidden = !ds.length;
-      if (ds.length && dirtyBox.dataset.sig !== ds.map((w) => w.path).join('|')) {
-        dirtyBox.dataset.sig = ds.map((w) => w.path).join('|');
-        dirtyBox.replaceChildren(h('div', { class: 'ac-expl', text: 'These worktrees have uncommitted changes, which will be lost. To delete them anyway, type the branch name of each one:' }),
-          ...ds.map((w) => {
-            const inp = h('input', { type: 'text', class: 'ac-type', placeholder: w.branch, 'aria-label': 'type ' + w.branch, autocomplete: 'off', spellcheck: 'false' });
-            inp.value = c.typed[w.path] || ''; inp.addEventListener('input', () => { c.typed[w.path] = inp.value; refresh(); });
-            return h('label', { class: 'ac-type-l' }, h('span', { class: 'mono', text: w.branch }), inp);
-          }));
-      }
-      if (!typedOk(c)) ok = false;
-    }
-    go.disabled = !ok;
-  };
-  const backupDir = a.preview && a.preview.backup_dir;
-  const kids = [
-    h('div', { class: 'ac-kick', text: danger ? 'DESTRUCTIVE ACTION · CONFIRM CAREFULLY' : 'CONFIRM BEFORE RUNNING' }),
-    h('div', { class: 'ac-title', text: a.title || a.id }),
-    c.explanation ? h('div', { class: 'ac-expl', text: `The AI understood: ${c.explanation}${c.confidence ? ' (confidence ' + c.confidence + ')' : ''}` }) : null,
-    h('div', { class: 'ac-prev' }, previewRows(a)),
-  ];
-  if (danger) kids.push(h('ul', { class: 'ac-warnlist' },
-    h('li', { text: `Before deleting, the system saves a backup (summary + specs + loops) in ${backupDir ? String(backupDir) : 'the app output folder, as loop-<project>-<date>'}.` }),
-    h('li', { text: 'The branch and its commits are NOT deleted; only the worktree folder.' }),
-    h('li', { text: 'No worktree comes selected: choose what to delete.' })));
-  if (wt) kids.push(worktreeTable(c, refresh));
-  if (danger) kids.push(dirtyBox);
-  kids.push(off ? h('div', { class: 'ac-expl ac-off', text: 'Unavailable now: ' + txt(a.unavailable_reason) }) : h('div', { class: 'ac-expl', text: 'This runs now. Nothing happens before your click.' }),
-    h('div', { class: 'ac-btns' }, go, h('button', { type: 'button', class: 'btn btn-sm', onclick: cancelAction }, 'Cancel')));
-  refresh();
-  return h('div', { class: 'ac-card ' + (danger ? 'ac-danger' : 'ac-confirm') }, kids);
+  return html`<${ConfirmCard} c=${c} />`;
 }
-export function actPanel() {
-  const kids = [h('div', { class: 'ac-head', text: 'Immediate action: runs now, with confirmation' })];
-  const q = [];
-  if (actState.loading && !actState.actions) q.push(h('div', { class: 'ac-msg' }, h('div', { class: 'spinner', 'aria-hidden': 'true' }), h('span', { text: 'checking what can be done…' })));
-  if (actState.err) q.push(h('div', { class: 'ac-expl ac-off', text: actState.err }));
-  for (const a of list(actState.actions)) {
-    const off = a.available === false;
-    q.push(h('div', { class: 'ac-act' }, h('button', { type: 'button', class: 'btn btn-sm ac-btn' + (a.id === 'clean_worktrees' ? ' danger' : ''), disabled: off || null, title: off ? txt(a.unavailable_reason) : 'opens the confirmation card', onclick: () => openAction(a) }, a.title || a.id),
-      off ? h('div', { class: 'ac-why', text: 'unavailable: ' + txt(a.unavailable_reason) }) : null));
-  }
-  if (actState.actions && !actState.actions.length) q.push(h('div', { class: 'empty-note', text: 'No action available.' }));
-  kids.push(h('div', { class: 'ac-quick' }, q));
-  const card = actionCard(); if (card) kids.push(card);
-  const rec = list(ctx.state && ctx.state.recent_actions).slice(0, 5);
-  if (rec.length) kids.push(h('div', { class: 'ac-rec' }, h('div', { class: 'ac-k', text: 'Recent actions' }),
-    rec.map((x) => h('div', { class: 'ac-rec-row' }, h('span', { class: 'ac-rec-ok ' + (x.ok ? 'ok' : 'bad'), text: x.ok ? '✓' : '✗' }), h('span', { class: 'ac-rec-a', text: txt(x.action) }), h('span', { class: 'ac-rec-t', text: fmtHour(x.t) }), h('span', { class: 'ac-rec-r', text: txt(x.summary) })))));
-  return kids;
+
+/** Content of #cp-act: quick actions, the current card and the recent actions. */
+export function ActPanel() {
+  const acts = list(actState.actions), rec = list(ctx.state && ctx.state.recent_actions).slice(0, 5);
+  return html`<div class="ac-head">Immediate action: runs now, with confirmation</div>
+    <div class="ac-quick">
+      ${actState.loading && !actState.actions ? html`<div class="ac-msg"><${Spinner} /><span>checking what can be done…</span></div>` : null}
+      ${actState.err ? html`<div class="ac-expl ac-off">${actState.err}</div>` : null}
+      ${acts.map((a) => {
+        const off = a.available === false;
+        return html`<div key=${a.id} class="ac-act"><button type="button" class=${'btn btn-sm ac-btn' + (a.id === 'clean_worktrees' ? ' danger' : '')} disabled=${off}
+            title=${off ? txt(a.unavailable_reason) : 'opens the confirmation card'} onClick=${() => openAction(a)}>${a.title || a.id}</button>
+          ${off ? html`<div class="ac-why">${'unavailable: ' + txt(a.unavailable_reason)}</div>` : null}</div>`;
+      })}
+      ${actState.actions && !actState.actions.length ? html`<div class="empty-note">No action available.</div>` : null}
+    </div>
+    <${ActionCard} key=${actState.seq} c=${actState.card} />
+    ${rec.length ? html`<div class="ac-rec"><div class="ac-k">Recent actions</div>${rec.map((x, i) => html`<div key=${i} class="ac-rec-row">
+      <span class=${'ac-rec-ok ' + (x.ok ? 'ok' : 'bad')}>${x.ok ? '✓' : '✗'}</span><span class="ac-rec-a">${txt(x.action)}</span>
+      <span class="ac-rec-t">${fmtHour(x.t)}</span><span class="ac-rec-r">${txt(x.summary)}</span></div>`)}</div>` : null}`;
 }

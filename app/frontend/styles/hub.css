@@ -25,6 +25,8 @@
 .hub-project-meta .mono{font-size:11px;}
 .hub-k{color:var(--muted);}
 .hub-project-actions{display:flex;gap:6px;margin-top:2px;}
+.confirm-reset{flex-wrap:wrap;padding:8px 10px;}
+.confirm-reset .reset-name{width:220px;max-width:100%;}
 .hub-chip{display:inline-flex;align-items:center;gap:6px;font:500 10.5px var(--mono);border:1px solid;border-radius:999px;padding:1px 8px;white-space:nowrap;}
 .hub-empty{border:1px dashed var(--line3);border-radius:10px;padding:28px;text-align:center;display:flex;flex-direction:column;gap:6px;}
 .hub-empty-t{font-weight:600;font-size:14px;}
@@ -36,10 +38,27 @@
 .diag-item{display:flex;align-items:baseline;gap:8px;font-size:12px;min-width:0;}
 .diag-ic{font:600 12px var(--mono);width:12px;flex:none;}
 .diag-item.ok .diag-ic{color:var(--green);} .diag-item.bad .diag-ic{color:var(--red);} .diag-item.na .diag-ic{color:var(--dim);}
-.diag-item.bad .diag-k{color:#FFB4AC;}
+.diag-item.bad .diag-k{color:var(--red-text);}
 .diag-k{flex:none;color:var(--text2);}
 .diag-v{color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
 .diag-foot{display:flex;gap:14px;align-items:baseline;margin-top:6px;flex-wrap:wrap;}
 .diag-more summary{cursor:pointer;font-size:11px;color:var(--muted);}
 .diag-more .diag-grid{margin-top:6px;}
 @media (max-width:600px){.hub-projects{grid-template-columns:1fr;}.hub-paste{flex-wrap:wrap;}}
+
+.hub-project-actions{flex-wrap:wrap;}
+.hub-live{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--amber-line);border-radius:8px;background:var(--amber-bg);}
+.hub-live-top{display:flex;align-items:center;gap:10px;font-size:12px;flex-wrap:wrap;}
+.hub-live-f{font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;}
+.hub-live-meta{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--text2);}
+.hub-live-r{border:1px solid var(--line3);border-radius:4px;padding:0 6px;color:var(--muted);}
+.hub-ask{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-radius:6px;border:2px solid var(--amber);background:var(--bg);}
+.hub-ask-t{font-size:12px;color:var(--amber);}
+.hub-ask-q{font-size:12px;line-height:1.5;color:var(--text);word-break:break-word;}
+.hub-ask-o{margin:0;padding-left:18px;font-size:12px;color:var(--text2);display:flex;flex-direction:column;gap:3px;}
+.hub-ask-a{align-self:flex-start;}
+
+/* Repository manager: per-repo setup command and the repos suggested by the planning AI */
+.rp-setup{display:flex;flex-direction:column;gap:8px;padding:12px 0 2px;border-top:1px dashed var(--line2);}
+.rp-setup-input{flex:1 1 260px;min-width:0;font-size:12px;padding:6px 8px;border:1px solid var(--line3);border-radius:6px;background:var(--bg);color:var(--text);}
+.rp-suggested{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border:1px solid var(--amber);border-radius:8px;}

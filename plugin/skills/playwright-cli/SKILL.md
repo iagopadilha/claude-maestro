@@ -1,6 +1,6 @@
 ---
 name: playwright-cli
-description: Automate browser interactions, test web pages and work with Playwright tests.
+description: Automate browser interactions, test web pages and work with Playwright tests. Use it for EVERY browser task (testing an app, E2E checks, validating a screen, screenshots) instead of the Claude in Chrome tools (mcp__claude-in-chrome__*), which cost far more tokens; use Claude in Chrome only when the user explicitly asks for it.
 allowed-tools: Bash(playwright-cli:*) Bash(npx playwright:*) Bash(npx --no-install playwright:*)
 ---
 

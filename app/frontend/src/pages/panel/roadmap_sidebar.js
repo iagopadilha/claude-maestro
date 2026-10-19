@@ -1,8 +1,8 @@
 /* Left column: roadmap by stage, quarantine, VALIDATE.md and ANSWERS.md. Also the selection. */
-import { $, h, fill, setColors } from '../../util/dom.js';
+import { html } from '../../util/preact.js';
 import { isNum, num, txt, list } from '../../util/format.js';
 import { toast } from '../../components/toast.js';
-import { ctx, ui, sigs, region, pal, status, live, features, focusFeatureId } from './context.js';
+import { ctx, ui, pal, status, live, features, focusFeatureId } from './context.js';
 import { renderAll } from '../project_panel.js';
 import { fetchAgentLog } from './inspector.js';
 
@@ -38,67 +38,81 @@ async function sendQuarantine(q, opt) {
   const s = status(), text = `Quarantine ${q.id}: ${opt}`;
   const k = q.id + '|' + opt;
   if (ui.busy[k]) return;
-  ui.busy[k] = true; renderLeft(true);
+  ui.busy[k] = true; renderAll();
   try {
     if (s === 'awaiting_user') await ctx.api.post('answer', { text });
     else await ctx.api.post('note', { text });
     ui.qSent[q.id] = opt; toast('Sent: ' + text, 'ok');
   } catch (e) { toast('Not sent: ' + e.message, 'err'); }
-  finally { ui.busy[k] = false; renderLeft(true); }
+  finally { ui.busy[k] = false; renderAll(); }
 }
 
-export function renderLeft(force) {
+function Roadmap({ fs, groups, c }) {
+  const focusF = focusFeatureId();
+  const verified = ui.past ? fs.filter((f) => f.status === 'verified').length : c.verified;
+  const total = ui.past ? fs.length : c.total;
+  const stageSel = (g) => !!(ui.sel && ui.sel.kind === 'stage' && ui.sel.n === g.n);
+  return html`<div>
+    <div class="sec-head"><h2 class="sec-title">Roadmap</h2><div class="dim-mono">${`${num(verified)}/${num(total)} verified`}</div></div>
+    ${groups.length ? html`<div class="stages">${groups.map((g) => html`<div key=${String(g.n)}>
+      ${g.n == null ? html`<div class="small-label">${g.title}</div>`
+        : html`<button type="button" class=${'stage-h' + (stageSel(g) ? ' sel' : '')} aria-expanded=${String(stageSel(g))} title="opens the summary of this stage in the inspector"
+            onClick=${() => selectStage(g.n)}><span>${g.title}</span><span class="stage-chev" aria-hidden="true">›</span></button>`}
+      <div class="frows">${g.items.map((f) => {
+        const [col, bg] = pal(f.status);
+        return html`<button key=${f.id} type="button" class=${'frow' + (focusF === f.id ? ' sel' : '')} title=${f.id} aria-pressed=${focusF === f.id ? 'true' : 'false'} onClick=${() => selectFeature(f.id)}>
+          <span class="nm">${txt(f.name || f.id)}</span><span class="chip" style=${{ color: col || null, background: bg || null }}>${txt(f.status)}</span></button>`;
+      })}</div>
+    </div>`)}</div>`
+      : html`<div class="empty-note">No feature in the roadmap. Use the trail at the top to generate the roadmap.</div>`}
+  </div>`;
+}
+
+function QuarantineCard({ qq, canQ }) {
+  const sent = ui.qSent[qq.id];
+  return html`<div class="qcard">
+    <div class="qtitle"><span class="dot dot-red"></span><span>${`${qq.id} in quarantine`}</span></div>
+    <div class="qtext">${txt(qq.reason)}</div>
+    ${list(qq.stuck).length ? html`<div class="qtext">Holds back: <span class="mono">${list(qq.stuck).join(', ')}</span></div>` : html`<div class="qtext">Nothing depends on it, the loop carries on.</div>`}
+    <div class="qopts">${list(qq.options).map((o, i) => html`<button key=${i} type="button" class="qopt" disabled=${!canQ || !!ui.busy[qq.id + '|' + o]}
+      title=${canQ ? '' : 'only with the loop running or waiting for an answer'} onClick=${() => sendQuarantine(qq, o)}><span class="n">${String(i + 1)}</span><span>${String(o)}</span></button>`)}</div>
+    ${sent ? html`<div class="qsent">${`→ sent: ${sent} · the next turn applies it`}</div>` : null}
+  </div>`;
+}
+
+function Validate({ vals }) {
+  return html`<div>
+    <div class="sec-title" style="margin-bottom:8px">For you to validate <span class="dim-mono">VALIDATE.md</span></div>
+    ${vals.length ? html`<div class="vlist">${vals.map((v) => {
+      const p = parseValidate(v);
+      return html`<div class="vitem">
+        <div>${p.slug ? html`<span class="dim-mono">${p.slug + ' '}</span>` : null}${p.text}</div>
+        ${p.chose ? html`<div class="vrev">${'chose: ' + p.chose}</div>` : null}
+        ${p.revert ? html`<div class="vrev">${'revert: ' + p.revert}</div>` : null}
+      </div>`;
+    })}</div>` : html`<div class="empty-note">Nothing to validate for now.</div>`}
+  </div>`;
+}
+
+function Answers({ answers }) {
+  return html`<div><div class="sec-title" style="margin-bottom:8px">Answers <span class="dim-mono">ANSWERS.md</span></div>
+    <div class="vlist">${answers.map((r) => html`<div class="vitem">
+      <div class="dim-mono">${`${txt(r.date)} · ${txt(r.state)}`}</div>
+      <div>${txt(r.question)}</div><div class="vrev">${'→ ' + txt(r.answer)}</div>
+    </div>`)}</div></div>`;
+}
+
+/** Content of #left. */
+export function RoadmapSidebar() {
   const state = ctx.state;
-  if (!state) return;
-  const fs = features(), groups = groupStages(), c = state.counts || {}, s = status();
+  if (!state) return null;
+  const fs = features(), groups = groupStages(), s = status();
   const q = live() ? list(state.quarantine) : [];
   const canQ = s === 'running' || s === 'awaiting_user';
-  const data = { fs: fs.map((f) => [f.id, f.name, f.status, f.stage]), g: groups.map((g) => g.n), sel: ui.sel, v: c.verified, t: c.total, q, qs: ui.qSent, canQ, bq: Object.keys(ui.busy).filter((k) => ui.busy[k] && k.includes('|')), val: state.validate, ans: state.answers, past: ui.pastN };
-  if (force) sigs.left = null;
-  region('left', data, () => {
-    const focusF = focusFeatureId();
-    const verified = ui.past ? fs.filter((f) => f.status === 'verified').length : c.verified;
-    const total = ui.past ? fs.length : c.total;
-    const road = h('div', {},
-      h('div', { class: 'sec-head' }, h('h2', { class: 'sec-title', text: 'Roadmap' }), h('div', { class: 'dim-mono', text: `${num(verified)}/${num(total)} verified` })),
-      groups.length ? h('div', { class: 'stages' }, groups.map((g) => h('div', {},
-        g.n == null ? h('div', { class: 'small-label', text: g.title }) : h('button', { type: 'button', class: 'stage-h' + (ui.sel && ui.sel.kind === 'stage' && ui.sel.n === g.n ? ' sel' : ''), 'aria-expanded': String(!!(ui.sel && ui.sel.kind === 'stage' && ui.sel.n === g.n)), title: 'opens the summary of this stage in the inspector', onclick: () => selectStage(g.n) }, h('span', { text: g.title }), h('span', { class: 'stage-chev', 'aria-hidden': 'true', text: '›' })),
-        h('div', { class: 'frows' }, g.items.map((f) => {
-          const [col, bg] = pal(f.status);
-          const chip = h('span', { class: 'chip', text: txt(f.status) }); setColors(chip, col, bg);
-          return h('button', { type: 'button', class: 'frow' + (focusF === f.id ? ' sel' : ''), title: f.id, 'aria-pressed': focusF === f.id ? 'true' : 'false', onclick: () => selectFeature(f.id) },
-            h('span', { class: 'nm', text: txt(f.name || f.id) }), chip);
-        }))))) : h('div', { class: 'empty-note', text: 'No feature in the roadmap. Use the trail at the top to generate the roadmap.' }));
-    const kids = [road];
-    for (const qq of q) {
-      const sent = ui.qSent[qq.id];
-      kids.push(h('div', { class: 'qcard' },
-        h('div', { class: 'qtitle' }, h('span', { class: 'dot dot-red' }), h('span', { text: `${qq.id} in quarantine` })),
-        h('div', { class: 'qtext', text: txt(qq.reason) }),
-        list(qq.stuck).length ? h('div', { class: 'qtext' }, 'Holds back: ', h('span', { class: 'mono', text: list(qq.stuck).join(', ') })) : h('div', { class: 'qtext', text: 'Nothing depends on it, the loop carries on.' }),
-        h('div', { class: 'qopts' }, list(qq.options).map((o, i) =>
-          h('button', { type: 'button', class: 'qopt', disabled: !canQ || !!ui.busy[qq.id + '|' + o], title: canQ ? '' : 'only with the loop running or waiting for an answer', onclick: () => sendQuarantine(qq, o) },
-            h('span', { class: 'n', text: String(i + 1) }), h('span', { text: String(o) })))),
-        sent ? h('div', { class: 'qsent', text: `→ sent: ${sent} · the next turn applies it` }) : null));
-    }
-    const vals = list(state.validate);
-    kids.push(h('div', {},
-      h('div', { class: 'sec-title', style: 'margin-bottom:8px' }, 'For you to validate ', h('span', { class: 'dim-mono', text: 'VALIDATE.md' })),
-      vals.length ? h('div', { class: 'vlist' }, vals.map((v) => {
-        const p = parseValidate(v);
-        return h('div', { class: 'vitem' },
-          h('div', {}, p.slug ? h('span', { class: 'dim-mono', text: p.slug + ' ' }) : null, p.text),
-          p.chose ? h('div', { class: 'vrev', text: 'chose: ' + p.chose }) : null,
-          p.revert ? h('div', { class: 'vrev', text: 'revert: ' + p.revert }) : null);
-      }))
-        : h('div', { class: 'empty-note', text: 'Nothing to validate for now.' })));
-    const answers = list(state.answers).slice(-5).reverse();
-    if (answers.length) {
-      kids.push(h('div', {}, h('div', { class: 'sec-title', style: 'margin-bottom:8px' }, 'Answers ', h('span', { class: 'dim-mono', text: 'ANSWERS.md' })),
-        h('div', { class: 'vlist' }, answers.map((r) => h('div', { class: 'vitem' },
-          h('div', { class: 'dim-mono', text: `${txt(r.date)} · ${txt(r.state)}` }),
-          h('div', { text: txt(r.question) }), h('div', { class: 'vrev', text: '→ ' + txt(r.answer) }))))));
-    }
-    fill($('left'), kids);
-  });
+  const answers = list(state.answers).slice(-5).reverse();
+  return html`
+    <${Roadmap} fs=${fs} groups=${groups} c=${state.counts || {}} />
+    ${q.map((qq) => html`<${QuarantineCard} key=${'q:' + qq.id} qq=${qq} canQ=${canQ} />`)}
+    <${Validate} vals=${list(state.validate)} />
+    ${answers.length ? html`<${Answers} answers=${answers} />` : null}`;
 }

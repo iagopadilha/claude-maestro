@@ -1,18 +1,21 @@
 """Project roadmap: structured read, approval (only by the user's click) and the headless `/orchestrator` jobs that
 generate and refine the roadmap and map the codebase.
 
-Approval requires `confirm:true`, refuses with the loop running and writes through the engine function
+Approval requires `confirm:true`, refuses with the loop running or with a planning gate not ok (422 `planning_gates`,
+see planning_gates.py) and writes through the engine function
 (`loop_state.approve_roadmap`), the same signature `run_loop.py --check` verifies.
-The app never approves on its own: a job only generates; the user's POST approves.
+The app never approves on its own: a job only generates; the user's POST approves. In planning mode (never approved, never
+looped) the one-shot generate/refine jobs are refused (`planning_required`): the planning chat replaces them.
 """
 import datetime
 import os
 import re
 from typing import Protocol
 
-from ..domain.project_errors import (InvalidRequestError, InvalidRoadmapError, JobInProgressError, LoopRunningError,
-                                     LoopWorktreeExistsError, RoadmapSessionMissingError)
-from ..repositories.specs_file_repository import loop_state
+from ..domain.project_errors import (PLANNING_GATES_CODE, InvalidRequestError, InvalidRoadmapError, JobInProgressError,
+                                     LoopRunningError, LoopWorktreeExistsError, PlanningGatesError, RoadmapSessionMissingError)
+from ..domain.roadmap_settings import parse_roadmap_e2e
+from ..repositories.specs_file_repository import loop_state, run_hints
 from .claude_job_service import JOB_TYPE_MAP, JOB_TYPE_ROADMAP, JOB_TYPE_ROADMAP_REFINE, ROADMAP_JOB_TYPES, ClaudeJobCommand
 
 GOAL_FILE_NAME = "roadmap-goal.md"
@@ -20,8 +23,16 @@ GOAL_RELATIVE_PATH = "/".join((".specs", "project", loop_state.LOOP_FOLDER_NAME,
 GENERATE_ROADMAP_PROMPT = "/orchestrator roadmap --headless --goal-file " + GOAL_RELATIVE_PATH
 MAP_FIRST_FLAG = "--map-first"
 MAP_CODEBASE_PROMPT = "/orchestrator map"
+MAP_ALLOWED_FOLDERS = (".specs", run_hints.MAP_FOLDER)  # the map job may only change files here; anything else is undone after the job
+MAP_GUARD_IGNORED_PATHS = (".git", "node_modules", ".specs/project/loop/internal", ".specs/project/loop/json/MONITOR.json",
+                        ".specs/.trash")
+MAP_NOTHING_WRITTEN = ("The AI finished but wrote no document in docs/codebase, so nothing was mapped. The usual cause: the /orchestrator "
+                       "skill is not loaded in that claude session (update the plugin: claude plugin update "
+                       "loop-engineering-harness@loop-engineering-harness) and the AI answered as a plain chat.")
+MAP_GUARD_NOTE = "\n\n(The app undid changes outside .specs/ and docs/codebase/: %s)"
+MAP_GUARD_FILES_SHOWN = 8
 REFINE_ROADMAP_PREFIX = ("Continue in this session's `/orchestrator roadmap --headless` mode: adjust .specs/project/ROADMAP.md "
-                         "(and PROJECT.md if needed) following the request below, in the grammar of references/state.md. Do not ask "
+                         "and .specs/project/FLOWS.md (one flow per feature), and PROJECT.md if needed, following the request below, in the grammar of references/state.md. Do not ask "
                          "(doubts go to the `## Open questions` section of the ROADMAP), never approve the roadmap, and finish.\n\n"
                          "User request:\n")
 JOB_PERMISSION_MODE = "auto"  # the same default as run_loop (--permission-mode auto)
@@ -33,6 +44,7 @@ STAGE_TITLE_PATTERN = re.compile(r"^#{1,6}\s*Stage\s+(\S+)\s*(?:[—–:-]+\s*)?
 SECTION_TITLE_PATTERN = re.compile(r"^#{1,6}\s+(.*)$")
 OPEN_QUESTIONS_TITLE = "open questions"
 NO_QUESTION_ANSWERS = ("none", "none.", "-")
+HTML_COMMENT_PATTERN = re.compile(r"<!--.*?-->", re.S)
 
 
 def now_iso():
@@ -56,7 +68,7 @@ def list_roadmap_stages(text, features):
 def extract_open_questions(text):
     """Items of the `## Open questions` section (the headless /orchestrator mode puts there what it cannot ask)."""
     questions, inside = [], False
-    for line in (text or "").splitlines():
+    for line in HTML_COMMENT_PATTERN.sub("", text or "").splitlines():  # a (multi-line) comment is never a question
         title = SECTION_TITLE_PATTERN.match(line.strip())
         if title:
             inside = title.group(1).strip().lower().startswith(OPEN_QUESTIONS_TITLE)
@@ -76,11 +88,14 @@ class IRoadmapService(Protocol):
 
 
 class RoadmapService:
-    def __init__(self, specs_file_repository, project_progress_service, claude_job_service, claude_client, log):
+    def __init__(self, specs_file_repository, project_progress_service, claude_job_service, claude_client, planning_requirement_service,
+                 workspace_file_guard, log):
         self.specs_file_repository = specs_file_repository
         self.project_progress_service = project_progress_service
         self.claude_job_service = claude_job_service
         self.claude_client = claude_client
+        self.planning_requirement_service = planning_requirement_service
+        self.workspace_file_guard = workspace_file_guard
         self.log = log
 
     # ------------------------------------------------ read
@@ -92,7 +107,7 @@ class RoadmapService:
         return {"text": text, "approved": approval["approved"], "not_approved_reason": approval["reason"],
                 "approved_at": approval["at"], "stages": list_roadmap_stages(text, features),
                 "features": [dict(fields, slug=slug) for slug, fields in features.items()], "errors": errors,
-                "open_questions": extract_open_questions(text)}
+                "open_questions": extract_open_questions(text), "e2e": bool(parse_roadmap_e2e(text))}
 
     # ------------------------------------------------ approval
     def approve_roadmap(self, context, confirm):
@@ -100,15 +115,27 @@ class RoadmapService:
             raise InvalidRequestError("confirm must be true")
         if self.project_progress_service.is_loop_running(context):
             raise LoopRunningError("loop running: the roadmap was already approved")
+        self.ensure_planning_gates_ok(context)
         try:
             approval = loop_state.approve_roadmap(context.work_dir, now_iso())
         except ValueError as failure:
             raise InvalidRoadmapError(str(failure))
+        self.planning_requirement_service.clear_reopened(context)
         self.log.info("roadmap_approved", project=context.project.id, features=approval["features"])
         return approval
 
+    def ensure_planning_gates_ok(self, context):
+        gates = self.project_progress_service.build_planning_gates(context)
+        failing = [gate for gate in gates if not gate["ok"] and not gate["optional"]]
+        if failing:
+            self.log.info("roadmap_approval_refused", project=context.project.id, gates=[gate["id"] for gate in failing])
+            raise PlanningGatesError("the roadmap cannot be approved yet: %s" % "; ".join(
+                "%s (%s)" % (gate["label"], gate["detail"]) if gate["detail"] else gate["label"] for gate in failing),
+                gates, PLANNING_GATES_CODE)
+
     # ------------------------------------------------ jobs
     def generate_roadmap(self, context, goal, map_first=False, budget_usd=None):
+        self.planning_requirement_service.ensure_planning_done(context)
         goal_text = self.validate_text(goal, "goal")
         budget = self.validate_budget(budget_usd)
         self.ensure_repo_free_for_job(context)
@@ -119,6 +146,7 @@ class RoadmapService:
         return self.claude_job_service.start_job(context.repo_path, JOB_TYPE_ROADMAP, ClaudeJobCommand(argv))
 
     def refine_roadmap(self, context, text, budget_usd=None):
+        self.planning_requirement_service.ensure_planning_done(context)
         request = self.validate_text(text, "text")
         budget = self.validate_budget(budget_usd)
         self.ensure_repo_free_for_job(context)
@@ -133,9 +161,39 @@ class RoadmapService:
     def map_codebase(self, context, budget_usd=None):
         budget = self.validate_budget(budget_usd)
         self.ensure_repo_free_for_job(context)
+        snapshot = self.workspace_file_guard.take_snapshot(context.repo_path, MAP_GUARD_IGNORED_PATHS)
         argv = self.claude_client.build_command(DEFAULT_JOB_MODEL, budget, no_mcp=True, prompt_argument=MAP_CODEBASE_PROMPT,
-                                                permission_mode=JOB_PERMISSION_MODE)
-        return self.claude_job_service.start_job(context.repo_path, JOB_TYPE_MAP, ClaudeJobCommand(argv))
+                                                permission_mode=JOB_PERMISSION_MODE, hook_profile="spec")
+        command = ClaudeJobCommand(argv, finalize=lambda result: self.finish_map(context, snapshot, result))
+        return self.claude_job_service.start_job(context.repo_path, JOB_TYPE_MAP, command)
+
+    def finish_map(self, context, snapshot, result):
+        """Runs in the job thread: undoes changes outside .specs/ and docs/codebase/ and fails the job when no map document was written."""
+        report = self.workspace_file_guard.revert_unexpected_changes(snapshot, MAP_ALLOWED_FOLDERS)
+        touched = report["reverted"] + report["removed"] + report["unrestorable"]
+        if touched:
+            self.log.warn("map_guard_reverted", project=context.project.id, reverted=report["reverted"][:50],
+                          removed=report["removed"][:50], unrestorable=report["unrestorable"][:50])
+        result = dict(result)
+        if result.get("ok") and touched:
+            result["reply"] = str(result.get("reply") or "") + MAP_GUARD_NOTE % ", ".join(touched[:MAP_GUARD_FILES_SHOWN])
+        if result.get("ok") and not run_hints.list_map_documents(os.path.join(context.repo_path, *run_hints.MAP_FOLDER.split("/"))):
+            result.update(ok=False, error=MAP_NOTHING_WRITTEN)
+        if result.get("ok"):  # after the undo above: this is the app (not the AI) writing the index and pointing CLAUDE.md at the map
+            try:
+                run_hints.write_map_index(context.repo_path, self.read_short_head(context.repo_path))
+                run_hints.write_codebase_block(context.repo_path)
+            except OSError as failure:
+                self.log.warn("map_claude_md_block_failed", project=context.project.id, message=str(failure)[:200])
+        return result
+
+    def read_short_head(self, repo_path):
+        """Short sha of HEAD for the "mapped at" marker; None when git cannot tell (the marker then says it is unknown)."""
+        try:
+            return self.project_progress_service.git_client.get_short_head(repo_path) or None
+        except Exception as failure:  # the marker is a nicety: never fail the map for it
+            self.log.warn("map_head_unreadable", message=str(failure)[:200])
+            return None
 
     # ------------------------------------------------ support
     def ensure_repo_free_for_job(self, context):

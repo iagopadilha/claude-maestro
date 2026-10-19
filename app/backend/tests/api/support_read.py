@@ -74,6 +74,7 @@ class FakeProject:
         os.makedirs(self.repo)
         os.makedirs(self.turns_dir)
         self.write(os.path.join(self.project_dir, "ROADMAP.md"), roadmap)
+        self.write(loop_state.loop_path(self.work, "meta.json"), json.dumps({"turns": 1}))  # a worktree where a loop ran (a bare one is not the work dir)
         self.project = Project(id=project_id, name=name, repo_path=self.repo)
 
     @property

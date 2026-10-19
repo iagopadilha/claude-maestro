@@ -20,9 +20,16 @@ Example (the ">" keeps these lines from being read as a stage/feature):
   > **Goal:** customer signup with tax-id validation.
   > - [customer-api] status=pending scope=Medium kind=back paths=src/api/customers
   > - [customer-screen] status=pending scope=Small kind=front paths=src/web/customers deps=customer-api
+
+Project-wide setting (one line under the Goal, outside any feature; absent = no):
+
+  > **E2E:** yes|no   (yes = the loop ends with a flow-validation phase: verifier-flow runs every FLOWS.md flow against the real app;
+  >                    it needs a filled-in .specs/project/TEST-ENVIRONMENT.md. Decided here, in planning; not in the Start-a-loop card.)
 -->
 
 **Goal:** FILL_IN
+
+**E2E:** no
 
 ## Open questions
 

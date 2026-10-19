@@ -1,11 +1,14 @@
 """Assembly of the loop read module (the only place of this module that instantiates concrete classes)."""
 from ..api.controllers.loop_read_controller import LoopReadController
 from ..repositories.claude_transcript_repository import ClaudeTranscriptRepository
+from ..infrastructure.process_runner import ProcessRunner
 from ..repositories.loop_file_repository import LoopFileRepository
+from ..repositories.specs_file_repository import SpecsFileRepository
 from .agent_history_service import AgentHistoryService
 from .guard_event_service import GuardEventService
 from .loop_panel_service import LoopPanelService
 from .loop_status_service import LoopStatusService
+from .planning_requirement_service import PlanningRequirementService
 from .roadmap_view_service import RoadmapViewService
 from .turn_service import TurnService
 
@@ -22,7 +25,9 @@ class LoopReadModule:
         self.busy_providers = busy_providers
 
 
-def build_loop_read_module(config, log, project_service, activity_monitor):
+def build_loop_read_module(config, log, project_service, activity_monitor, planning_requirement_service=None):
+    """`planning_requirement_service` comes from the projects module (composition); alone (tests) the module builds its own."""
+    planning_requirement_service = planning_requirement_service or PlanningRequirementService(SpecsFileRepository(), ProcessRunner())
     loop_file_repository = LoopFileRepository()
     claude_transcript_repository = ClaudeTranscriptRepository(config.claude_transcripts_dir, log)
     loop_status_service = LoopStatusService(loop_file_repository, project_service, log)
@@ -30,7 +35,8 @@ def build_loop_read_module(config, log, project_service, activity_monitor):
     turn_service = TurnService(loop_file_repository, roadmap_view_service)
     agent_history_service = AgentHistoryService(loop_file_repository, claude_transcript_repository, log)
     loop_panel_service = LoopPanelService(loop_status_service, loop_file_repository, roadmap_view_service, turn_service,
-                                          agent_history_service, activity_monitor, GuardEventService(loop_file_repository))
+                                          agent_history_service, activity_monitor, GuardEventService(loop_file_repository),
+                                          planning_requirement_service)
     controller = LoopReadController(project_service, loop_panel_service, agent_history_service, turn_service, log)
     return LoopReadModule(loop_status_service, loop_panel_service, agent_history_service, turn_service, claude_transcript_repository,
                           [controller], [loop_status_service])

@@ -9,6 +9,7 @@ with LOOP_DATA_DIR pointing at an empty temporary folder so no real app or notif
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -127,7 +128,8 @@ class TestStateWrite(GuardTestCase):
     def test_subagents_cannot_write_anything_in_the_loop_folder(self):
         for relative in (".specs/project/loop/ANSWERS.md", ".specs/project/loop/VALIDATE.md", ".specs/project/loop/NOTICE.txt",
                          ".specs/project/loop/json/LOOP.json", ".specs/project/loop/json/SCOPE.json",
-                         ".specs/project/loop/internal/turns/001.json", ".specs/project/RULES.md", ".specs/project/ROADMAP.md"):
+                         ".specs/project/loop/internal/turns/001.json", ".specs/project/RULES.md", ".specs/project/ROADMAP.md",
+                         ".specs/project/FLOWS.md"):
             for profile in ("executor", "spec", "verifier"):
                 self.assertEqual(self.edit(relative, profile), BLOCKED, (relative, profile))
 
@@ -170,6 +172,7 @@ class TestRoadmapApproval(GuardTestCase):
     def test_reading_it_and_editing_the_roadmap_pass(self):
         self.assertEqual(self.run_guard("Read", {"file_path": self.specs("project", "loop", "json", "ROADMAP-APPROVED.json")}, "orchestrator"), PASSED)
         self.assertEqual(self.edit(".specs/project/ROADMAP.md", "orchestrator"), PASSED)
+        self.assertEqual(self.edit(".specs/project/FLOWS.md", "orchestrator"), PASSED)
 
 
 class TestStateScripts(GuardTestCase):
@@ -270,6 +273,8 @@ class TestSecrets(GuardTestCase):
         self.assertEqual(self.run_guard("Read", {"file_path": os.path.join("~", ".loop-harness", "config.json")}, "orchestrator"), PASSED)
         self.assertEqual(self.run_guard("Read", {"file_path": "/plugin/shared/.env.example"}, "executor"), PASSED)
         self.assertEqual(self.run_guard("Read", {"file_path": "/plugin/shared/.env"}, "executor"), BLOCKED)
+        self.assertEqual(self.run_guard("Read", {"file_path": "/proj/.specs/project/.env.test"}, "executor"), BLOCKED)
+        self.assertEqual(self.run_guard("Read", {"file_path": "/proj/.specs/project/.env.test.example"}, "executor"), PASSED)
 
 
 class TestExistingHardRules(GuardTestCase):
@@ -297,6 +302,25 @@ class TestExistingHardRules(GuardTestCase):
         payload = {"agent_type": "loop-engineering-harness:executor-back"}
         self.assertEqual(self.run_guard("Bash", {"command": "git commit -m x"}, "auto", **payload), BLOCKED)
         self.assertEqual(self.run_guard("Bash", {"command": "git commit -m x"}, "auto"), PASSED)  # main session: nothing enforced
+
+    def test_grafana_is_read_only_for_every_profile_and_no_permission_releases_it(self):
+        profiles = ("executor", "verifier", "spec", "orchestrator", "planning")
+        reads = ("query_loki_logs", "list_loki_label_names", "list_loki_label_values", "query_loki_stats", "query_loki_patterns",
+                 "find_error_pattern_logs", "list_datasources", "get_dashboard_by_uid", "search_dashboards", "check_datasources_health", "generate_deeplink")
+        writes = ("create_incident", "update_dashboard", "delete_snapshot", "create_snapshot", "add_activity_to_incident", "install_plugin",
+                  "alerting_manage_rules", "alerting_manage_routing", "create_annotation", "update_datasource", "create_folder")
+        for profile in profiles:
+            for name in reads:
+                self.assertEqual(self.run_guard("mcp__grafana__" + name, {}, profile), PASSED, (name, profile))
+            for name in writes:
+                self.assertEqual(self.run_guard("mcp__grafana__" + name, {}, profile), BLOCKED, (name, profile))
+            self.assertEqual(self.run_guard("mcp__grafana__grafana_api_request", {"url": "/api/health"}, profile), PASSED, profile)
+            self.assertEqual(self.run_guard("mcp__grafana__grafana_api_request", {"method": "get", "url": "/api/health"}, profile), PASSED, profile)
+            for method in ("POST", "put", "DELETE", "PATCH"):
+                self.assertEqual(self.run_guard("mcp__grafana__grafana_api_request", {"method": method, "url": "/api/x"}, profile), BLOCKED, (method, profile))
+        self.allow("grafana-write")
+        self.assertEqual(self.run_guard("mcp__grafana__create_incident", {}, "executor"), BLOCKED)
+        self.assertEqual(self.run_guard("mcp__grafana__query_loki_logs", {}, "executor"), PASSED)
 
 
 class TestFailOpenNotifier(GuardTestCase):
@@ -368,6 +392,340 @@ class TestInvalidProjectRegex(GuardTestCase):
 
     def test_edit_with_bad_path_rule_does_not_crash(self):
         self.assertEqual(self.edit("src/app.py", profile="orchestrator"), 0)
+
+
+class TestSpecsOnly(GuardTestCase):
+    """Spec and map agents (profile spec) write only inside .specs/ and .regression/; other profiles are untouched."""
+
+    def test_spec_profile_cannot_edit_code(self):
+        self.assertEqual(self.edit("src/Orders/Service.cs", profile="spec"), BLOCKED)
+
+    def test_spec_profile_writes_inside_specs(self):
+        self.assertEqual(self.edit(".specs/codebase/STACK.md", profile="spec"), PASSED)
+        self.assertEqual(self.edit(".specs/features/orders/spec.md", profile="spec"), PASSED)
+        self.assertEqual(self.edit(".regression/orders.md", profile="spec"), PASSED)
+        self.assertEqual(self.edit("docs/codebase/STACK.md", profile="spec"), PASSED)
+        self.assertEqual(self.edit("docs/other/STACK.md", profile="spec"), BLOCKED)
+
+    def test_spec_profile_shell_text_with_arrows_is_not_mistaken_for_a_write(self):
+        # a shell redirect is best effort: markdown text with `>` must never be judged a file write (the map job has its own
+        # snapshot that undoes anything outside .specs/)
+        self.assertEqual(self.bash("python -c \"print('a -> stack.md > domain')\"", profile="spec"), PASSED)
+        self.assertEqual(self.bash("echo x > .specs/codebase/STACK.md", profile="spec"), PASSED)
+
+    def test_map_agent_under_auto_profile_is_confined(self):
+        payload = {"file_path": os.path.join(self.project, "src", "Service.cs")}
+        self.assertEqual(self.run_guard("Write", payload, "auto", agent_type="loop-engineering-harness:brownfield-mapper"), BLOCKED)
+        ok = {"file_path": os.path.join(self.project, ".specs", "codebase", "STACK.md")}
+        self.assertEqual(self.run_guard("Write", ok, "auto", agent_type="brownfield-mapper"), PASSED)
+
+    def test_other_profiles_and_the_main_session_are_not_confined(self):
+        self.assertEqual(self.edit("src/Orders/Service.cs", profile="executor"), PASSED)
+        self.assertEqual(self.edit("src/Orders/Service.cs", profile="orchestrator"), PASSED)
+        payload = {"file_path": os.path.join(self.project, "src", "Service.cs")}
+        self.assertEqual(self.run_guard("Write", payload, "auto"), PASSED, "main session: nothing enforced")
+
+    def test_a_released_rule_lets_it_through(self):
+        self.allow("specs-only")
+        self.assertEqual(self.edit("src/Orders/Service.cs", profile="spec"), PASSED)
+
+
+class TestPlanningProfile(GuardTestCase):
+    """Profile planning (the app's planning chat, `claude -p --settings`): only .specs/, but it may write ROADMAP.md / FLOWS.md."""
+
+    def write(self, relative, profile="planning"):
+        return self.run_guard("Write", {"file_path": os.path.join(self.project, relative)}, profile)
+
+    def test_writing_outside_specs_is_blocked(self):
+        self.assertEqual(self.write("src/Orders/Service.cs"), BLOCKED)
+        self.assertEqual(self.write("notes.txt"), BLOCKED)
+        self.assertEqual(self.edit("src/Orders/Service.cs", profile="planning"), BLOCKED)
+        self.assertEqual(self.run_guard("NotebookEdit", {"notebook_path": os.path.join(self.project, "a.ipynb")}, "planning"), BLOCKED)
+
+    def test_planning_documents_are_writable(self):
+        for name in ("PROJECT.md", "ROADMAP.md", "FLOWS.md", "TEST-ENVIRONMENT.md"):
+            self.assertEqual(self.write(".specs/project/" + name), PASSED, name)
+            self.assertEqual(self.edit(".specs/project/" + name, profile="planning"), PASSED, name)
+
+    def test_planning_cannot_write_the_codebase_map(self):
+        self.assertEqual(self.write("docs/codebase/STACK.md"), BLOCKED)
+        self.assertEqual(self.write("docs/codebase/STACK.md", profile="spec"), PASSED)
+
+    def test_same_documents_stay_blocked_for_spec_profile(self):
+        self.assertEqual(self.write(".specs/project/ROADMAP.md", profile="spec"), BLOCKED)
+
+    def test_roadmap_approval_is_blocked(self):
+        self.assertEqual(self.write(".specs/project/ROADMAP-APPROVED.json"), BLOCKED)
+        self.assertEqual(self.write(".specs/project/loop/json/ROADMAP-APPROVED.json"), BLOCKED)
+
+    def test_git_push_is_blocked(self):
+        self.assertEqual(self.bash("git push origin feature/x", profile="planning"), BLOCKED)
+
+    def test_a_credential_path_is_blocked(self):
+        self.assertEqual(self.write(".specs/.secrets/token.txt"), BLOCKED)
+
+
+class TestMultiRootScope(GuardTestCase):
+    """SCOPE.json with `roots`, absolute entries and `copied`: several worktrees of one project."""
+
+    def setUp(self):
+        super().setUp()
+        self.second = os.path.join(self.tmp, "second-worktree")
+        os.makedirs(self.second)
+        self.outside = os.path.join(os.path.expanduser("~"), "not-a-worktree-of-this-project")
+        self.copied = os.path.join(self.second, ".env.local")
+        self.write_json(self.specs("project", "loop", "json", "SCOPE.json"), {
+            "roots": [self.project, self.second],
+            "features": {"api": [os.path.join(self.second, "src", "orders")], "old": ["apps/a"]},
+            "copied": [self.copied]})
+
+    def edit_at(self, path, profile="executor"):
+        return self.run_guard("Edit", {"file_path": path}, profile)
+
+    def test_a_path_of_the_feature_in_the_second_worktree_is_allowed(self):
+        self.assertEqual(self.edit_at(os.path.join(self.second, "src", "orders", "x.ts")), PASSED)
+        self.assertEqual(self.edit("apps/a/x.ts"), PASSED)  # relative entry = primary root
+
+    def test_same_name_elsewhere_or_in_a_repo_not_in_roots_is_blocked(self):
+        self.assertEqual(self.edit_at(os.path.join(self.second, "src", "other", "x.ts")), BLOCKED)
+        self.assertEqual(self.edit_at(os.path.join(self.outside, "src", "orders", "x.ts")), BLOCKED)
+
+    def test_the_orchestrator_writes_only_inside_the_listed_roots(self):
+        self.assertEqual(self.edit_at(os.path.join(self.second, "src", "other", "x.ts"), "orchestrator"), PASSED)
+        self.assertEqual(self.edit(".specs/project/ROADMAP.md", "orchestrator"), PASSED)
+        self.assertEqual(self.edit_at(os.path.join(self.outside, "x.ts"), "orchestrator"), BLOCKED)
+
+    def test_git_commit_resolves_against_its_folder(self):
+        self.assertEqual(self.bash("git -C %s commit -m x" % self.second, "orchestrator"), PASSED)
+        self.assertEqual(self.bash("git commit -m x", "orchestrator"), PASSED)
+        self.assertEqual(self.bash("git -C %s commit -m x" % self.outside, "orchestrator"), BLOCKED)
+        self.assertEqual(self.bash("cd %s && git commit -m x" % self.outside, "orchestrator"), BLOCKED)
+        self.assertEqual(self.bash("git -C %s status" % self.outside, "orchestrator"), PASSED)
+
+    def test_push_pr_and_add_all_stay_blocked_for_every_profile(self):
+        for profile in ("orchestrator", "executor", "verifier", "spec", "planning"):
+            self.assertEqual(self.bash("git -C %s push origin loop/x" % self.second, profile), BLOCKED, profile)
+            self.assertEqual(self.bash("gh pr create --fill", profile), BLOCKED, profile)
+            self.assertEqual(self.bash("git add -A", profile), BLOCKED, profile)
+
+    def test_copied_config_is_a_secret_inside_the_worktree_but_the_build_is_not(self):
+        for profile in ("orchestrator", "executor", "verifier"):
+            self.assertEqual(self.run_guard("Read", {"file_path": self.copied}, profile), BLOCKED, profile)
+            self.assertEqual(self.bash("cd %s && cat .env.local" % self.second, profile), BLOCKED, profile)
+            self.assertEqual(self.bash("cd %s && npm run build" % self.second, profile), PASSED, profile)
+        self.assertEqual(self.run_guard("Read", {"file_path": os.path.join(self.second, "src", "a.ts")}, "executor"), PASSED)
+
+    def test_broad_reads_that_would_reach_the_copied_config_are_blocked(self):
+        for command in ("cd %s && rg --no-ignore SECRET" % self.second, "cd %s && rg -uu SECRET ." % self.second,
+                        "cd %s && rg -g '.env*' SECRET" % self.second, "grep -rn SECRET %s" % self.second,
+                        "cd %s && grep -R SECRET ." % self.second, "cd %s && find . -exec cat {} +" % self.second,
+                        "cd %s && find . -type f | xargs grep SECRET" % self.second,
+                        "cd %s && Get-ChildItem -Recurse | Select-String SECRET" % self.second,
+                        "cd %s && cat .env*" % self.second, "cd %s && type *.local" % self.second,
+                        "cd %s && Select-String -Path * -Pattern SECRET" % self.second,
+                        "cd %s && git grep --no-index SECRET" % self.second, "cd %s && cp -r . %s" % (self.second, self.tmp)):
+            for profile in ("orchestrator", "executor", "verifier"):
+                self.assertEqual(self.bash(command, profile), BLOCKED, (command, profile))
+        self.assertEqual(self.run_guard("PowerShell", {"command": "cd %s; gci -r | sls SECRET" % self.second}, "executor"), BLOCKED)
+
+    def test_normal_source_searches_in_the_worktree_still_pass(self):
+        os.makedirs(os.path.join(self.second, "src"))
+        open(os.path.join(self.second, "src", "a.ts"), "w").close()
+        for command in ("cd %s && rg SECRET" % self.second, "cd %s && rg -n foo src" % self.second, "grep -rn foo %s" % os.path.join(self.second, "src"),
+                        "cd %s && grep -r foo src" % self.second, "cd %s && grep -rn foo src/a.ts" % self.second,
+                        "cd %s && grep -r --include=*.ts foo ." % self.second, "cd %s && find . -name '*.ts' -exec grep foo {} +" % self.second,
+                        "cd %s && cat src/*.ts" % self.second,
+                        "cd %s && Get-ChildItem -Recurse -Include *.ts | Select-String foo" % self.second,
+                        "cd %s && git grep foo" % self.second, "cd %s && rg -g '*.ts' foo" % self.second, "cd %s && ls -la" % self.second):
+            for profile in ("orchestrator", "executor", "verifier"):
+                self.assertEqual(self.bash(command, profile), PASSED, (command, profile))
+
+    def test_grep_and_glob_tools_cannot_whitelist_or_list_the_copied_name(self):
+        in_second = {"path": self.second}
+        self.assertEqual(self.run_guard("Grep", dict(in_second, pattern="SECRET"), "executor"), PASSED)  # rg skips git-ignored files
+        self.assertEqual(self.run_guard("Grep", dict(in_second, pattern="SECRET", glob=".env*"), "executor"), BLOCKED)
+        self.assertEqual(self.run_guard("Grep", dict(in_second, pattern="SECRET", glob="*.local"), "verifier"), BLOCKED)
+        self.assertEqual(self.run_guard("Grep", dict(in_second, pattern="SECRET", glob="*.ts"), "executor"), PASSED)
+        self.assertEqual(self.run_guard("Grep", dict(in_second, pattern="SECRET", no_ignore=True), "executor"), BLOCKED)
+        self.assertEqual(self.run_guard("Glob", dict(in_second, pattern=".env*"), "orchestrator"), BLOCKED)
+        self.assertEqual(self.run_guard("Glob", dict(in_second, pattern="**/*.ts"), "orchestrator"), PASSED)
+        self.assertEqual(self.run_guard("Glob", dict(in_second, pattern="*"), "orchestrator"), PASSED)
+        self.assertEqual(self.run_guard("Glob", {"path": os.path.join(self.second, "src"), "pattern": ".env*"}, "orchestrator"), PASSED)
+
+    def test_shell_writes_are_confined_like_write_and_edit(self):
+        inside = os.path.join(self.second, "src", "orders")
+        other = os.path.join(self.second, "src", "other")
+        self.assertEqual(self.bash("echo x > %s" % os.path.join(inside, "a.log")), PASSED)
+        self.assertEqual(self.bash("echo x > %s" % os.path.join(other, "a.log")), BLOCKED)
+        self.assertEqual(self.bash("echo x >> %s" % os.path.join(other, "a.log")), BLOCKED)
+        self.assertEqual(self.bash("echo x | tee %s" % os.path.join(other, "a.log")), BLOCKED)
+        self.assertEqual(self.bash("sed -i s/a/b/ %s" % os.path.join(other, "a.ts")), BLOCKED)
+        self.assertEqual(self.bash("cd %s && echo x > ../other/a.log" % inside), BLOCKED)
+        self.assertEqual(self.run_guard("PowerShell", {"command": "Set-Content -Path %s -Value x" % os.path.join(other, "a.ts")}), BLOCKED)
+        self.assertEqual(self.run_guard("PowerShell", {"command": "'x' | Out-File %s" % os.path.join(other, "a.ts")}), BLOCKED)
+        self.assertEqual(self.bash("echo x > %s" % os.path.join(self.outside, "a.log"), "orchestrator"), BLOCKED)
+        self.assertEqual(self.bash("echo x > %s" % os.path.join(other, "a.log"), "orchestrator"), PASSED)  # repo-only: any worktree file
+        self.assertEqual(self.bash("echo x > %s" % os.path.join(other, "a.log"), "verifier"), PASSED)  # no confinement for the verifier
+
+    def test_shell_write_exemptions_and_build_outputs(self):
+        in_second = "cd %s && " % self.second
+        for command in ("dotnet build 2>&1 > %s" % os.path.join(self.tmp, "build.log"), "echo x > /dev/null", "echo x > nul",
+                        "echo x > $null", "echo x > $env:TEMP\\a.log", "npm test > %s" % os.path.join(tempfile.gettempdir(), "t.log"),
+                        in_second + "dotnet test > bin/Debug/test.log", in_second + "pytest > .pytest_cache/out.txt",
+                        in_second + "npm run build 2>&1 > node_modules/.cache/out.log", "python -c \"print('a > b')\""):
+            self.assertEqual(self.bash(command), PASSED, command)
+        self.assertEqual(self.bash(in_second + "npm test > out.log"), BLOCKED)  # the worktree root is not in the feature PATHS
+
+    def test_spec_and_planning_shell_writes_stay_in_specs(self):
+        for profile in ("spec", "planning"):
+            self.assertEqual(self.bash("echo x > src/a.ts", profile), BLOCKED, profile)
+            self.assertEqual(self.bash("echo x > .specs/features/a/notes.md", profile), PASSED, profile)
+            self.assertEqual(self.bash("echo x > %s" % os.path.join(self.tmp, "scratch.txt"), profile), PASSED, profile)
+
+
+    # ---- LOOP_SPECS_DIR: the hook's cwd is another worktree (no `.specs` above it)
+    def run_in(self, tool, tool_input, cwd, profile="executor", specs_env=None):
+        env = dict(self.env)
+        env.pop("LOOP_SPECS_DIR", None)
+        if specs_env:
+            env["LOOP_SPECS_DIR"] = specs_env
+        payload = {"tool_name": tool, "tool_input": tool_input, "cwd": cwd}
+        return subprocess.run([sys.executable, GUARD, "--profile", profile], input=json.dumps(payload),
+                              capture_output=True, text=True, env=env).returncode
+
+    def test_loop_specs_dir_finds_the_primary_scope_from_another_worktree(self):
+        env = self.specs()
+        in_second = os.path.join(self.second, "apps", "z", "a.ts")
+        self.assertEqual(self.run_in("Write", {"file_path": in_second, "content": "x"}, self.second, specs_env=env), BLOCKED)
+        self.assertEqual(self.run_in("Write", {"file_path": os.path.join("apps", "z", "a.ts"), "content": "x"}, self.second, specs_env=env), BLOCKED)
+        self.assertEqual(self.run_in("Edit", {"file_path": os.path.join("src", "orders", "x.ts")}, self.second, specs_env=env), PASSED)  # relative = against the hook cwd
+        self.assertEqual(self.run_in("Edit", {"file_path": os.path.join(self.second, "src", "orders", "x.ts")}, self.second, specs_env=env), PASSED)
+        self.assertEqual(self.run_in("Read", {"file_path": self.copied}, self.second, specs_env=env), BLOCKED)
+        self.assertEqual(self.run_in("Read", {"file_path": ".env.local"}, self.second, specs_env=env), BLOCKED)
+        self.assertEqual(self.run_in("Bash", {"command": "cat .env.local"}, self.second, specs_env=env), BLOCKED)
+        self.assertEqual(self.run_in("Bash", {"command": "rg -uu TOKEN ."}, self.second, specs_env=env), BLOCKED)
+        self.assertEqual(self.run_in("Bash", {"command": "echo x > apps/z/a.log"}, self.second, specs_env=env), BLOCKED)
+        self.assertEqual(self.run_in("Bash", {"command": "npm run build"}, self.second, specs_env=env), PASSED)
+        self.assertEqual(self.run_in("Read", {"file_path": "src/a.ts"}, self.second, specs_env=env), PASSED)
+
+    def test_without_the_variable_the_old_walk_up_is_unchanged(self):
+        in_second = os.path.join(self.second, "apps", "z", "a.ts")
+        self.assertEqual(self.run_in("Write", {"file_path": in_second, "content": "x"}, self.second), PASSED)  # nothing found: the guard does not stall
+        self.assertEqual(self.run_in("Write", {"file_path": in_second, "content": "x"}, self.project), BLOCKED)  # `.specs` found walking up
+
+    def test_an_invalid_loop_specs_dir_is_ignored(self):
+        in_second = os.path.join(self.second, "apps", "z", "a.ts")
+        for bad in (os.path.join(self.tmp, "missing", ".specs"), self.project, os.path.join(".specs"), self.second):
+            self.assertEqual(self.run_in("Write", {"file_path": in_second, "content": "x"}, self.second, specs_env=bad), PASSED, bad)
+            self.assertEqual(self.run_in("Write", {"file_path": in_second, "content": "x"}, self.project, specs_env=bad), BLOCKED, bad)
+
+    # ---- the copied-secret check compares NORMALIZED paths
+    def secret_spellings(self):
+        forward = self.second.replace("\\", "/")
+        spellings = [forward + "/.env.local", forward + "/./.env.local", forward + "/apps/../.env.local", forward.replace(":/", "://", 1) + "/.env.local",
+                     self.second + "\\.env.local", forward.upper() + "/.ENV.LOCAL", "../second-worktree/.env.local", "../second-worktree/./src/../.env.local"]
+        match = re.match(r"^([A-Za-z]):/(.*)$", forward)
+        if match and os.name == "nt":
+            drive, rest = match.group(1), match.group(2)
+            spellings += ["/%s/%s/.env.local" % (drive.lower(), rest), "/%s/%s/.env.local" % (drive.upper(), rest), "/mnt/%s/%s/.env.local" % (drive.lower(), rest)]
+        return spellings
+
+    def test_every_spelling_of_a_copied_secret_is_blocked(self):
+        for spelling in self.secret_spellings():
+            self.assertEqual(self.run_in("Read", {"file_path": spelling}, self.project), BLOCKED, spelling)
+            self.assertEqual(self.run_in("Bash", {"command": "cat " + spelling}, self.project), BLOCKED, spelling)
+            self.assertEqual(self.run_in("Bash", {"command": 'cat "%s"' % spelling}, self.project, "verifier"), BLOCKED, spelling)
+
+    def test_the_tail_inside_another_listed_root_is_a_secret_too(self):
+        # the copied file is in `second`; the same tail in the primary root (also a listed root) is the same kind of file
+        for spelling in (os.path.join(self.project, ".env.local"), "./.env.local"):
+            self.assertEqual(self.run_in("Read", {"file_path": spelling}, self.project), BLOCKED, spelling)
+
+    def test_normalized_paths_that_are_not_the_secret_still_pass(self):
+        forward = self.second.replace("\\", "/")
+        for spelling in (forward + "/./src/a.ts", forward + "/apps/../src/a.ts", "../second-worktree/src/a.ts", forward + "/.env.local.md".replace(".local.md", ".example")):
+            self.assertEqual(self.run_in("Read", {"file_path": spelling}, self.project), PASSED, spelling)
+            self.assertEqual(self.run_in("Bash", {"command": "cat " + spelling}, self.project), PASSED, spelling)
+
+    def test_normalize_path_unit(self):
+        guard = load_guard_module()
+        self.assertEqual(guard.normalize_path("A://b/./c/../d\\e", None), "a:/b/d/e")
+        self.assertEqual(guard.normalize_path("../x/y", "C:\\repo\\sub"), "c:/repo/x/y")
+        if os.name == "nt":
+            self.assertEqual(guard.normalize_path("/c/Users/x"), "c:/users/x")
+            self.assertEqual(guard.normalize_path("/mnt/d/x//y"), "d:/x/y")
+
+    # ---- the temp exemption never covers a git working tree
+    def git_init(self, path):
+        os.makedirs(path, exist_ok=True)
+        subprocess.run(["git", "init", "-q", path], capture_output=True, check=True)
+
+    def test_a_repo_under_a_temp_looking_folder_is_not_exempt(self):
+        repo = os.path.join(self.tmp, "tmp", "other-repo")
+        self.git_init(repo)
+        plain = os.path.join(self.tmp, "scratchpad", "plain")
+        os.makedirs(plain)
+        linked = os.path.join(self.tmp, "temp", "linked-worktree")
+        os.makedirs(linked)
+        with open(os.path.join(linked, ".git"), "w", encoding="utf-8") as handle:  # a linked worktree has a .git FILE
+            handle.write("gitdir: elsewhere\n")
+        for profile in ("executor", "orchestrator"):
+            self.assertEqual(self.edit_at(os.path.join(repo, "src", "x.ts"), profile), BLOCKED, profile)
+            self.assertEqual(self.edit_at(os.path.join(linked, "src", "x.ts"), profile), BLOCKED, profile)
+            self.assertEqual(self.edit_at(os.path.join(plain, "x.txt"), profile), PASSED, profile)
+        self.assertEqual(self.bash("echo x > %s" % os.path.join(repo, "a.log")), BLOCKED)
+        self.assertEqual(self.bash("echo x > %s" % os.path.join(linked, "a.log")), BLOCKED)
+        self.assertEqual(self.bash("echo x > %s" % os.path.join(plain, "a.log")), PASSED)
+
+    def test_a_spec_agent_cannot_write_into_a_repo_under_a_temp_folder(self):
+        repo = os.path.join(self.tmp, "temp", "other-repo")
+        self.git_init(repo)
+        self.assertEqual(self.edit_at(os.path.join(repo, "x.md"), "spec"), BLOCKED)
+        self.assertEqual(self.edit_at(os.path.join(self.tmp, "temp", "notes.md"), "spec"), PASSED)
+
+
+    # ---- case handling is platform-aware: folded only where the filesystem is case-insensitive
+    def test_case_is_folded_only_on_a_case_insensitive_filesystem(self):
+        guard = load_guard_module()
+        guard.CASE_INSENSITIVE = False  # the POSIX branch, simulated (works on Windows too)
+        self.assertEqual(guard.norm("/Srv/Repo/./Src/"), "/Srv/Repo/Src")
+        self.assertEqual(guard.normalize_path("../Other/File.TS", "/Srv/Repo/Sub"), "/Srv/Repo/Other/File.TS")
+        self.assertEqual(guard.normalize_path("A:/B/c", None, True), "a:/b/c")
+        guard.CASE_INSENSITIVE = True
+        self.assertEqual(guard.norm("/Srv/Repo/./Src/"), "/srv/repo/src")
+        self.assertEqual(guard.normalize_path("../Other/File.TS", "/Srv/Repo/Sub"), "/srv/repo/other/file.ts")
+        self.assertEqual(guard.normalize_path("A:/B/c", None, False), "A:/B/c")
+
+    def test_the_git_ancestor_walk_uses_the_original_case_path(self):
+        guard = load_guard_module()
+        repo = os.path.join(self.tmp, "Tmp", "MixedCase-Repo")
+        self.git_init(repo)
+        target = os.path.join(repo, "Src", "X.ts")
+        for insensitive in (False, True):
+            guard.CASE_INSENSITIVE = insensitive
+            absolute = guard.normalize_path(target)
+            self.assertEqual(absolute, guard.normalize_path(target, None, insensitive))
+            if not insensitive:
+                self.assertIn("MixedCase-Repo", absolute)  # original case reaches the filesystem check
+            self.assertTrue(guard.has_git_ancestor(absolute), insensitive)
+            self.assertFalse(guard.temp_exempt(absolute), insensitive)
+        guard.CASE_INSENSITIVE = os.name == "nt" or sys.platform == "darwin"
+        plain = os.path.join(self.tmp, "Scratchpad", "Plain", "x.txt")
+        os.makedirs(os.path.dirname(plain))
+        self.assertTrue(guard.temp_exempt(guard.normalize_path(plain)))
+
+    def test_a_mixed_case_repo_under_a_temp_folder_is_not_exempt_end_to_end(self):
+        repo = os.path.join(self.tmp, "Temp", "MixedCase-Repo")
+        self.git_init(repo)
+        self.assertEqual(self.edit_at(os.path.join(repo, "Src", "X.ts")), BLOCKED)
+        self.assertEqual(self.bash("echo x > %s" % os.path.join(repo, "Src", "A.log")), BLOCKED)
+        self.assertEqual(self.bash("cd %s && echo x > Src/A.log" % repo), BLOCKED)  # a cd carries the original case along
+
+    def test_build_output_folders_and_mixed_case_secret_names_keep_working(self):
+        in_second = "cd %s && " % self.second
+        self.assertEqual(self.bash(in_second + "dotnet test > TestResults/out.log"), PASSED)
+        if os.name == "nt":
+            self.assertEqual(self.run_in("Read", {"file_path": os.path.join(self.second, ".Env.Local")}, self.project), BLOCKED)
 
 
 if __name__ == "__main__":

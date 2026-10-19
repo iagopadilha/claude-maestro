@@ -15,7 +15,7 @@ Usage (CLI):
 
 Feature line grammar (ROADMAP.md):
   - [slug] status=<pending|speccing|specced|approved|building|verified|blocked> scope=<Small|Medium|Large|Complex>
-    kind=<back|front|both|generic> paths=<p1,p2> [deps=<slug|dir:folder,...>] [isolation=same-tree|worktree]
+    kind=<back|front|both|generic> paths=<p1,p2> [repo-order=<repo,repo>] [deps=<slug|dir:folder,...>] [isolation=same-tree|worktree]
     [tries=<n>] [origin=adopted] [e2e=ok|failed|not-covered] [regression=yes|baseline|ok|failed] [note=...]
 `regression` only exists on refactoring features (slug `refactor-*`) and only when the user asked for it in the ROADMAP: `yes` = requested,
 `baseline` = old code captured, `ok`/`failed` = comparison result. A feature with `regression` runs ALONE in the wave.
@@ -23,6 +23,9 @@ Feature line grammar (ROADMAP.md):
 feature runs. `dir:<folder>` = shared folder the feature IMPORTS without editing (editing goes in `paths`): it collides
 with whoever EDITS that folder, not with whoever only imports it. A dep slug must exist and cannot form a cycle.
 `tries` = accumulated failures of the feature (gate, execution, verification or E2E). With 2 failures it MUST be `blocked`.
+Multi-repo projects (REPOS.json): a path may carry its repo, `paths=<repo>:<path>,<repo>:<path>`, where <repo> is the short name from
+REPOS.json; a path without prefix belongs to the primary repo (old roadmaps stay valid). `repo-order=api,web` = the order in which the
+feature's repos are built (the contract producer before its consumer). Two features collide only when the same repo has overlapping paths.
 Stages: a heading `## Stage N` above the feature lines (or an explicit `stage=` field on the line).
 """
 import hashlib
@@ -41,6 +44,7 @@ ISOLATIONS = ("same-tree", "worktree")
 REGRESSION = ("yes", "baseline", "ok", "failed")
 REFACTOR_PREFIX = "refactor-"
 DIR_PREFIX = "dir:"
+REPO_PATH_PREFIX = re.compile(r"^([a-z0-9._-]+):(?![/\\])(.+)$")  # `<repo>:<path>`; a drive letter (C:/x) is never a repo prefix
 MAX_TRIES = 2
 LOOP_STATUS = ("continue", "awaiting_user", "done", "error")
 ANSWERS_OK = ("approved", "specced", "pending")  # legal destinations of a `blocked` feature unblocked by the user
@@ -85,7 +89,7 @@ def parse_roadmap(text):
         if not match:
             continue
         slug, rest = match.group(1), match.group(2)
-        fields = dict(re.findall(r"(\w+)=(\S+)", rest))
+        fields = dict(re.findall(r"([\w-]+)=(\S+)", rest))  # [\w-]: repo-order has a hyphen
         if "status" not in fields:
             errors.append("ROADMAP line %d: [%s] has no status=" % (number, slug))
             continue
@@ -97,7 +101,40 @@ def parse_roadmap(text):
     return features, errors
 
 
-def check_fields(features):
+def split_repo_path(entry):
+    """(repo, path) of one `paths=` entry. repo is "" when there is no prefix (= the primary repo)."""
+    entry = entry.strip()
+    match = REPO_PATH_PREFIX.match(entry)
+    return (match.group(1), match.group(2)) if match else ("", entry)
+
+
+def feature_repo_paths(feature, primary_name=""):
+    """[(repo, path)] of the feature's paths=. The primary repo is always keyed by its own name (unprefixed or prefixed), so
+    `src` and `<primary>:src` are the same place. Without primary_name an unprefixed entry stays keyed by ""."""
+    pairs = []
+    for entry in (feature.get("paths") or "").split(","):
+        if not entry.strip():
+            continue
+        repo, path = split_repo_path(entry)
+        pairs.append((repo or primary_name, path))
+    return pairs
+
+
+def check_repo_names(features, repo_names):
+    """Errors for every `paths=` prefix or `repo-order=` name that is not in the project's repo list (names of REPOS.json)."""
+    known, errors = set(repo_names), []
+    for slug, f in features.items():
+        for repo, _ in feature_repo_paths(f):
+            if repo and repo not in known:
+                errors.append("[%s] paths= names an unknown repo %r (project repos: %s)" % (slug, repo, ", ".join(sorted(known))))
+        for repo in (f.get("repo-order") or "").split(","):
+            if repo.strip() and repo.strip() not in known:
+                errors.append("[%s] repo-order= names an unknown repo %r (project repos: %s)" % (slug, repo.strip(), ", ".join(sorted(known))))
+    return list(dict.fromkeys(errors))
+
+
+def check_fields(features, repo_names=None):
+    """repo_names (the project's REPOS.json names) is optional: when given, unknown repo prefixes are reported."""
     errors = []
     for slug, f in features.items():
         if f["status"] not in STATUSES:
@@ -135,6 +172,8 @@ def check_fields(features):
     cycle = find_cycle(features)
     if cycle:
         errors.append("cycle in deps=: " + " -> ".join(cycle))
+    if repo_names:
+        errors += check_repo_names(features, repo_names)
     return errors
 
 
@@ -208,20 +247,22 @@ def overlap(a, b):
     return a == b or a.startswith(b + "/") or b.startswith(a + "/")
 
 
-def edits_overlap(first, second):
-    """Two features collide if they edit overlapping folders, or if one EDITS what the other imports (dir:).
-    Two that only import the same folder do not collide. Returns the reason, or "" if they do not collide."""
-    paths_a, paths_b = (first.get("paths") or "").split(","), (second.get("paths") or "").split(",")
-    dirs_a, dirs_b = split_deps(first)[1], split_deps(second)[1]
+def edits_overlap(first, second, primary_name=""):
+    """Two features collide if they edit overlapping folders OF THE SAME REPO, or if one EDITS what the other imports (dir:).
+    Two that only import the same folder do not collide. Returns the reason, or "" if they do not collide.
+    A `dir:` folder carries no repo prefix of its own unless written `<repo>:<folder>`; without one it belongs to the primary repo."""
+    paths_a, paths_b = feature_repo_paths(first, primary_name), feature_repo_paths(second, primary_name)
+    dirs_a = [(repo or primary_name, path) for repo, path in map(split_repo_path, split_deps(first)[1])]
+    dirs_b = [(repo or primary_name, path) for repo, path in map(split_repo_path, split_deps(second)[1])]
     for mine, theirs in ((paths_a, paths_b), (paths_a, dirs_b), (dirs_a, paths_b)):
-        for pa in mine:
-            for pb in theirs:
-                if pa.strip() and pb.strip() and overlap(pa, pb):
+        for repo_a, pa in mine:
+            for repo_b, pb in theirs:
+                if repo_a == repo_b and pa.strip() and pb.strip() and overlap(pa, pb):
                     return "%s overlaps %s" % (pa, pb)
     return ""
 
 
-def conflicts(features, slugs):
+def conflicts(features, slugs, primary_name=""):
     """Pairs of features whose paths overlap (or nonexistent slug / no paths)."""
     found = []
     for slug in slugs:
@@ -230,7 +271,7 @@ def conflicts(features, slugs):
     ok = [s for s in slugs if s in features and features[s].get("paths")]
     for i, first in enumerate(ok):
         for second in ok[i + 1:]:
-            reason = edits_overlap(features[first], features[second])
+            reason = edits_overlap(features[first], features[second], primary_name)
             if reason:
                 found.append("[%s] x [%s]: %s" % (first, second, reason))
     return found
@@ -252,10 +293,10 @@ def validate_loop_json(state):
     return errors
 
 
-def validate(prev_text, new_text, loop_state=None, new_commits=0, has_answer=False):
+def validate(prev_text, new_text, loop_state=None, new_commits=0, has_answer=False, repo_names=None, primary_name=""):
     """Checks the new state against the previous one. Returns a list of violations (empty = valid state)."""
     new, errors = parse_roadmap(new_text)
-    errors += check_fields(new)
+    errors += check_fields(new, repo_names)
     old, _ = parse_roadmap(prev_text) if prev_text else ({}, [])
     gone = [slug for slug in old if slug not in new]
     if gone:
@@ -270,7 +311,7 @@ def validate(prev_text, new_text, loop_state=None, new_commits=0, has_answer=Fal
     if newly_verified > new_commits:
         errors.append("%d feature(s) became verified but there were %d new commit(s): verified requires the feature's commit" % (newly_verified, new_commits))
     building = [s for s, f in new.items() if f["status"] == "building"]
-    errors += ["simultaneous building with overlapping paths: " + c for c in conflicts(new, building) if " x " in c]
+    errors += ["simultaneous building with overlapping paths: " + c for c in conflicts(new, building, primary_name) if " x " in c]
     if loop_state is not None:
         errors += validate_loop_json(loop_state)
     return errors
@@ -287,7 +328,7 @@ def stuck_by_blocked(features, slug):
     return [dep for dep in split_deps(features[slug])[0] if features.get(dep, {}).get("status") == "blocked"]
 
 
-def pick_wave(features, candidates, wave, headless=False):
+def pick_wave(features, candidates, wave, headless=False, primary_name=""):
     """Greedily, up to `wave` features with paths disjoint from each other and from those already building.
     In headless mode there is no worktree: a feature with isolation=worktree (collides with a shared folder) runs ALONE in the wave.
     A feature with regression= also runs alone (in any mode): the old code's baseline needs a tree only it changes."""
@@ -298,7 +339,7 @@ def pick_wave(features, candidates, wave, headless=False):
             break
         if not features[slug].get("paths"):
             continue
-        if any(edits_overlap(features[slug], features[other]) for other in chosen + busy):
+        if any(edits_overlap(features[slug], features[other], primary_name) for other in chosen + busy):
             continue
         if features[slug].get("regression") in ("yes", "baseline", "failed") or (headless and features[slug].get("isolation") == "worktree"):
             if not chosen and not busy:
@@ -308,7 +349,7 @@ def pick_wave(features, candidates, wave, headless=False):
     return chosen
 
 
-def next_work(features, wave=1, headless=False):
+def next_work(features, wave=1, headless=False, primary_name=""):
     """Decides the next phase of the turn. Same priority as loop.md: the most advanced work that exists."""
     # only the current stage moves: the first (in file order) that still has an open feature. A dependency between stages
     # needs no deps=: the next stage only starts when this one closes (verified/blocked).
@@ -325,7 +366,7 @@ def next_work(features, wave=1, headless=False):
     if by("building") or by("speccing"):
         result.update(phase="recover", slugs=by("building") + by("speccing"))  # lost dispatch: Phase 0 resolves it
     elif approved:
-        chosen = pick_wave(features, approved, max(1, wave), headless)
+        chosen = pick_wave(features, approved, max(1, wave), headless, primary_name)
         result.update(phase="execute", slugs=chosen, deferred_by_collision=[s for s in approved if s not in chosen])
     elif by("specced"):
         result.update(phase="gate", slugs=by("specced")[:3])
@@ -579,8 +620,9 @@ def snap_dir(work, number):
     return os.path.join(loop_path(work, "snapshots"), "%03d" % number)
 
 
-def snapshot(work, number, head):
-    """Saves the state (.specs/project files + HEAD) right after turn `number`. Number 0 = baseline before anything."""
+def snapshot(work, number, head, heads=None):
+    """Saves the state (.specs/project files + HEAD) right after turn `number`. Number 0 = baseline before anything.
+    `heads` = {repo name: HEAD} of every worktree of a multi-repo project (written only then, so a single-repo snapshot is unchanged)."""
     target = snap_dir(work, number)
     shutil.rmtree(target, ignore_errors=True)
     os.makedirs(target, exist_ok=True)
@@ -589,7 +631,7 @@ def snapshot(work, number, head):
         if os.path.isfile(source):
             shutil.copy2(source, os.path.join(target, name))
     with open(os.path.join(target, "snapshot.json"), "w", encoding="utf-8") as handle:
-        json.dump({"turn": number, "head": head}, handle)
+        json.dump({"turn": number, "head": head, **({"heads": heads} if heads else {})}, handle)
     return target
 
 
@@ -665,6 +707,16 @@ def write_loop_json(work, args):
     return 0, "LOOP.json written: status=%s turn=%s" % (status, turn)
 
 
+def project_repo_context(work):
+    """(repo_names, primary_name) from REPOS.json, for the CLI. Falls back to ([], "") when the helper cannot be loaded (stdlib-only module)."""
+    try:
+        import project_repos
+        repos = project_repos.load_repos(work)
+        return [repo.name for repo in repos], project_repos.primary_of(repos).name
+    except Exception:
+        return [], ""
+
+
 def main():
     args = sys.argv[1:]
     if len(args) >= 2 and args[0] == "loop":
@@ -684,12 +736,13 @@ def main():
         print(graph(text))
         return 0
     features, errors = parse_roadmap(text)
+    repo_names, primary_name = project_repo_context(work)
     if command == "next":
         wave = int(args[args.index("--wave") + 1]) if "--wave" in args else 1
-        print(json.dumps(next_work(features, wave, "--headless" in args), ensure_ascii=False))
+        print(json.dumps(next_work(features, wave, "--headless" in args, primary_name), ensure_ascii=False))
         return 0
     if command == "validate":
-        errors += check_fields(features)
+        errors += check_fields(features, repo_names)
         state = None
         if os.path.exists(state_file(work, "LOOP.json")):
             try:
@@ -702,7 +755,7 @@ def main():
             print("VIOLATION:", item)
         print("%d feature(s); %s" % (len(features), "valid state" if not errors else "%d violation(s)" % len(errors)))
         return 1 if errors else 0
-    found = conflicts(features, args[2:])
+    found = conflicts(features, args[2:], primary_name)
     for item in found:
         print("CONFLICT:", item)
     print("disjoint" if not found else "do NOT dispatch in parallel")
