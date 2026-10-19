@@ -8,3 +8,6 @@ __pycache__/
 # local-only extensions of one machine (private channels/providers) and their tests: never committed
 app/backend/harness_backend/engine/local_ext/
 app/backend/tests/engine/test_local_*.py
+
+# Playwright CLI session artifacts (screenshots, snapshots)
+.playwright-cli/
