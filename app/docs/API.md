@@ -328,6 +328,23 @@ failed); 400 for an invalid message, a non-boolean `push` or a missing folder. R
 The panel (Workspace band, row of a repo whose worktree is `not_created` and whose folder is dirty) shows this as **Commit and push**
 (`push: true`) and **Commit only** (`push: false`), each behind a confirmation with an optional message.
 
+### Scope of the repositories: defined BEFORE the loop (hub routes, keyed by project id)
+The repositories a loop will touch are defined outside the loop/roadmap screen, in the repository manager (a dialog; also the planning
+Repositories tab and the hub), either by hand (tick catalog repos, "Add folder") or with the AI. Once defined, the loop screen only shows
+one line ("N repositories · edit"). `GET /api/app/projects/<id>/repos` carries `defined` (true once the user confirmed the scope or listed
+more than the primary; stored as `scope_defined` in `.specs/project/REPOS.json`).
+- `POST /api/app/projects/<id>/repos/scope/propose` `{"description": "what will be built"}` -> `{ok, proposed: [{name, path, reason}], message, cost_usd}`.
+  A confined `claude -p` (read-only tools, file guard) picks from the repo catalog the OTHER repos the work would change; names not in the
+  catalog, already listed or the primary are dropped. Writes nothing: the user ticks the proposal and adds it with `POST .../repos`.
+  `ok: false` + `message` when the AI fails; 400 for an empty or too long description; 409 `loop_running`.
+- `POST /api/app/projects/<id>/repos/scope/confirm` `{}` -> the `GET repos` body with `defined: true`. Confirms the listed repos (even only the
+  primary) as the scope. Adding or removing a repo also marks the scope as defined. 409 `loop_running`.
+- `POST loop/start` answers 409 `{"ok": false, "code": "repos_not_defined", "error"}` while the scope is not defined and no loop worktree exists
+  yet (a loop that already exists keeps its scope).
+- Start creates the worktrees that are missing (one per defined repo, `ensure_worktrees`) before the first turn, idempotently (an existing
+  one is `reuse`d). A failure prints `[check] PROBLEM: worktree not created: <reason>` and stops the start. A folder with uncommitted changes
+  is only a warning: the worktree is born from the last commit (`GET workspace` `repos[].notes`, `uncommitted` count in the one-line summary).
+
 ### Per-repo readiness (hub route, keyed by project id)
 Extra repos of a multi-repo project need a `Conformance:` line and, when they have code, a codebase map (`services/repo_readiness_service.py`).
 In the panel these are the **Set conformance** and **Map codebase** buttons under each extra repo (trail step **Set up repositories**, the

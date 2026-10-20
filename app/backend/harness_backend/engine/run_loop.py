@@ -61,6 +61,7 @@ import audit_deps  # noqa: E402  (forgotten dependency between features)
 import monitor_proc  # noqa: E402  (loop web panel: starts detached, independent of this process)
 import access_settings  # noqa: E402  (ACCESS.json: grafana_read / shared_fallback of the Test environment tab)
 import grafana_access  # noqa: E402  (read-only Grafana/Loki MCP for the turn, only when the project opted in)
+import test_env_fallback  # noqa: E402  (default .env.test from the machine-level TEST values)
 import credential_check  # noqa: E402  (TEST-ENVIRONMENT.md names only: no plaintext secret, every $NAME defined in an .env)
 import cli_output  # noqa: E402  (one tolerant parser of the `claude -p` JSON output, shared with the app)
 import project_repos  # noqa: E402  (REPOS.json: the project's repos; one primary repo when the file is absent)
@@ -376,7 +377,26 @@ def test_environment_problems(root, opts):
     pending = len(re.findall(r"FILL_IN", text))
     if pending:
         return [".specs/project/TEST-ENVIRONMENT.md still has %d FILL_IN field(s): complete it before running" % pending]
+    fill_env_test_from_fallback(root)
     return credential_check.credential_problems(root, text)
+
+
+def fill_env_test_from_fallback(root):
+    """A project with TEST-ENVIRONMENT.md always gets `.specs/project/.env.test` (missing names only, from the machine-level
+    TEST values). Never takes the preflight down; returns the names added."""
+    try:
+        return test_env_fallback.ensure_env_test(root)["added"]
+    except Exception as error:  # a read-only folder or an odd .env must not turn the check into a crash
+        print("[check] WARNING: could not prepare .specs/project/.env.test: %s" % error)
+        return []
+
+
+def test_environment_warnings(root, opts):
+    """Test environment findings that do not stop the loop (sample data with no value)."""
+    path = os.path.join(root, ".specs", "project", "TEST-ENVIRONMENT.md")
+    if not os.path.exists(path):
+        return []
+    return credential_check.credential_warnings(root, read(path))
 
 
 def test_environment_stop_reason(root, opts, problems):
@@ -489,6 +509,7 @@ def preflight(repo, opts):
     if not re.search(r"^Conformance:\s*(STANDARD|LEGACY)", read(os.path.join(root, "CLAUDE.md")), re.M):
         problems.append("CLAUDE.md has no `Conformance: STANDARD|LEGACY` line (harness.py classify <repo> --write STANDARD|LEGACY, or the Conformance button in the panel)")
     problems += test_environment_problems(root, opts)
+    warns += test_environment_warnings(root, opts)
     problems += hook_path_problems()
     rules = subprocess.run([sys.executable, os.path.join(HERE, "rules.py"), "test", root, "--quiet"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if rules.returncode != 0:
@@ -864,6 +885,18 @@ def ensure_worktrees(repo, opts):
     return work, meta
 
 
+def ensure_worktrees_or_stop(repo, opts):
+    """Start creates the worktrees that are missing (one per repo defined for the project), before the first turn. Idempotent: the ones
+    that exist are reused (`reuse` step). A failure is reported as a clear PROBLEM line and stops the start with it."""
+    try:
+        return ensure_worktrees(repo, opts)
+    except SystemExit as stop:
+        if not isinstance(stop.code, str):
+            raise
+        print("[check] PROBLEM: worktree not created: %s" % stop.code, flush=True)
+        sys.exit("the loop did not start: its worktrees could not be created. Problem: %s" % stop.code)
+
+
 def loop_worktrees(work, meta):
     """[(repo name, worktree path)] the loop works in, primary first. A single-repo project (no meta.repos) = [("", work)]."""
     entries = meta.get("repos") or {}
@@ -1047,17 +1080,12 @@ def pause_on_quarantine(specs, prev, state, opts):
     Only acts on a turn the orchestrator left as `continue`: `done`/`awaiting_user`/`error` already notify on their own."""
     if opts.continue_on_blocked or not prev or state.get("status") != "continue":
         return ""
-    # Default (user decision): quarantine only PAUSES when it blocks the operation (some feature depends on the blocked one).
-    # A loose blocked feature does not stop the loop: it carries on with the others and goes in the final report. --pause-on-blocked always pauses.
+    # Default (user decision): a feature that gets stuck ALWAYS pauses the loop and notifies the user. --continue-on-blocked opts out.
     old = loop_state.parse_roadmap(read(os.path.join(prev["dir"], "ROADMAP.md")))[0]
     new = loop_state.parse_roadmap(read(os.path.join(specs, "ROADMAP.md")))[0]
     fresh = [slug for slug, f in new.items() if f["status"] == "blocked" and old.get(slug, {}).get("status") != "blocked"]
     if not fresh:
         return ""
-    if not getattr(opts, "pause_on_blocked", False):
-        plan = loop_state.next_work(new, getattr(opts, "wave", 1), headless=True, primary_name=getattr(opts, "primary_name", ""))
-        if not plan.get("stuck_by_blocked"):
-            return ""
     why = str(state.get("reason") or "").strip()
     reason = ("Quarantine after 2 failures: %s. The loop paused for you to decide (try again with guidance from you, "
               "or skip and carry on with the others)." % ", ".join(fresh)) + ((" Orchestrator detail: " + why[:600]) if why else "")
@@ -1210,6 +1238,15 @@ def claude_command(opts, prompt):
     ] + allowed + [
         "--disallowedTools", ",".join(LOOP_DISALLOWED_TOOLS + denied_tools),  # last and as ONE argument: the option is variadic
     ]
+
+
+def loop_json_correction_prompt(turn, branch):
+    """Prompt of the single correction turn (same session, --resume): only write LOOP.json, never redo or start work."""
+    return ("/orchestrator continue --headless --turn %d --branch %s --finish-only. Your previous reply ended turn %d WITHOUT writing LOOP.json "
+            "(e.g. you stopped to wait for background subagents). Do not start new work and do not wait for background tasks: if a subagent is "
+            "still unfinished, record that in the reason and use status continue. Write STATE.md if needed and, as the last action, run: "
+            "python \"<app>/harness.py\" state loop <root> --status <continue|awaiting_user|done|error> --turn %d --reason \"...\" --next \"...\"."
+            % (turn, branch, turn, turn))
 
 
 def push_lock_env(cwd):
@@ -1417,7 +1454,7 @@ def main():
     parser.add_argument("--ensure-worktrees", action="store_true", help="only creates (or re-attaches) the worktrees as the loop start does, prints the `[loop] [<repo>] <kind>: <text>` lines and exits; no preflight, no turn")
     parser.add_argument("--repos", default="", help="with --ensure-worktrees: comma-separated repo names to create (the primary is always ensured)")
     parser.add_argument("--continue-on-blocked", action="store_true", help="a quarantined feature NEVER pauses the loop, not even when another depends on it")
-    parser.add_argument("--pause-on-blocked", action="store_true", help="a quarantined feature ALWAYS pauses and notifies (default: only pauses when another feature depends on the blocked one)")
+    parser.add_argument("--pause-on-blocked", action="store_true", help="a quarantined feature ALWAYS pauses and notifies (this is now the default; kept for compatibility; formerly: only pauses when another feature depends on the blocked one)")
     parser.add_argument("--allow-silent", action="store_true", help="testing only: waives the mandatory notice channels (LOOP_NOTIFY_REQUIRED)")
     parser.add_argument("--no-auto-answer", dest="auto_answer", action="store_false", default=True,
                         help="turns the automatic answer off: every orchestrator question stops the loop and waits for you (default: the script answers on its own the ones that do not need you)")
@@ -1465,7 +1502,7 @@ def main():
                  + ("Problems: " + "; ".join(others) if others else ("Problems: " + "; ".join(problems) if not env_reason else "")))
     repos = project_repos.load_repos(repo)
     opts.repo_names, opts.primary_name = repo_names_of(repos), (project_repos.primary_of(repos).name if len(repos) > 1 else "")
-    work, meta = ensure_worktrees(repo, opts)
+    work, meta = ensure_worktrees_or_stop(repo, opts)
     opts.access_root = work  # ACCESS.json of the project, read at every turn (the user may toggle it between turns)
     opts.extra_worktrees = [item["worktree"] for item in (meta.get("repos") or {}).values()
                             if isinstance(item, dict) and not item.get("primary") and item.get("worktree")]
@@ -1555,6 +1592,17 @@ def main():
                               % (turn, "; ".join(denial_text(d) for d in risky)[:400]), opts)
 
             state = load_json(loop_state.state_file(work, "LOOP.json"))
+            if (state.get("turn") != turn or state.get("status") not in STATUS_OK) and data.get("session_id"):
+                # the model finished the turn (e.g. while waiting on background subagents) without writing LOOP.json: ONE correction turn in the
+                # same session, only asking for the file (no new work), before failing the loop
+                print("[loop] LOOP.json not written on turn %d; one correction turn in the same session" % turn)
+                fix_code, fix_out, fix_err, fix_timeout = run_turn(
+                    claude_command(opts, loop_json_correction_prompt(turn, meta["branch"])) + ["--resume", data["session_id"]], work, opts.timeout)
+                fix_data = parse_result(fix_out)
+                cost += float(fix_data.get("total_cost_usd") or 0)
+                meta.update({"cost_usd": round(cost, 4), "loop_json_corrections": int(meta.get("loop_json_corrections", 0)) + 1})
+                save_json(loop_state.loop_path(work, "meta.json"), meta)
+                state = load_json(loop_state.state_file(work, "LOOP.json"))
             if state.get("turn") != turn or state.get("status") not in STATUS_OK:
                 loop_state.snapshot(work, turn, git(work, "rev-parse", "HEAD")[1], heads_of(work, meta))  # the turn ran: the return point exists even with a bad LOOP.json
                 return finish(work, meta, "error", "LOOP.json missing, stale or invalid after turn %d (got status=%r turn=%r; expected turn=%d and status in %s). "

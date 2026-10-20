@@ -3,6 +3,9 @@
 Built AFTER the loop read and loop commands modules because it consumes their services (`loop_status_service`,
 `loop_worktree_service`). It exposes `controllers` and `busy_providers` like every module.
 """
+import os
+import sys
+
 from ..api.controllers.planning_reopen_controller import PlanningReopenController
 from ..api.controllers.repo_catalog_controller import RepoCatalogController
 from ..api.controllers.repo_controller import RepoController
@@ -17,7 +20,13 @@ from .planning_reopen_service import PlanningReopenService
 from .repo_catalog_service import RepoCatalogService
 from .repo_readiness_service import RepoReadinessService
 from .repo_registry_service import RepoRegistryService
+from .repo_scope_proposal_service import RepoScopeProposalService
 from .workspace_service import EngineWorktreeAdapter, WorkspaceService
+
+ENGINE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "engine"))
+if ENGINE_DIR not in sys.path:
+    sys.path.insert(0, ENGINE_DIR)
+import project_repos  # noqa: E402
 
 
 class MultiRepoModule:
@@ -55,7 +64,10 @@ def build_multi_repo_module(config, log, project_service, loop_status_service, l
 
     claude_client = ClaudeClient(process_runner, claude_binary=config.claude_binary, guard_path=config.guard_path)
     repo_catalog_service = RepoCatalogService(claude_client, WorkspaceFileGuard(), log, known_paths_provider=list_known_repo_paths)
-    controllers = [RepoController(project_service, repo_registry_service),
+    repo_scope_proposal_service = RepoScopeProposalService(repo_registry_service, repo_catalog_service, claude_client, WorkspaceFileGuard(), log)
+    if loop_control_service is not None:  # Start asks for the repository definition before it creates anything
+        loop_control_service.scope_defined_provider = lambda context: project_repos.is_scope_defined(context.repo_path)
+    controllers = [RepoController(project_service, repo_registry_service, repo_scope_proposal_service),
                    WorkspaceController(project_service, workspace_service, loop_worktree_service, loop_status_service),
                    RepoCatalogController(repo_catalog_service)]
     if planning_requirement_service is not None:  # Reopen planning: back to planning after the approval (removes the loop worktrees)

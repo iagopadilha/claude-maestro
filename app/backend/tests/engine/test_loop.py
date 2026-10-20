@@ -342,6 +342,18 @@ class TestScriptGuards(LoopCase):
         self.assertIn("loop_state.py loop", reason)  # and how to write it right
         self.assertTrue(os.path.isfile(loop_file(project.work, "internal", "snapshots", "001", "snapshot.json")))
 
+    def test_forgotten_loop_json_gets_one_correction_turn_in_the_same_session(self):
+        project = self.make("## Stage 1\n- [a] status=pending\n", {"features": {"a": {"paths": "apps/a"}}, "forget_loop_json": True})
+        project.run()
+        self.assertGreaterEqual(project.meta().get("loop_json_corrections", 0), 1)
+        self.assertNotIn("missing, stale", project.meta().get("reason", ""))
+
+    def test_loop_json_still_missing_after_the_correction_turn_stops_with_error(self):
+        project = self.make("## Stage 1\n- [a] status=pending\n", {"features": {"a": {"paths": "apps/a"}}, "forget_loop_json_always": True})
+        self.done(project.run(), 20)
+        self.assertIn("missing, stale", project.meta()["reason"])
+        self.assertEqual(project.meta().get("loop_json_corrections"), 1)
+
     def test_loop_command_writes_valid_json_and_refuses_wrong_enum(self):
         tmp = tempfile.mkdtemp(prefix="loopjson-")
         self.addCleanup(shutil.rmtree, tmp, True)

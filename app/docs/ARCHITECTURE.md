@@ -338,9 +338,22 @@ app maintains (`ENV_IGNORE_LINES`) and Reset specs keeps it.
   other byte (comments, blank lines, other keys, CRLF/LF, BOM) stays; the write is atomic. A value is never echoed, logged or put in an error.
 - `PUT .../test-environment/access` `{"grafana_read"?: bool, "shared_fallback"?: bool}` -> `{ok, access}`.
 
-**Preflight.** `run_loop.test_environment_problems` (runs when the roadmap has `regression=yes` or `--e2e`) uses the same resolution: a
-missing name asks to "define it in .specs/project/.env.test", a `shared-blocked` one to "accept the shared fallback in the Test environment
-tab". It stops the loop before the first turn and names every name.
+**Default `.env.test`** (`engine/test_env_fallback.py`, `ensure_env_test(root)`). A project that has a test environment always gets
+`.specs/project/.env.test`, already filled from the machine-level layers (3, 4 and 5 above, highest first). Only TEST keys are copied
+(`TEST_*`, `LOCAL_URL`, `ROUTE_PREFIX`, `ADMIN_TOKEN`, and `NOTIFY_EMAIL_TO` taken from the owner's `LOOP_NOTIFY_TO` / `IDATA_NOTIFY_TO`
+destination); SMTP, notification channels and any other key never are. `LOCAL_URL` missing everywhere defaults to the local panel
+(`url` of the live `app.json`, else `http://localhost:<first port of the default range>`). Idempotent: it appends only names the file
+does not define (a commented line does not count), never edits an existing line, writes `# NAME: from <label>` comments (origin, never
+the value) and adds `.specs/project/.env.test` to `.gitignore`. Called when the test environment is created
+(`SpecsStructureService.create_env_test_template`, only when the file is born there: structure/initialize and the first planning message) and at the start of
+`run_loop.test_environment_problems` (Check/Start with a `TEST-ENVIRONMENT.md`). Because layer 2 wins, the loop can work with that file
+alone. Note: copying a layer-4/5 value into the project file is explicit and bypasses the `shared_fallback` acceptance for those names.
+
+**Preflight.** `run_loop.test_environment_problems` (runs when the roadmap has `regression=yes` or `--e2e`) first fills the default
+`.env.test`, then uses the same resolution: only a name that is STILL undefined is a PROBLEM, with an action ("add NAME=value to
+.specs/project/.env.test or ~/.loop-harness/.env"); a `shared-blocked` one asks to "accept the shared fallback in the Test environment
+tab". It stops the loop before the first turn and names every name. Undefined `$SAMPLE_*` names (test data of one feature) and forgotten
+dependencies are WARNINGS (`test_environment_warnings`, `credential_check.credential_warnings`): the loop runs.
 
 **What the AI can and cannot see.** Before each planning message the app writes `.specs/project/loop/internal/credential-names.json`
 (`[{name, source, set}]`, no values) and tells the planning prompt it exists and that it must never ask for or write a value. The file is

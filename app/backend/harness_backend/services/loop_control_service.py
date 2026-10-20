@@ -27,6 +27,9 @@ MIN_WAVE, MAX_WAVE = 1, 8
 MIN_TURN_TIMEOUT_MINUTES, MAX_TURN_TIMEOUT_MINUTES = 1, 600
 BRANCH_PATTERN = re.compile(r"[A-Za-z0-9._/-]{1,80}")
 SETUP_LIMIT = 200
+REPOS_NOT_DEFINED_CODE = "repos_not_defined"
+REPOS_NOT_DEFINED_MESSAGE = ("Define the repositories first: describe the work and let the AI propose which repositories will be changed, or tick "
+                             "them by hand (Repositories, \"edit\"), then confirm. The loop creates their worktrees by itself when it starts.")
 CHECK_TIMEOUT_SECONDS = 60
 CHECK_MESSAGE_LIMIT = 500
 INSTRUCTION_ATTACHMENT_LIMIT = 2000
@@ -149,6 +152,7 @@ class LoopControlService:
         self.loop_command_file_repository = loop_command_file_repository
         self.answers_repository = answers_repository
         self.get_app_url = get_app_url
+        self.scope_defined_provider = None  # (context) -> bool, set by the multi-repo module; None = no gate (tests, bare module)
         self.registry_lock = threading.Lock()
         self.relaunch_locks_by_project = {}
         self.relaunched_pid_by_project = {}
@@ -274,6 +278,9 @@ class LoopControlService:
         with self.get_relaunch_lock(context.project.id):
             if self.is_loop_alive(context):
                 return 409, {"ok": False, "error": "a loop is already running (or being started) in this worktree"}
+            if (self.scope_defined_provider and not os.path.isdir(context.project.loop_worktree_path())
+                    and not self.scope_defined_provider(context)):  # a loop that already exists keeps the scope it has
+                return 409, {"ok": False, "code": REPOS_NOT_DEFINED_CODE, "error": REPOS_NOT_DEFINED_MESSAGE}
             status, checked = self.run_loop_check(context, flags)
             if status != 200:
                 return status, checked

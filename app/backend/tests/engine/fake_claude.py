@@ -161,6 +161,13 @@ def main():
     write(state_path, json.dumps(memory))
     if not scenario.get("idle"):
         write(os.path.join(SPECS, "STATE.md"), "turn %d phase %s done %s\n" % (turn, phase, ",".join(done_slugs)))
+    if scenario.get("forget_loop_json") and "--resume" not in argv:
+        print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "waiting for the verifier", "session_id": "sess-1",
+                          "total_cost_usd": 0.1, "permission_denials": []}))
+        return 0
+    if scenario.get("forget_loop_json_always"):
+        print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "waiting", "session_id": "sess-1", "total_cost_usd": 0.1}))
+        return 0
     write(os.path.join(SPECS, "loop", "json", "LOOP.json"), json.dumps({
         "status": "in_progress" if scenario.get("bad_status") else status, "turn": turn, "feature": ",".join(ready), "reason": reason, "next": "phase " + phase,
         "at": datetime.datetime.now().isoformat(timespec="seconds"), **({"options": options} if options else {}),

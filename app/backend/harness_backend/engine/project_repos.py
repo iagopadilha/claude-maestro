@@ -40,15 +40,23 @@ def single_repo(primary_repo):
 
 
 def read_repos_file(primary_repo):
-    """The raw file as {"multi": bool, "repos": [dict]}; absent or broken = {"multi": False, "repos": []}."""
+    """The raw file as {"multi": bool, "repos": [dict], "scope_defined": bool}; absent or broken = nothing defined."""
     try:
         with open(repos_file_path(primary_repo), encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, ValueError):
-        return {"multi": False, "repos": []}
+        return {"multi": False, "repos": [], "scope_defined": False}
     if not isinstance(data, dict) or not isinstance(data.get("repos"), list):
-        return {"multi": False, "repos": []}
-    return {"multi": bool(data.get("multi")), "repos": [item for item in data["repos"] if isinstance(item, dict) and item.get("path")]}
+        return {"multi": False, "repos": [], "scope_defined": False}
+    return {"multi": bool(data.get("multi")), "repos": [item for item in data["repos"] if isinstance(item, dict) and item.get("path")],
+            "scope_defined": bool(data.get("scope_defined"))}
+
+
+def is_scope_defined(primary_repo):
+    """True once the user defined WHICH repositories the loop touches (before any loop): by choosing/confirming them in the repository
+    manager (REPOS.json `scope_defined`), or by listing more than the primary. No file = not defined yet."""
+    data = read_repos_file(primary_repo)
+    return data["scope_defined"] or (data["multi"] and len(data["repos"]) > 1)
 
 
 def load_repos(primary_repo):
@@ -80,8 +88,10 @@ def find_repo(repos, name):
     return next((repo for repo in repos if repo.name == name), None)
 
 
-def save_repos(primary_repo, multi, repos):
-    """Writes REPOS.json (the registry service and the engine share this one writer)."""
+def save_repos(primary_repo, multi, repos, scope_defined=None):
+    """Writes REPOS.json (the registry service and the engine share this one writer). `scope_defined=None` keeps what the file says."""
+    if scope_defined is None:
+        scope_defined = read_repos_file(primary_repo)["scope_defined"]
     items = []
     for repo in repos:
         item = {"name": repo.name, "path": repo.path, "primary": repo.primary}
@@ -95,5 +105,5 @@ def save_repos(primary_repo, multi, repos):
     target = repos_file_path(primary_repo)
     os.makedirs(os.path.dirname(target), exist_ok=True)
     with open(target, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump({"multi": bool(multi), "repos": items}, handle, ensure_ascii=False, indent=2)
+        json.dump({"multi": bool(multi), "scope_defined": bool(scope_defined), "repos": items}, handle, ensure_ascii=False, indent=2)
         handle.write("\n")

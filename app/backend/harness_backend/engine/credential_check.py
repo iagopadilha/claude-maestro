@@ -34,6 +34,7 @@ PLAINTEXT_SECRET = re.compile(
 HARMLESS_VALUE = re.compile(r"^(\$|\*{3}|FILL_IN|<|\(|none$|name$|value$)", re.I)
 MAX_REPORTED_NAMES = 8
 PLACEHOLDER_WORDS = frozenset({"NAME", "NAMES"})  # literal words of the template prose (case-sensitive), never credential names
+OPTIONAL_NAME_PREFIX = "SAMPLE_"  # test DATA of one feature: a missing one only affects that feature's checks, so it is a warning
 SECRET_NAME = re.compile(r"(?i)(token|secret|passw|credential|private_key|api_?key|auth|pwd)")  # same rule as testenv.py: shown as ***
 
 
@@ -215,11 +216,22 @@ def credential_problems(root, document_text):
         problems.append(".specs/project/TEST-ENVIRONMENT.md has a plaintext secret on line(s) %s: write only the $NAME and put the "
                         "value in .specs/project/.env.test (or ~/.loop-harness/.env), which git ignores" % ", ".join(map(str, lines[:MAX_REPORTED_NAMES])))
     stopped = names_by_source(root, document_text)
-    if stopped["missing"]:
-        problems.append("TEST-ENVIRONMENT.md mentions names no .env defines: %s (define it in .specs/project/.env.test or ~/.loop-harness/.env)"
-                        % ", ".join("$" + name for name in stopped["missing"][:MAX_REPORTED_NAMES]))
+    required_missing = [name for name in stopped["missing"] if not name.startswith(OPTIONAL_NAME_PREFIX)]
+    if required_missing:
+        problems.append("TEST-ENVIRONMENT.md mentions names no .env defines: %s. Action: add NAME=value for each one to "
+                        ".specs/project/.env.test (this project) or ~/.loop-harness/.env (this machine), then run the check again"
+                        % ", ".join("$" + name for name in required_missing[:MAX_REPORTED_NAMES]))
     if stopped["shared-blocked"]:
         problems.append("TEST-ENVIRONMENT.md uses names only the shared fallback account defines: %s (accept the shared fallback in the Test "
                         "environment tab, or define it in .specs/project/.env.test)"
                         % ", ".join("$" + name for name in stopped["shared-blocked"][:MAX_REPORTED_NAMES]))
     return problems
+
+
+def credential_warnings(root, document_text):
+    """Warnings for the preflight: sample-data names (`$SAMPLE_*`) with no value. The loop runs; the checks that need them are skipped."""
+    optional = [name for name in undefined_names(root, document_text) if name.startswith(OPTIONAL_NAME_PREFIX)]
+    if not optional:
+        return []
+    return ["TEST-ENVIRONMENT.md mentions sample data no .env defines: %s (the checks that use them cannot run; add them to .specs/project/.env.test)"
+            % ", ".join("$" + name for name in optional[:MAX_REPORTED_NAMES])]

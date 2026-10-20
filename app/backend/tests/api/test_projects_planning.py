@@ -125,7 +125,11 @@ class TestPlanningRead(PlanningTestCase):
         status, body = self.request("POST", "/p/%s/api/structure/initialize" % project_id, {})
         self.assertEqual(status, 200, body)
         for name in ("TEST-ENVIRONMENT.md", ".env.test", "PROJECT.md"):
-            self.assertEqual(read_file(os.path.join(project_dir, name)), "mine: " + name, name)
+            content = read_file(os.path.join(project_dir, name))
+            if name == ".env.test":  # the Check may APPEND missing default names below the user's text, never change it
+                self.assertTrue(content.startswith("mine: " + name), name)
+            else:
+                self.assertEqual(content, "mine: " + name, name)
 
     def test_repo_with_code_requires_the_map(self):
         _, project_id = self.create_planning_project(files={"src/app.py": "print(1)\n"})

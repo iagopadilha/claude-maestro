@@ -164,7 +164,8 @@ class WorkspaceService:
         repos = [self.describe_repo(context, repo, meta, loop_running, stored_setup.get(repo.name) or (cli_setup if repo.primary else None))
                  for repo in project_repos.load_repos(context.repo_path)]
         job = self.find_running_create_job(context) or self.read_loop_start_job(context)
-        return {"ok": True, "multi": multi, "explanation": EXPLANATION, "repos": repos, "job": job}
+        return {"ok": True, "multi": multi, "explanation": EXPLANATION, "repos": repos, "job": job,
+                "defined": project_repos.is_scope_defined(context.repo_path)}
 
     def describe_repo(self, context, repo, meta, loop_running, setup):
         folder, worktree = repo.path, repo.loop_worktree_path()

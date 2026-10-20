@@ -20,6 +20,7 @@ if ENGINE_DIR not in sys.path:
 import loop_state  # noqa: E402  (loop folder layout, parse_roadmap, roadmap approval)
 import classify_structure  # noqa: E402  (Conformance section of CLAUDE.md)
 import run_hints  # noqa: E402  (How to run section of CLAUDE.md)
+import test_env_fallback  # noqa: E402  (default .env.test from the machine-level TEST values)
 
 TEXT_ENCODING = "utf-8"
 

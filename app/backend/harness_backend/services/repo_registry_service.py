@@ -44,6 +44,7 @@ class IRepoRegistryService(Protocol):
     def set_setup(self, context, name, setup) -> dict: ...
     def read_suggested_repos(self, context) -> list: ...
     def set_multi(self, context, multi) -> dict: ...
+    def confirm_scope(self, context) -> dict: ...
     def remove_repo(self, context, name) -> dict: ...
     def set_copy_list(self, context, name, copy) -> dict: ...
     def list_copy_suggestions(self, context, name) -> dict: ...
@@ -61,7 +62,7 @@ class RepoRegistryService:
         multi, stored = self.read_stored(context)
         effective = stored if multi else stored[:1]
         return {"ok": True, "multi": multi, "repos": [self.describe_repo(repo) for repo in effective],
-                "suggested": self.read_suggested_repos(context)}
+                "suggested": self.read_suggested_repos(context), "defined": project_repos.is_scope_defined(context.repo_path)}
 
     def resolve(self, context, name):
         """The listed repo called `name` (the stored list, so a repo of an unchecked project can still be reached by name)."""
@@ -84,7 +85,7 @@ class RepoRegistryService:
         copy_list = self.validate_copy_list(copy or [])
         name = project_repos.unique_name(project_repos.short_name_of(folder), {repo.name for repo in stored})
         added = RepoRef(name=name, path=folder, primary=False, copy=copy_list, setup=self.validate_setup(setup), copy_configured=copy is not None)
-        project_repos.save_repos(context.repo_path, True, stored + [added])
+        project_repos.save_repos(context.repo_path, True, stored + [added], scope_defined=True)
         self.log.info("repo_added", project=context.project.id, repo=name)
         return {"ok": True, "repo": self.describe_repo(added), "multi": True}
 
@@ -105,9 +106,17 @@ class RepoRegistryService:
         if target.primary:
             raise RepoConflictError("the primary repo of the project cannot be removed", code=PRIMARY_CODE)
         self.ensure_loop_not_running(context)
-        project_repos.save_repos(context.repo_path, multi, [repo for repo in stored if repo.name != name])
+        project_repos.save_repos(context.repo_path, multi, [repo for repo in stored if repo.name != name], scope_defined=True)
         self.log.info("repo_removed", project=context.project.id, repo=name)
         return {"ok": True, "removed": name, "note": "no folder or worktree was deleted"}
+
+    def confirm_scope(self, context):
+        """The user confirms the repositories listed now (even only the primary) as the scope of the loop. Done BEFORE the loop exists."""
+        self.ensure_loop_not_running(context)
+        multi, stored = self.read_stored(context)
+        project_repos.save_repos(context.repo_path, multi, stored, scope_defined=True)
+        self.log.info("repo_scope_confirmed", project=context.project.id, repos=len(stored if multi else stored[:1]))
+        return self.list_repos(context)
 
     def set_copy_list(self, context, name, copy):
         multi, stored = self.read_stored(context)

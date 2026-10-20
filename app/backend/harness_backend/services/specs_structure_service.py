@@ -9,7 +9,7 @@ import re
 from typing import Protocol
 
 from ..domain.project_errors import InvalidPathError, LoopRunningError
-from ..repositories.specs_file_repository import classify_structure, list_test_environment_problems, loop_state, run_hints
+from ..repositories.specs_file_repository import classify_structure, list_test_environment_problems, loop_state, run_hints, test_env_fallback
 
 CONFORMANCE_VALUES = ("STANDARD", "LEGACY")
 CONFORMANCE_LINE_PATTERN = re.compile(r"^Conformance:\s*(STANDARD|LEGACY)", re.M)  # the same check as run_loop --check
@@ -157,10 +157,15 @@ class SpecsStructureService:
             os.path.join(project_dir, ".specs", "project", TEST_ENVIRONMENT_FILE_NAME), content)
 
     def create_env_test_template(self, project_dir):
-        """Creates `.specs/project/.env.test` (the project's test VALUES, commented out) and makes sure git ignores it."""
+        """Creates `.specs/project/.env.test` (the project's test VALUES, commented template) and makes sure git ignores it, and,
+        when it was just created, fills it from the machine-level TEST values (default fallback; never overwrites a line)."""
         self.ensure_env_files_in_gitignore(project_dir)
-        return self.specs_file_repository.create_file_if_missing(
+        created = self.specs_file_repository.create_file_if_missing(
             os.path.join(project_dir, ".specs", "project", ENV_TEST_FILE_NAME), self.read_template(ENV_TEST_TEMPLATE_NAME))
+        if created:  # an existing file is left untouched here; the Check completes it later (only names it does not define)
+            added = test_env_fallback.ensure_env_test(project_dir)["added"]
+            self.log.info("env_test_fallback_applied", folder=project_dir, added=len(added))
+        return created
 
     def ensure_env_files_in_gitignore(self, project_dir):
         """Appends the missing secret-file lines (`.env`, `.env.*`, `!.env.example`, `.specs/project/.env.test`, `.specs/project/ACCESS.json`) to .gitignore."""
