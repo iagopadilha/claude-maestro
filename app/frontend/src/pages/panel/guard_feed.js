@@ -1,42 +1,29 @@
-/* Guard feed (right column, under the inspector): the latest tool calls the PreToolUse guard blocked (state.guard_events,
-   newest first) and the per-rule counts (state.guard_counts), plus the header badge. Data only from /state. */
-import { $ } from '../../util/dom.js';
-import { html } from '../../util/preact.js';
+/* Guard feed: the tool calls the PreToolUse guard blocked (state.guard_events, newest first) and the per-rule counts
+   (state.guard_counts). The header badge is the only entry point; clicking it opens the feed in a dialog.
+   Data only from /state. */
+import { html, useState } from '../../util/preact.js';
 import { DASH, list } from '../../util/format.js';
-import { readStored, writeStored } from '../../util/storage.js';
+import { openDialog } from '../../components/dialog.js';
 import { ctx } from './context.js';
-import { renderAll } from '../project_panel.js';
 
-const OPEN_KEY = 'harness.guardFeed.open';
 const TIME_PATTERN = /T?(\d{2}:\d{2}:\d{2})/;
+const ALL_PROFILES = 'all';
+const GROUP_BY_TIME = 'time';
+const GROUP_BY_RULE = 'rule';
+const UNKNOWN_RULE = 'unknown';
+const UNKNOWN_PROFILE = 'unknown';
 
 const events = () => list(ctx.state && ctx.state.guard_events);
 const counts = () => (ctx.state && ctx.state.guard_counts && typeof ctx.state.guard_counts === 'object' ? ctx.state.guard_counts : {});
-/** Total blocks: drives the header badge (hidden without blocks) and the has-blocks flag of #guard-feed. */
+/** Total blocks: drives the header badge (hidden without blocks). */
 export const totalBlocks = () => Object.values(counts()).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0);
-
-function isOpen() {
-  const stored = readStored(OPEN_KEY, null);
-  return typeof stored === 'boolean' ? stored : events().length > 0;
-}
-function setOpen(open) { writeStored(OPEN_KEY, open); renderAll(); }
 
 function clockOf(t) {
   const found = TIME_PATTERN.exec(String(t || ''));
   return found ? found[1] : DASH;
 }
-
-function EventRow({ e }) {
-  return html`<li class="gf-item">
-    <div class="gf-top">
-      <span class="gf-time mono">${clockOf(e.t)}</span>
-      ${e.profile ? html`<span class="gf-profile mono">${String(e.profile)}</span>` : null}
-      <span class="gf-rule mono">${String(e.rule || 'unknown')}</span>
-      <span class="gf-exit mono">exit 2</span>
-    </div>
-    ${e.detail ? html`<div class="gf-detail" title=${String(e.detail)}>${String(e.detail)}</div>` : null}
-  </li>`;
-}
+const ruleOf = (e) => String(e.rule || UNKNOWN_RULE);
+const profileOf = (e) => (e.profile ? String(e.profile) : UNKNOWN_PROFILE);
 
 // what each guard rule protects, in plain words (shown in the badge tooltip; an unknown rule shows only its name)
 const RULE_REASON = {
@@ -63,23 +50,73 @@ export function GuardBadge({ total }) {
       <span class="gb-tip-f">Click to open the feed</span>
     </span>`;
 }
-/** Click on the header badge: opens the feed and scrolls to it. */
-export function openGuardFeed() { setOpen(true); const feed = $('guard-feed'); if (feed) feed.scrollIntoView({ block: 'nearest' }); }
 
-/** Content of #guard-feed: collapsible head, per-rule chips and the latest blocks. */
-export function GuardFeed() {
-  const evs = events(), byRule = counts(), total = totalBlocks(), open = isOpen();
-  const rules = Object.entries(byRule).sort((a, b) => b[1] - a[1]);
-  return html`
-    <button type="button" class="gf-head" aria-expanded=${String(open)} aria-controls="guard-feed-body" onClick=${() => setOpen(!open)}>
-      <span class="gf-chev">${open ? '▾' : '▸'}</span>
-      <span class="gf-title">Guard · PreToolUse</span>
-      <span class=${'gf-count mono' + (total ? ' on' : '')}>${total ? `${total} blocked` : 'no blocks'}</span>
-    </button>
-    ${open ? html`<div class="gf-body" id="guard-feed-body">
-      ${rules.length ? html`<div class="gf-rules">${rules.map(([rule, n]) => html`<span key=${rule} class="gf-rule-chip mono">${`${rule} ${n}`}</span>`)}</div>` : null}
-      ${evs.length
-        ? html`<ul class="gf-list" aria-label="Latest blocks, newest first">${evs.map((e, i) => html`<${EventRow} key=${i} e=${e} />`)}</ul>`
-        : html`<div class="empty-note">The guard has not blocked any tool call in this project.</div>`}
-    </div>` : null}`;
+function EventRow({ e }) {
+  return html`<li class="gf-item">
+    <div class="gf-top">
+      <span class="gf-time mono">${clockOf(e.t)}</span>
+      <span class="gf-profile mono">${profileOf(e)}</span>
+      <span class="gf-rule mono">${ruleOf(e)}</span>
+      <span class="gf-exit mono">exit 2</span>
+    </div>
+    ${e.detail ? html`<div class="gf-detail">${String(e.detail)}</div>` : null}
+  </li>`;
+}
+
+/** Groups the events by rule (rules ordered by how many blocks, events keep their newest-first order). */
+function groupByRule(visible) {
+  const groups = new Map();
+  visible.forEach((e) => { const rule = ruleOf(e); if (!groups.has(rule)) groups.set(rule, []); groups.get(rule).push(e); });
+  return [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+}
+
+/** Dialog body: warning, per-rule chips, profile filter, grouping toggle and the list. */
+function GuardFeedBody() {
+  const [profile, setProfile] = useState(ALL_PROFILES);
+  const [groupBy, setGroupBy] = useState(GROUP_BY_TIME);
+  const all = events(), byRule = counts();
+  const profiles = [...new Set(all.map(profileOf))].sort();
+  const visible = profile === ALL_PROFILES ? all : all.filter((e) => profileOf(e) === profile);
+  const rules = Object.entries(byRule).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+  const shownRules = rules.filter(([rule]) => profile === ALL_PROFILES || visible.some((e) => ruleOf(e) === rule));
+  return html`<div class="gf-dialog">
+    <p class="gf-note">A block means the guard worked: the agent was told and tries another way. Nothing to do here unless the same block keeps repeating.</p>
+    ${shownRules.length ? html`<div class="gf-rules" aria-label="Blocks per rule">${shownRules.map(([rule, n]) => html`<span key=${rule} class="gf-rule-chip mono" title=${RULE_REASON[rule] || ''}>${`${rule} ${profile === ALL_PROFILES ? n : visible.filter((e) => ruleOf(e) === rule).length}`}</span>`)}</div>` : null}
+    ${all.length ? html`<div class="gf-controls">
+      <label class="gf-field"><span>agent profile</span>
+        <select value=${profile} onChange=${(ev) => setProfile(ev.target.value)}>
+          <option value=${ALL_PROFILES}>all profiles</option>
+          ${profiles.map((p) => html`<option key=${p} value=${p}>${p}</option>`)}
+        </select></label>
+      <div class="gf-seg" role="group" aria-label="Group the list">
+        <button type="button" class=${'btn btn-sm' + (groupBy === GROUP_BY_TIME ? ' btn-primary' : '')} aria-pressed=${String(groupBy === GROUP_BY_TIME)} onClick=${() => setGroupBy(GROUP_BY_TIME)}>by time</button>
+        <button type="button" class=${'btn btn-sm' + (groupBy === GROUP_BY_RULE ? ' btn-primary' : '')} aria-pressed=${String(groupBy === GROUP_BY_RULE)} onClick=${() => setGroupBy(GROUP_BY_RULE)}>by rule</button>
+      </div>
+    </div>` : null}
+    ${!all.length
+      ? html`<div class="empty-note">The guard has not blocked any tool call in this project.</div>`
+      : !visible.length
+        ? html`<div class="empty-note">No blocks for this profile.</div>`
+        : groupBy === GROUP_BY_RULE
+          ? groupByRule(visible).map(([rule, group]) => html`<section key=${rule} class="gf-group">
+              <h3 class="gf-group-title mono">${rule}<span class="gf-group-n">${group.length}</span></h3>
+              ${RULE_REASON[rule] ? html`<p class="gf-group-why">${RULE_REASON[rule]}</p>` : null}
+              <ul class="gf-list">${group.map((e, i) => html`<${EventRow} key=${i} e=${e} />`)}</ul>
+            </section>`)
+          : html`<ul class="gf-list" aria-label="Blocks, newest first">${visible.map((e, i) => html`<${EventRow} key=${i} e=${e} />`)}</ul>`}
+  </div>`;
+}
+
+let openFeed = null;
+/** Click on the header badge: opens the feed dialog (a second click while it is open does nothing). */
+export function openGuardFeed() {
+  if (openFeed) return;
+  openFeed = openDialog({
+    title: `Guard · PreToolUse · ${totalBlocks()} blocked`,
+    content: html`<${GuardFeedBody} />`,
+    width: 720,
+    cls: 'gf-dlg',
+    actions: [{ text: 'Close', onClick: (api) => api.close() }],
+    onClose: () => { openFeed = null; },
+  });
 }

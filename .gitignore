@@ -11,3 +11,4 @@ app/backend/tests/engine/test_local_*.py
 
 # Playwright CLI session artifacts (screenshots, snapshots)
 .playwright-cli/
+.specs/project/ACCESS.json

@@ -1,0 +1,17 @@
+/* roadmap */
+
+/* left column: readable stage header and feature rows */
+.rm-stage{align-items:flex-start;gap:6px;margin:0 0 6px;padding:4px 6px;text-transform:none;letter-spacing:0;font:500 12px var(--sans);color:var(--text2);}
+.rm-stage-t{display:flex;flex-direction:column;gap:2px;min-width:0;text-align:left;}
+.rm-stage-name{white-space:normal;overflow-wrap:anywhere;line-height:1.3;}
+.rm-stage-n{font:400 10px var(--mono);color:var(--dim);white-space:normal;}
+.frow .nm{white-space:normal;overflow-wrap:anywhere;line-height:1.3;}
+.frow .chip{align-self:start;}
+/* feature definition dialog */
+.fd-meta{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--line2);}
+.fd-row{display:grid;grid-template-columns:84px minmax(0,1fr);gap:8px;font-size:12px;}
+.fd-k{color:var(--dim);font:400 11px var(--mono);}
+.fd-v{overflow-wrap:anywhere;}
+.fd-src{margin-bottom:8px;}
+.fd-nospec{font-size:13px;}
+.fd-roadline{margin-top:8px;color:var(--text2);line-height:1.5;}

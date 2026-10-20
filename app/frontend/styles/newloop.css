@@ -1,6 +1,6 @@
 /* "Start a loop" card: one slim bar when collapsed, essentials when open. Loaded after panel.css, so the
    selectors below carry .nl-card to win over the older .newloop-zone compact rules. Tokens only. */
-.newloop-zone .nl-card{padding:0;gap:0;max-height:min(46vh,420px);overflow:auto;border:1px solid var(--amber-line);border-radius:8px;}
+.newloop-zone .nl-card{padding:0;gap:0;max-height:none;overflow:visible;border:1px solid var(--amber-line);border-radius:8px;}
 .nl-card .nl-bar{display:flex;align-items:center;gap:12px;padding:6px 12px;min-height:40px;flex-wrap:wrap;}
 .nl-card .nl-toggle{display:inline-flex;align-items:center;gap:8px;background:none;border:0;padding:4px 6px;margin-left:-6px;border-radius:6px;color:var(--text);font:600 14px var(--sans, inherit);cursor:pointer;}
 .nl-card .nl-toggle:hover{background:var(--shadow);}
@@ -45,7 +45,7 @@
 .tr-action .tr-ai-sep{margin-left:14px;padding-left:14px;border-left:1px solid var(--line3);border-radius:0 6px 6px 0;}
 .nl-card .nl-details{display:flex;flex-direction:column;gap:8px;}
 .nl-card .nl-details .nl-box{font-size:12px;}
-.nl-card .nl-result{max-height:30vh;overflow:auto;}
+.nl-card .nl-result{max-height:none;overflow:visible;}
 /* dispatch: Auto | Custom segmented control */
 .nl-card .nl-seg{display:inline-flex;align-self:flex-start;border:1px solid var(--line3);border-radius:8px;overflow:hidden;}
 .nl-card .nl-seg-btn{background:var(--bg);border:0;padding:0 14px;height:32px;color:var(--text2);font:600 12px var(--sans, inherit);cursor:pointer;}

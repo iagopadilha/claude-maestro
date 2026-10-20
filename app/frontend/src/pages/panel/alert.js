@@ -1,9 +1,9 @@
 /* Top strip by loop status: waiting for you, error, stopped, done, no loop, resuming. */
 import { $ } from '../../util/dom.js';
-import { html } from '../../util/preact.js';
+import { html, useEffect, useRef } from '../../util/preact.js';
 import { DASH, isNum, num, cost, dur, txt, list, featLabel, firstLine } from '../../util/format.js';
 import { toast } from '../../components/toast.js';
-import { ctx, ui, NL_STATES, RESUME_WAIT_MS, status, loop, askKey, resumingNow, isPauseAsk, isRecommended } from './context.js';
+import { ctx, ui, STATUS, NL_STATES, RESUME_WAIT_MS, status, loop, askKey, resumingNow, isPauseAsk, isRecommended } from './context.js';
 import { renderAll } from '../project_panel.js';
 
 const detOpen = (s) => (ui.det[s] != null ? ui.det[s] : s === 'awaiting_user');
@@ -11,7 +11,7 @@ function toggleDet(s) { ui.det[s] = !detOpen(s); renderAll(); }
 function DetBtn({ s }) {
   return html`<button type="button" class="btn btn-sm btn-ghost" id="btn-det" aria-expanded=${String(detOpen(s))} onClick=${() => toggleDet(s)}>${detOpen(s) ? 'details ▴' : 'details ▾'}</button>`;
 }
-export function openNewLoop() { ui.showNew = true; renderAll(); const z = $('newloop-zone'); if (z && !z.hidden) z.scrollIntoView({ block: 'nearest' }); }
+export function openNewLoop() { ui.showNew = true; chrome.open = true; renderAll(); const z = $('newloop-zone'); if (z && !z.hidden) z.scrollIntoView({ block: 'nearest' }); }
 function NewLoopBtn({ s }) {
   if (!NL_STATES.includes(s)) return null;
   return html`<button type="button" class="btn btn-sm" id="btn-newloop" aria-expanded=${ui.showNew ? 'true' : 'false'}
@@ -142,4 +142,33 @@ export function Alert() {
   if (s === 'done') return html`<${Done} />`;
   if (s === 'no_loop') return html`<${Empty} />`;
   return html`<${InfoStrip} s=${s} />`;
+}
+
+// ---------- chrome summary bar: the alert, new loop and workspace zones behind one ~34px bar ----------
+/** Open/closed of the bar, kept in memory only. open === null follows the loop: it opens by itself on a question or an error. */
+const chrome = { open: null, key: '' };
+const NEEDS_YOU = ['awaiting_user', 'error'];
+export function chromeOpen() {
+  const key = askKey();
+  if (chrome.key !== key) { chrome.key = key; chrome.open = null; } // a new ask/error drops the manual choice
+  return chrome.open === null ? NEEDS_YOU.includes(status()) : chrome.open;
+}
+export function ChromeBar({ nlShown }) {
+  const open = chromeOpen(), s = status(), l = loop(), wsRef = useRef(null);
+  // the workspace line owns its text (#ws-sum); the bar mirrors it without reaching into that module
+  useEffect(() => {
+    const copy = () => { const src = document.getElementById('ws-sum'), el = wsRef.current; if (src && el && el.textContent !== src.textContent) el.textContent = src.textContent; };
+    copy(); const t = setInterval(copy, 1000); return () => clearInterval(t);
+  });
+  const label = (STATUS[s] || STATUS.no_loop).label;
+  const reason = NEEDS_YOU.includes(s) && l.reason ? firstLine(l.reason) : '';
+  const toggle = () => { chrome.open = !open; renderAll(); };
+  return html`<button type="button" id="chrome-toggle" class=${'chrome-bar chrome-' + s + (open ? ' is-open' : '')} aria-expanded=${String(open)} aria-controls="chrome-zones" onClick=${toggle}>
+    <span class="chrome-caret" aria-hidden="true">${open ? '▾' : '▸'}</span>
+    <span class="chrome-status">${label}</span>
+    ${reason ? html`<span class="chrome-reason">${reason}</span>` : null}
+    ${nlShown ? html`<span class="chrome-part">Start a loop</span>` : null}
+    <span class="chrome-part">Workspace <span class="mono" ref=${wsRef}></span></span>
+    <span class="chrome-hint">${open ? 'collapse' : 'expand'}</span>
+  </button>`;
 }

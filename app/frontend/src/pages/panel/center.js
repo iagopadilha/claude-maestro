@@ -1,19 +1,17 @@
-/* Panel center: tabs Current turn | History | Dependencies | Roadmap & specs | Files | Whiteboard, and the #canvas content of each view. */
-import { html, useEffect } from '../../util/preact.js';
+/* Panel center: tabs Current turn | History | Dependencies | Roadmap & specs | Files, and the #canvas content of each view. */
+import { html } from '../../util/preact.js';
 import { isNum } from '../../util/format.js';
-import { Whiteboard, whiteboardStore } from '../../components/whiteboard.js';
-import { ctx, ui, pal, lastN, FEATURE_STATUSES } from './context.js';
+import { ui, pal, lastN, FEATURE_STATUSES } from './context.js';
 import { renderAll } from '../project_panel.js';
-import { agentsModel, TurnView, EmptyMsg, dgFit, zoomAt, showZoom } from './turn_diagram.js';
+import { agentsModel, TurnView, EmptyMsg, dgFit, zoomAt, showZoom, resetNodeLayout } from './turn_diagram.js';
 import { History, loadHist, openHist } from './history.js';
 import { Dependencies, zoomDependencies, fitDependencies, dependenciesScale } from './dependencies.js';
 import { Files } from './files.js';
-import { RoadmapChat } from './roadmap_chat.js';
+import { RoadmapSpecsView } from './roadmap_preview.js';
 import { backToLive } from './timeline.js';
 
-const TABS = [['turn', 'tab-turn', 'Current turn'], ['hist', 'tab-hist', 'History'], ['deps', 'tab-deps', 'Dependencies'], ['roadmap', 'tab-roadmap', 'Roadmap & specs'], ['files', 'tab-files', 'Files'], ['board', 'tab-board', 'Whiteboard']];
+const TABS = [['turn', 'tab-turn', 'Current turn'], ['hist', 'tab-hist', 'History'], ['deps', 'tab-deps', 'Dependencies'], ['roadmap', 'tab-roadmap', 'Roadmap & specs'], ['files', 'tab-files', 'Files']];
 const TURN_LEGEND = [['running', '#F2B544'], ['done', '#5BD38A'], ['queued', '#8AA4FF'], ['idle', '#7D838C'], ['blocked/failed', '#F06A5E']];
-let board = null;
 
 function legendItems(view) {
   const dotI = (label, color) => ({ label, color });
@@ -23,21 +21,15 @@ function legendItems(view) {
     ...FEATURE_STATUSES.map((k) => dotI(k, pal(k)[0]))];
   return [];
 }
+/** [short text shown in the tab bar, full text as tooltip]. */
 const CAPTIONS = {
-  turn: () => (ui.pastN != null ? `pipeline of turn ${ui.pastN}: one lane per feature` : 'pipeline of this turn: one lane per feature, left to right'),
-  hist: () => 'every turn and its agents · click an agent to see its full log',
-  deps: () => 'one column per stage; inside a stage, each feature sits to the right of what it waits on · hover to see the path, click to open',
-  roadmap: () => 'stages and features defined earlier · change a spec with the AI, then tell the loop to redo the affected work',
-  files: () => 'everything the loop writes in .specs, in one place · read or edit what the app allows',
-  board: () => 'free project board · saves itself on the server',
+  turn: () => (ui.pastN != null ? [`turn ${ui.pastN} pipeline`, `pipeline of turn ${ui.pastN}: one lane per feature`] : ['turn pipeline', 'pipeline of this turn: one lane per feature, left to right']),
+  hist: () => ['turns and agents', 'every turn and its agents · click an agent to see its full log'],
+  deps: () => ['stage dependencies', 'one column per stage; inside a stage, each feature sits to the right of what it waits on · hover to see the path, click to open'],
+  roadmap: () => ['stages and features', 'stages and features defined earlier · change a spec with the AI, then tell the loop to redo the affected work'],
+  files: () => ['.specs files', 'everything the loop writes in .specs, in one place · read or edit what the app allows'],
 };
 const pastVisible = (view) => ui.pastN != null && (view === 'turn' || view === 'deps' || view === 'hist');
-
-/** The board store lives for the whole page (the tab mounts and unmounts its view). */
-export function getBoard() {
-  if (!board) board = whiteboardStore({ api: ctx.api });
-  return board;
-}
 
 function pickView(view) {
   if (view === 'hist') { openHist(); return; }
@@ -59,7 +51,7 @@ export function CenterTabs({ view = ui.view }) {
     tabIndex=${view === k ? 0 : -1} onClick=${() => pickView(k)}>${label}</button>`);
 }
 /** Content of #caption. */
-export const Caption = ({ view = ui.view }) => (CAPTIONS[view] || (() => ''))();
+export const Caption = ({ view = ui.view }) => { const [shortText, fullText] = (CAPTIONS[view] || (() => ['', '']))(); return html`<span title=${fullText}>${shortText}</span>`; };
 /** Content of #past-bar (the container is hidden outside a snapshot). */
 export function PastBar() {
   const last = lastN(), fresh = isNum(last) && isNum(ui.pinLast) && last > ui.pinLast;
@@ -74,21 +66,13 @@ export function Legend({ view = ui.view }) {
     : html`<span class="dot" style=${{ background: it.color }} />`}${it.label}</div>`);
 }
 
-// section.wb is a direct child of .canvas (CSS .canvas.full>*); showing the tab (or a new turn while shown) opens the board
-function Board() {
-  const b = getBoard();
-  useEffect(() => { b.open(false); }, [lastN(), ui.pastN, ui.pinLast]);
-  return html`<${Whiteboard} store=${b} />`;
-}
-
 /** Content of #canvas for the current view (cm = centerModel()). Each view mounts when shown and unmounts when
-    left; its state (pan/zoom, open file and draft, board) lives in module stores, so coming back restores it. */
+    left; its state (pan/zoom, open file and draft) lives in module stores, so coming back restores it. */
 export function CenterCanvas({ cm }) {
   if (cm.view === 'hist') return html`<${History} />`;
   if (cm.view === 'deps') return html`<${Dependencies} />`;
-  if (cm.view === 'roadmap') return html`<${RoadmapChat} />`;
+  if (cm.view === 'roadmap') return html`<${RoadmapSpecsView} />`;
   if (cm.view === 'files') return html`<${Files} />`;
-  if (cm.view === 'board') return html`<${Board} />`;
   if (cm.model.mode === 'plain') return html`<${EmptyMsg} text=${cm.model.msg} />`;
   return html`<${TurnView} model=${cm.model} />`;
 }
@@ -98,10 +82,5 @@ export function zoomCenter(f) {
   if (ui.view === 'deps') { zoomDependencies(f); showZoom(dependenciesScale()); } else zoomAt(f);
 }
 export function fitCenter() {
-  if (ui.view === 'deps') { fitDependencies(); showZoom(dependenciesScale()); } else dgFit();
-}
-
-/** Light polling of the board: only with the Whiteboard tab open (and the page visible). */
-export function checkRemoteBoard() {
-  if (ui.view === 'board' && board) board.checkRemote();
+  if (ui.view === 'deps') { fitDependencies(); showZoom(dependenciesScale()); } else { resetNodeLayout(); dgFit(); }
 }

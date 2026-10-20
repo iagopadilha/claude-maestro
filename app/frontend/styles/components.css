@@ -1,4 +1,4 @@
-/* Newer components: dialog, markdown, progress trail, tree, editor, graph, state machine, whiteboard,
+/* Newer components: dialog, markdown, progress trail, tree, editor, graph, state machine,
    "Why use this panel?", conformance and folder browser. Same theme tokens (base.css). */
 
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}
@@ -70,7 +70,7 @@
 .ck-step.open{box-shadow:0 0 0 2px var(--amber-glow);}
 .ck-detail{font-size:12px;color:var(--text2);line-height:1.45;}
 
-/* ---------- full-size center (graph, files, whiteboard) ---------- */
+/* ---------- full-size center (graph, files) ---------- */
 .canvas-wrap.fullmode{padding:0;overflow:hidden;margin:8px 14px;border-radius:8px;position:relative;scrollbar-gutter:auto;}
 .canvas.full{position:absolute;inset:0;margin:0;display:flex;min-width:0;min-height:0;}
 .canvas.full>*{flex:1;min-width:0;min-height:0;}
@@ -170,28 +170,6 @@
 .ed-empty{padding:30px 20px;color:var(--muted);text-align:center;line-height:1.6;}
 @media (max-width:1200px){.ed-split{grid-template-columns:1fr;}.ed-preview{display:none;}}
 
-/* ---------- whiteboard ---------- */
-.wb{display:flex;flex-direction:column;min-height:0;border:1px solid var(--line2);border-radius:8px;overflow:hidden;background:var(--bg);}
-.wb-bar{display:flex;align-items:center;gap:8px;padding:5px 8px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap;}
-.wb-group{display:flex;align-items:center;gap:3px;}
-.wb-btn{width:28px;height:28px;border-radius:6px;border:1px solid transparent;background:transparent;color:var(--text2);font:500 14px var(--sans);cursor:pointer;display:grid;place-items:center;}
-.wb-btn:hover{border-color:var(--line3);}
-.wb-btn[aria-pressed="true"]{background:var(--amber-bg);border-color:var(--amber);color:var(--amber);}
-.wb-color{width:18px;height:18px;border-radius:50%;border:2px solid var(--panel);box-shadow:0 0 0 1px var(--line3);cursor:pointer;padding:0;}
-.wb-color[aria-pressed="true"]{box-shadow:0 0 0 2px var(--amber-soft);}
-.wb-ind{font:400 11px var(--mono);color:var(--green);}
-.wb-ind.busy{color:var(--amber);} .wb-ind.err{color:var(--red);}
-.wb-danger{color:var(--red);}
-.wb-notice{padding:6px 8px;display:flex;flex-direction:column;gap:6px;}
-.wb-area{flex:1;position:relative;min-height:0;background-image:radial-gradient(var(--panel3) 1px,transparent 1px);background-size:20px 20px;}
-.wb-area:focus{outline:none;}
-.wb-area:focus-visible{box-shadow:inset 0 0 0 2px var(--amber-line);}
-.wb-svg{position:absolute;inset:0;width:100%;height:100%;touch-action:none;user-select:none;cursor:crosshair;}
-.wb-area[data-tool="select"] .wb-svg{cursor:default;}
-.wb-area[data-tool="text"] .wb-svg{cursor:text;}
-.wb-area[data-tool="eraser"] .wb-svg{cursor:not-allowed;}
-.wb-sel-box{fill:none;stroke:var(--amber-soft);stroke-width:1;stroke-dasharray:4 3;}
-.wb-text{position:absolute;min-width:160px;background:var(--panel);border:1px solid var(--amber);border-radius:6px;font:400 20px var(--sans);padding:2px 6px;resize:both;z-index:3;}
 
 /* ---------- AI roadmap ---------- */
 .rm-block{display:flex;flex-direction:column;gap:8px;}

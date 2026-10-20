@@ -80,7 +80,7 @@ a{color:var(--amber);text-decoration:none;} a:hover{color:var(--amber-soft);text
 .empty-note{color:var(--dim);font-size:12px;}
 
 /* toasts */
-.toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:420px;}
+.toasts{position:fixed;right:16px;top:16px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:420px;}
 .toast{padding:10px 14px;border-radius:8px;background:var(--panel2);border:1px solid var(--line3);font-size:12px;line-height:1.4;word-break:break-word;box-shadow:0 6px 20px var(--shadow);}
 .toast.err{border-color:var(--red);background:var(--red-bg);color:var(--red-soft);}
 .toast.ok{border-color:var(--green);background:var(--green-bg);}

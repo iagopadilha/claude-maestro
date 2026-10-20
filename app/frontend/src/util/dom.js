@@ -1,5 +1,5 @@
 /* DOM helpers that never parse HTML strings: every external text goes in through textContent. The panel itself is Preact;
-   these serve the imperative widgets (whiteboard SVG scene, pan/zoom transforms) and the tablist keys. */
+   these serve the imperative widgets (pan/zoom transforms) and the tablist keys. */
 
 export const $ = (id) => document.getElementById(id);
 const SVGNS = 'http://www.w3.org/2000/svg';

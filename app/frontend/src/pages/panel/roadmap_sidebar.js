@@ -1,10 +1,14 @@
 /* Left column: roadmap by stage, quarantine, VALIDATE.md and ANSWERS.md. Also the selection. */
-import { html } from '../../util/preact.js';
+import { html, useState, useEffect } from '../../util/preact.js';
+import { openDialog } from '../../components/dialog.js';
+import { Markdown } from '../../components/markdown.js';
+import { normalizeTree, walkTree } from '../../components/file_tree.js';
 import { isNum, num, txt, list } from '../../util/format.js';
 import { toast } from '../../components/toast.js';
 import { ctx, ui, pal, status, live, features, focusFeatureId } from './context.js';
 import { renderAll } from '../project_panel.js';
 import { fetchAgentLog } from './inspector.js';
+import { openRoadmapView } from './roadmap_preview.js';
 
 /** One VALIDATE.md line: `- [<slug|general>] <doubt> | chose: <what was done> | revert: <how>`. */
 export function parseValidate(raw) {
@@ -47,21 +51,92 @@ async function sendQuarantine(q, opt) {
   finally { ui.busy[k] = false; renderAll(); }
 }
 
+/** Short reader-facing status of a feature: [label, legend]. */
+const FEATURE_STATUS = {
+  pending: ['pending', 'waiting its turn'], speccing: ['spec', 'spec being written'], specced: ['spec ok', 'spec written, awaiting approval'],
+  approved: ['ready', 'spec approved, ready to run'], building: ['running', 'being implemented'], verified: ['done', 'implemented and verified'],
+  blocked: ['failed', 'blocked or failed, needs attention'],
+};
+/** Status of a feature for the sidebar: a building feature with a running verifier agent shows as "verifying". */
+export function featureStatusInfo(feature) {
+  const verifying = feature.status === 'building' && list(ctx.state && ctx.state.agents).some((a) => a.feature === feature.id && /verifier/.test(a.role || '') && a.state === 'running');
+  if (verifying) return { label: 'verifying', legend: 'being verified (tests, build)', key: 'queued' };
+  const [label, legend] = FEATURE_STATUS[feature.status] || [txt(feature.status), ''];
+  return { label, legend, key: feature.status };
+}
+
+/** "2 done · 1 running · 3 pending" for the header of a stage. */
+function stageCounts(items) {
+  const tally = new Map();
+  for (const f of items) { const label = featureStatusInfo(f).label; tally.set(label, (tally.get(label) || 0) + 1); }
+  return [...tally.entries()].map(([label, n]) => `${n} ${label}`).join(' · ');
+}
+
+/** spec.md of a feature read through the existing specs/tree and specs/file endpoints; null = no spec yet. */
+async function loadFeatureSpec(slug) {
+  const tree = normalizeTree(await ctx.api.get('specs/tree', 15000));
+  let dir = null;
+  walkTree(tree, (node, parent, group) => { if (!dir && node.kind === 'dir' && (node.slug === slug || node.name === slug) && /feature/i.test(group.id + group.title)) dir = node; });
+  if (!dir) walkTree(tree, (node) => { if (!dir && node.kind === 'dir' && (node.slug === slug || node.name === slug)) dir = node; });
+  const files = dir ? dir.items.filter((x) => x.kind === 'file') : [];
+  const specFile = files.find((x) => /(^|\/)spec\.md$/i.test(x.path));
+  if (!specFile) return null;
+  const response = await ctx.api.get('specs/file?path=' + encodeURIComponent(specFile.path), 15000);
+  return { path: specFile.path, text: response.text != null ? String(response.text) : String(response.content || '') };
+}
+
+function FeatureDetail({ feature }) {
+  const [spec, setSpec] = useState({ loading: true, data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    loadFeatureSpec(feature.id).then((data) => alive && setSpec({ loading: false, data, error: null }))
+      .catch((e) => alive && setSpec({ loading: false, data: null, error: e.message }));
+    return () => { alive = false; };
+  }, [feature.id]);
+  const info = featureStatusInfo(feature), [col, bg] = pal(info.key);
+  const summary = feature.summary || {};
+  const deps = list(feature.depends_on).length ? list(feature.depends_on).map((d) => `${d.id} (${d.status})`) : list(feature.deps).filter((d) => !String(d).startsWith('dir:'));
+  const paths = list(feature.paths);
+  const row = (k, v) => html`<div class="fd-row"><span class="fd-k">${k}</span><span class="fd-v">${v}</span></div>`;
+  return html`<div class="fd">
+    <div class="fd-meta">
+      ${row('status', html`<span class="chip" style=${{ color: col, background: bg }}>${info.label}</span> <span class="dim-mono">${info.legend}</span>`)}
+      ${row('stage', feature.stage == null ? 'none' : String(feature.stage))}
+      ${row('depends on', deps.length ? html`<span class="mono">${deps.join(', ')}</span>` : 'nothing')}
+      ${row('paths', paths.length ? html`<span class="mono">${paths.join('  ')}</span>` : '—')}
+      ${summary.size ? row('size', summary.size) : null}
+    </div>
+    ${spec.loading ? html`<div class="empty-note">Reading the spec…</div>`
+      : spec.error ? html`<div class="empty-note" role="alert">${'Could not read the spec: ' + spec.error}</div>`
+      : spec.data ? html`<div class="fd-src dim-mono">${spec.data.path}</div><div class="md-doc"><${Markdown} source=${spec.data.text} /></div>`
+      : html`<div class="fd-nospec"><b>Spec not written yet.</b>
+          ${summary.goal ? html`<div class="fd-roadline"><span class="dim-mono">ROADMAP</span> ${txt(summary.goal)}</div>` : null}</div>`}
+  </div>`;
+}
+
+/** Definition of a feature (what was or will be done) in a dialog. */
+export function openFeatureDetail(feature) {
+  openDialog({ title: txt(feature.name || feature.id), content: html`<${FeatureDetail} feature=${feature} />`, width: 760, cls: 'fd-dlg',
+    actions: [{ text: 'Close', cls: 'btn-ghost' }] });
+}
+
 function Roadmap({ fs, groups, c }) {
   const focusF = focusFeatureId();
   const verified = ui.past ? fs.filter((f) => f.status === 'verified').length : c.verified;
   const total = ui.past ? fs.length : c.total;
   const stageSel = (g) => !!(ui.sel && ui.sel.kind === 'stage' && ui.sel.n === g.n);
   return html`<div>
-    <div class="sec-head"><h2 class="sec-title">Roadmap</h2><div class="dim-mono">${`${num(verified)}/${num(total)} verified`}</div></div>
+    <div class="sec-head"><h2 class="sec-title"><button type="button" class="sec-title-link" title="opens the Roadmap & specs tab: read the plan and the specs" onClick=${openRoadmapView}>Roadmap</button></h2><div class="dim-mono">${`${num(verified)}/${num(total)} verified`}</div></div>
     ${groups.length ? html`<div class="stages">${groups.map((g) => html`<div key=${String(g.n)}>
       ${g.n == null ? html`<div class="small-label">${g.title}</div>`
-        : html`<button type="button" class=${'stage-h' + (stageSel(g) ? ' sel' : '')} aria-expanded=${String(stageSel(g))} title="opens the summary of this stage in the inspector"
-            onClick=${() => selectStage(g.n)}><span>${g.title}</span><span class="stage-chev" aria-hidden="true">›</span></button>`}
+        : html`<button type="button" class=${'stage-h rm-stage' + (stageSel(g) ? ' sel' : '')} aria-expanded=${String(stageSel(g))} title="opens the summary of this stage in the inspector"
+            onClick=${() => selectStage(g.n)}><span class="rm-stage-t"><span class="rm-stage-name">${g.title}</span>
+              <span class="rm-stage-n">${stageCounts(g.items)}</span></span><span class="stage-chev" aria-hidden="true">›</span></button>`}
       <div class="frows">${g.items.map((f) => {
-        const [col, bg] = pal(f.status);
-        return html`<button key=${f.id} type="button" class=${'frow' + (focusF === f.id ? ' sel' : '')} title=${f.id} aria-pressed=${focusF === f.id ? 'true' : 'false'} onClick=${() => selectFeature(f.id)}>
-          <span class="nm">${txt(f.name || f.id)}</span><span class="chip" style=${{ color: col || null, background: bg || null }}>${txt(f.status)}</span></button>`;
+        const info = featureStatusInfo(f), [col, bg] = pal(info.key);
+        return html`<button key=${f.id} type="button" class=${'frow' + (focusF === f.id ? ' sel' : '')} title=${`${f.id}: ${info.legend} (click for the definition)`} aria-pressed=${focusF === f.id ? 'true' : 'false'}
+            onClick=${() => { selectFeature(f.id); openFeatureDetail(f); }}>
+          <span class="nm">${txt(f.name || f.id)}</span><span class="chip" style=${{ color: col || null, background: bg || null }}>${info.label}</span></button>`;
       })}</div>
     </div>`)}</div>`
       : html`<div class="empty-note">No feature in the roadmap. Use the trail at the top to generate the roadmap.</div>`}

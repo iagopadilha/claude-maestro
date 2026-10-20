@@ -2,7 +2,7 @@
 import { html } from '../../util/preact.js';
 import { DASH, isNum, num, cost, dur, tok, txt, list } from '../../util/format.js';
 import { ctx, ui, pal, ROLE_DESC, LOG_KIND, LIFECYCLE, FEATURE_STATUSES, live, features, agents, featById, agentById } from './context.js';
-import { selectFeature, selectAgent } from './roadmap_sidebar.js';
+import { selectFeature, selectAgent, selectStage, openFeatureDetail } from './roadmap_sidebar.js';
 import { retColor } from './turn_diagram.js';
 import { depInfo, readiness } from './dependencies.js';
 import { Chat } from './chat.js';
@@ -80,14 +80,14 @@ function StageBlocks({ n }) {
       : html`<div class="iblock"><div class="small-label">Stage closing</div>${secs.length ? secs.map(([k, label], i) => html`<details key=${k} class="st-sec" open=${i === 0}><summary>${label}</summary><div class="st-sec-b">${String(f[k])}</div></details>`)
         : html`<div class="empty-note">closing without sections</div>`}</div>`}`;
 }
-function FeatureBlocks({ f }) {
+function FeatureBlocks({ f, compact }) {
   const byId = featById(), info = depInfo(f);
   const reached = f.status === 'blocked' ? 4 : LIFECYCLE.indexOf(f.status);
   const ag = agents().find((a) => a.feature === f.id);
   const [lab, labColor] = readiness(f, info);
   const stRow = (id) => { const x = byId[id]; return x ? row(x.name || id, x.status, pal(x.status)[0], () => selectFeature(id)) : row(id, 'external', NONE); };
   return html`
-    <${SummaryBlock} f=${f} /><${WaveBlock} f=${f} info=${info} />
+    ${compact ? null : html`<${SummaryBlock} f=${f} />`}<${WaveBlock} f=${f} info=${info} />
     ${block('Status', row(lab, '', labColor))}
     ${block('Depends on', info.dep.length ? info.dep.map((d) => stRow(d.id)) : row('none', '', NONE))}
     ${info.dirs.length ? block('Imports folders', info.dirs.map((p) => row(p, 'folder', NONE))) : null}
@@ -97,8 +97,8 @@ function FeatureBlocks({ f }) {
       return row(s, isBlk ? 'blocked' : i < reached ? 'ok' : i === reached ? 'now' : '', isBlk ? '#F06A5E' : i <= reached ? pal(s)[0] : '#4A4F57');
     }))}
     ${block('Details', [row('tries', txt(f.tries)), row('commit', txt(f.commit)), row('regression', txt(f.regression)), row('e2e', txt(f.e2e)), f.note ? row('note', String(f.note)) : null])}
-    ${block('Paths', list(f.paths).length ? list(f.paths).map((p) => row(p, '')) : row('none declared', '', NONE))}
-    ${ag ? block('Agent in this turn', row(ag.role, 'open log →', '#F2B544', () => selectAgent(ag.id))) : null}`;
+    ${block('Paths (scope)', list(f.paths).length ? list(f.paths).map((p) => row(p, '')) : row('none declared', '', NONE))}
+    ${ag && !compact ? block('Agent in this turn', row(ag.role, 'open log →', '#F2B544', () => selectAgent(ag.id))) : null}`;
 }
 function AgentHighlight({ a }) {
   const ret = a.return_status ? String(a.return_status) : null, ua = a.last_action, rc = ret ? retColor(ret) : null;
@@ -140,13 +140,50 @@ const Chips = ({ items, children }) => html`<div class="chips">${items.filter((x
 function TitleRow({ title, color, bg, chip }) {
   return html`<div class="insp-row">${color ? html`<span class="dot" style=${{ background: color }}></span>` : null}<div class="insp-title">${title}</div>${chip != null ? html`<div class="spacer"></div><span class="chip" style=${color ? { color, background: bg } : null}>${chip}</span>` : null}</div>`;
 }
+const FOCUS_PATHS_SHOWN = 4;
+/** Stage the orchestrator is on: the first stage not fully verified (or the last one). */
+function currentStage() {
+  const stages = list(ctx.state && ctx.state.stages);
+  const open = stages.find((s) => { const p = (s.summary && s.summary.progress) || {}; return !(isNum(p.total) && p.total > 0 && p.verified >= p.total); });
+  return open || stages[stages.length - 1] || null;
+}
+/** What the agent is working on: its feature (or roadmap point), scope paths, current task and the "view definition" button. */
+function AgentFocusCard({ a }) {
+  const feature = a.feature ? featById()[a.feature] : null;
+  if (!feature) {
+    const stage = a.role === 'orchestrator' ? currentStage() : null;
+    return html`<div class="focus-card">
+      <div class="focus-label">${a.role === 'orchestrator' ? 'Roadmap point' : 'Feature'}</div>
+      ${a.role === 'orchestrator'
+        ? html`<div class="focus-name">${stage ? `Stage ${String(stage.n).padStart(2, '0')}${stage.title ? ' · ' + txt(stage.title) : ''}` : 'Coordinates all features'}</div>
+            <div class="focus-goal">${stage && stage.summary && stage.summary.description ? String(stage.summary.description) : 'Coordinates all features of the roadmap: dispatch, commit and checkpoint.'}</div>
+            ${stage ? html`<button type="button" class="link-btn" onClick=${() => selectStage(stage.n)}>open the stage</button>` : null}`
+        : html`<div class="focus-name">${a.feature ? txt(a.feature) : 'Not tied to a feature'}</div>`}
+    </div>`;
+  }
+  const [color, background] = pal(feature.status);
+  const goal = feature.summary && feature.summary.goal ? String(feature.summary.goal) : '';
+  const paths = list(feature.paths);
+  const task = a.decision || a.summary || (a.last_action && a.last_action.text) || '';
+  return html`<div class="focus-card">
+    <div class="focus-label">Working on</div>
+    <div class="focus-top"><span class="focus-name">${txt(feature.name || feature.id)}</span>
+      <span class="chip" style=${{ color, background }}>${txt(feature.status)}</span>${feature.stage != null ? html`<span class="chip">${'stage ' + txt(feature.stage)}</span>` : null}</div>
+    ${goal ? html`<div class="focus-goal">${goal}</div>` : null}
+    ${paths.length ? html`<div class="focus-paths" title=${paths.join('\n')}><span class="focus-k">scope</span>
+      ${paths.slice(0, FOCUS_PATHS_SHOWN).map((p) => html`<span class="focus-path">${p}</span>`)}${paths.length > FOCUS_PATHS_SHOWN ? html`<span class="dim-mono">${`+${paths.length - FOCUS_PATHS_SHOWN} more`}</span>` : null}</div>` : null}
+    ${task ? html`<div class="focus-task"><span class="focus-k">task</span><span>${String(task)}</span></div>` : null}
+    <button type="button" class="link-btn" onClick=${() => openFeatureDetail(feature)}>View definition</button>
+  </div>`;
+}
 /** Content of #insp-head. */
 export function InspectorHead({ m = inspectorModel() }) {
   const { a, f, st } = m;
   if (a) {
     const [c, bg] = pal(a.state);
     return html`<${TitleRow} title=${txt(a.role)} color=${c} bg=${bg} chip=${txt(a.state)} /><div class="insp-role">${ROLE_DESC[a.role] || ''}</div>
-      <${Chips} items=${[a.feature, dur(a.duration_s), tok(a.tokens) + ' tok', cost(a.cost_usd)]} />`;
+      <${Chips} items=${[dur(a.duration_s), tok(a.tokens) + ' tok', cost(a.cost_usd)]} />
+      <${AgentFocusCard} a=${a} />`;
   }
   if (st) return html`<${TitleRow} title=${`Stage ${String(st.n).padStart(2, '0')}`} chip=${`${num(st.features && st.features.length)} features`} /><div class="insp-role">${txt(st.title)}</div>`;
   if (f) {
@@ -171,7 +208,7 @@ export function InspectorBody({ m = inspectorModel() }) {
   if (a) {
     if (ui.tab === 'info') {
       const af = a.feature ? featById()[a.feature] : null;
-      return af ? html`<${FeatureBlocks} f=${af} />` : html`<div class="empty-note">This agent is not tied to a feature.</div>`;
+      return af ? html`<${FeatureBlocks} f=${af} compact=${true} />` : html`<div class="empty-note">This agent is not tied to a feature.</div>`;
     }
     return html`<${AgentHighlight} a=${a} /><div class="small-label">Full log</div>
       ${logArr.length ? [logArr.map((x, i) => html`<${LogEntry} key=${i} m=${x} agentName=${a.role} />`), m.truncated ? html`<div class="logend">log truncated (first 400 items)</div>` : null]

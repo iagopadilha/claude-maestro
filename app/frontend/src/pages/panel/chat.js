@@ -1,5 +1,6 @@
-/* Chat (read-only) and the unified composer: Instruct the loop | Act | Ask.
-   Old version (snapshot or agent of a past turn) = Ask only. */
+/* Chat (read-only) and the unified composer: Instruct the loop | Chat.
+   Chat = questions to the AI (read-only) + the immediate actions (collapsible "Actions", always with confirmation).
+   Old version (snapshot or agent of a past turn) = Chat only, without actions. */
 import { $ } from '../../util/dom.js';
 import { html, useState, useEffect, useLayoutEffect, useRef } from '../../util/preact.js';
 import { isNum, num, cost, txt, list, fmtHour, fmtDay } from '../../util/format.js';
@@ -159,13 +160,13 @@ function takeToCurrent(c, m) {
   toast('Attached: it goes along with the next instruction to the loop.', 'ok'); renderAll();
 }
 
-// unified composer (instruct the loop | act | ask | read-only old version)
+// unified composer (instruct the loop | chat | read-only old version)
 function autoFeature() {
   const a = selAgentId() ? agentById(selAgentId()) : null;
   if (a && a.feature) return a.feature;
   return ui.sel && ui.sel.kind === 'feature' ? ui.sel.id : '';
 }
-// instruct/act only exist on the orchestrator of the CURRENT version; everything else is chat only (the other options do not even show)
+// instruct/actions only exist on the orchestrator of the CURRENT version; everything else is chat only (the other options do not even show)
 export function canAct() {
   if (verInfo().old) return false;
   const id = selAgentId();
@@ -175,14 +176,14 @@ export function canAct() {
 }
 /** What the composer shows now (also resets the manual feature choice when the selection changes). */
 export function composerModel() {
-  const v = verInfo(), act = canAct(), mode = act ? cp.mode : 'ask';
+  const v = verInfo(), act = canAct(), mode = act ? cp.mode : 'chat';
   const selKey = ui.sel ? ui.sel.kind + ':' + (ui.sel.id != null ? ui.sel.id : ui.sel.n) : '';
   if (selKey !== cp.selKey) { cp.selKey = selKey; cp.manualFeat = false; }
   const featVal = cp.manualFeat ? cp.feat : autoFeature();
   const sc = chatScope();
   return { v, act, mode, featVal, fs: features().map((f) => f.id), who: sc.agent ? txt(sc.agent.role) : 'project', asking: !!getChat(sc.key).job };
 }
-const pickMode = (key) => { cp.mode = key; cp.status = null; renderAll(); $('cp-text').focus(); if (key === 'act') loadActions(); };
+const pickMode = (key) => { cp.mode = key; cp.status = null; renderAll(); $('cp-text').focus(); if (key === 'chat') loadActions(); };
 
 /** Content of #cp-band. */
 export function ComposerBand({ m }) {
@@ -191,7 +192,7 @@ export function ComposerBand({ m }) {
 /** Content of #cp-seg (role=tablist; arrows handled by bindTabKeys). */
 export function ComposerSeg({ m }) {
   if (!m.act) return null;
-  return [['instruct', 'Instruct the loop'], ['act', 'Act'], ['ask', 'Ask']].map(([key, label]) => html`<button key=${key} type="button" role="tab" class="cp-seg-btn" id=${'cp-seg-' + key}
+  return [['instruct', 'Instruct the loop'], ['chat', 'Chat']].map(([key, label]) => html`<button key=${key} type="button" role="tab" class="cp-seg-btn" id=${'cp-seg-' + key}
     aria-selected=${String(m.mode === key)} tabindex=${m.mode === key ? '0' : '-1'} onClick=${() => pickMode(key)}>${label}</button>`);
 }
 /** Options of #cp-feature. */
@@ -213,27 +214,37 @@ export function ComposerStatus({ s }) {
 /** Container flags of the composer form (class, hidden parts, select value, placeholder, send button, status). */
 export function composerView() {
   const m = composerModel(), { act, mode } = m, on = (k) => act && mode === k, card = actState.card;
+  const instructing = act && mode === 'instruct';
   return {
     m, on,
-    cls: 'composer m-' + (act ? mode : 'chat'),
+    cls: 'composer m-' + (instructing ? 'instruct' : 'chat'),
     featValue: m.fs.includes(m.featVal) ? m.featVal : '',
-    showTray: on('instruct') && ui.attach.length > 0,
-    placeholder: !act ? `Ask about ${m.who}…` : mode === 'act' ? 'e.g. open the PR to the integration branch and push' : mode === 'instruct' ? 'Instruct the loop: the next turn applies it…' : 'Ask the AI (it only reads the project)…',
-    sendText: !act || mode === 'ask' ? 'Ask' : mode === 'act' ? 'Propose action' : 'Instruct the loop',
-    sendDisabled: cp.sending || (mode === 'ask' && m.asking) || (mode === 'act' && !!card && (card.kind === 'proposing' || card.kind === 'running')),
+    showTray: instructing && ui.attach.length > 0,
+    showActions: on('chat'),
+    hint: !act ? 'Read-only: the AI only reads the project.' : instructing ? 'The next turn applies it.' : 'Ask the AI (read-only) or open Actions.',
+    placeholder: !act ? `Ask about ${m.who}…` : instructing ? 'Instruct the loop…' : 'Ask the AI about the project…',
+    sendText: instructing ? 'Instruct the loop' : 'Ask',
+    sendDisabled: cp.sending || (!instructing && m.asking),
+    proposing: !!card && (card.kind === 'proposing' || card.kind === 'running'),
     status: act && cp.status ? cp.status : null,
   };
 }
 /** The <textarea id="cp-text"> is uncontrolled (no value prop): typing and the caret survive every render. */
 export function composerKeyDown(e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('composer').requestSubmit(); } }
+/** "Propose an action" button of the Actions panel: the text typed in the box becomes a proposal (still confirmed by the user). */
+export function proposeFromComposer() {
+  const ta = $('cp-text'), text = ta ? ta.value.trim() : '';
+  if (!text) { toast('Type what to do in the message box first.', 'err'); return; }
+  if (actState.card && (actState.card.kind === 'proposing' || actState.card.kind === 'running')) return;
+  ta.value = ''; proposeAction(text);
+}
 export function pickFeature(e) { cp.manualFeat = true; cp.feat = e.currentTarget.value; }
 export async function composerSubmit(ev) {
   ev.preventDefault();
   const ta = $('cp-text'), text = ta.value.trim();
   if (!text) return;
-  const mode = canAct() ? cp.mode : 'ask';
-  if (mode === 'ask') { ta.value = ''; ui.tab = 'chat'; renderAll(); chatSend(text); return; }
-  if (mode === 'act') { if (actState.card && (actState.card.kind === 'proposing' || actState.card.kind === 'running')) return; ta.value = ''; proposeAction(text); return; }
+  const mode = canAct() ? cp.mode : 'chat';
+  if (mode === 'chat') { ta.value = ''; ui.tab = 'chat'; renderAll(); chatSend(text); return; }
   if (cp.sending) return;
   cp.sending = true; cp.status = null; renderAll();
   try {

@@ -10,7 +10,7 @@ import { reloadProgress } from './progress_trail.js';
 import { WorkspaceNotice, watchWorkspace } from './workspace.js';
 
 const START_WAIT_MS = 40000;
-const NL_DEFAULTS = { dispatch: 'auto', wave: '1', push: true, setup: '', budget: '5', max_cost: '30', timeout: '60', branch: '', continue_on_blocked: false, pause_on_blocked: false };
+const NL_DEFAULTS = { dispatch: 'auto', wave: '1', push: true, setup: '', budget: '5', max_cost: '30', timeout: '60', branch: '', continue_on_blocked: false, pause_on_blocked: true };
 export const nl = { form: { ...NL_DEFAULTS }, check: null, checking: false, checkErr: null, starting: null, startErr: null, built: false, approving: false, apprErr: null, open: null, details: false, dispatch: null };
 const nlNum = (v) => (String(v).trim() === '' ? NaN : Number(v));
 export const APPROVAL_NOTICE = 'The approval covers today\'s features and stages. If you later change features or stages in ROADMAP.md, the approval stops being valid and you need to approve again.';
@@ -45,7 +45,7 @@ function nlTouched() { nl.startErr = null; nl.checkErr = null; renderAll(); }
 function Field({ k, label, type, extra, hint, err }) {
   const id = 'nl-' + k, errId = 'nl-err-' + k;
   const control = type === 'checkbox'
-    ? html`<input id=${id} type="checkbox" aria-describedby=${errId} checked=${!!nl.form[k]} onChange=${(e) => { nl.form[k] = e.currentTarget.checked; nlTouched(); }} />`
+    ? html`<input id=${id} type="checkbox" aria-describedby=${errId} checked=${!!nl.form[k]} onChange=${(e) => { nl.form[k] = e.currentTarget.checked; if (e.currentTarget.checked && k === 'continue_on_blocked') nl.form.pause_on_blocked = false; if (e.currentTarget.checked && k === 'pause_on_blocked') nl.form.continue_on_blocked = false; nlTouched(); }} />`
     : html`<input id=${id} type=${type} autocomplete="off" spellcheck=${false} ...${extra} aria-describedby=${errId}
         value=${nl.form[k]} onInput=${(e) => { nl.form[k] = e.currentTarget.value; nlTouched(); }} />`;
   return html`<div class="nl-field">
@@ -191,7 +191,7 @@ export function NewLoop() {
           ${F('branch', 'Branch name', 'text', { placeholder: 'empty = automatic' }, 'Working branch of the loop.')}
           ${F('setup', 'Extra setup instruction', 'text', { placeholder: 'e.g. dotnet restore' }, 'Optional command or hint run before the loop (up to 200 characters), e.g. a restore the worktree lacks. Empty is fine.')}
           ${F('continue_on_blocked', 'If a feature gets stuck, carry on with the others', 'checkbox', null, 'The stuck feature goes to quarantine.')}
-          ${F('pause_on_blocked', 'If a feature gets stuck, pause and call me', 'checkbox', null, 'The loop waits for your decision.')}
+          ${F('pause_on_blocked', 'If a feature gets stuck, pause and call me (recommended)', 'checkbox', null, 'The loop stops and notifies you; you decide to try again or skip it.')}
         </div>
       </details>
       <div class="nl-note"><span>Start creates a separate worktree; your working copy is not touched.</span>

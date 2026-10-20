@@ -1,0 +1,29 @@
+/* diagram */
+
+.dg-wrap.node-dragging{cursor:grabbing;}
+.dg-wrap.node-dragging .dnode{cursor:grabbing;}
+.dnode{touch-action:none;}
+
+/* Lane header: "Stage N · feature" on the left, the feature status as a pill on the right. */
+.dg-lane-label{font:600 12px var(--mono);color:var(--text);max-width:calc(100% - 120px);}
+.dg-lane-sub{top:5px;padding:0 8px;border:1px solid;border-radius:999px;font:600 10px/16px var(--mono);letter-spacing:.04em;text-transform:uppercase;}
+.dg-lane-sub:empty{display:none;}
+
+/* Agent node: full name (wraps, never cut), role in words, task now, timing. */
+.dnode{gap:3px;padding:8px 10px;}
+.dnode .dn-title{white-space:normal;overflow:visible;overflow-wrap:anywhere;font:600 12.5px var(--mono);line-height:1.25;}
+.dnode .dn-top{align-items:flex-start;}
+.dnode .dn-top .dot{margin-top:4px;flex:none;}
+.dnode .dn-badge{font:600 10px var(--mono);text-transform:uppercase;letter-spacing:.04em;padding:1px 6px;border:1px solid currentColor;border-radius:999px;line-height:14px;}
+.dnode .dn-badge:empty{display:none;}
+.dnode .dn-subtxt{color:var(--text2);font:500 11px var(--sans);}
+.dnode>.dn-act{white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden;font:400 11px/1.35 var(--sans);color:var(--muted);flex:1;min-height:0;}
+.dnode>.dn-meta{margin-top:auto;}
+.dnode.small{padding:6px 9px;}
+.dnode.small .dn-title{font-size:12px;}
+.dnode.small>.dn-act{-webkit-line-clamp:4;line-clamp:4;}
+
+/* State: running stands out, finished steps are faded but still readable, waiting ones have a dashed border. */
+.dnode.st-queued,.dnode.st-idle{border-style:dashed;}
+.dnode.st-done{border-color:color-mix(in srgb,var(--c) 35%,var(--line2));}
+.dnode.st-running{box-shadow:0 0 0 2px var(--cg);}

@@ -1,0 +1,9 @@
+/* composer */
+
+/* ===== Two modes: Instruct the loop | Chat (actions collapsed in "Actions") ===== */
+.cp-hint{display:block;}
+.ac-wrap{border:1px solid var(--line3);border-radius:6px;padding:2px 8px;background:var(--panel);}
+.ac-wrap[open]{padding-bottom:6px;}
+.ac-sum{cursor:pointer;font:500 11px var(--mono);color:var(--muted);padding:3px 0;}
+.ac-wrap .ac-quick{margin:4px 0;}
+.composer.m-chat .ac-btn{border-color:var(--line3);background:transparent;}

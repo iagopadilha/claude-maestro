@@ -8,14 +8,14 @@ import { disconnectedDetail } from '../../api/api_client.js';
 import { WhyButton } from '../../components/why_panel.js';
 import { ctx, ui } from './context.js';
 import { BrandSub, RepoLine, StatusPill, Limits, HeaderActions, headerModel } from './header.js';
-import { GuardBadge, GuardFeed, totalBlocks, openGuardFeed } from './guard_feed.js';
+import { GuardBadge, totalBlocks, openGuardFeed } from './guard_feed.js';
 import { ProgressTrail } from './progress_trail.js';
-import { Alert, idleText } from './alert.js';
+import { Alert, idleText, ChromeBar, chromeOpen } from './alert.js';
 import { NewLoop, nlZone } from './new_loop.js';
 import { RoadmapSidebar } from './roadmap_sidebar.js';
 import { CenterTabs, Caption, PastBar, Legend, CenterCanvas, centerModel, zoomCenter, fitCenter } from './center.js';
 import { InspectorHead, InspectorTabs, InspectorBody, inspectorModel } from './inspector.js';
-import { ComposerBand, ComposerSeg, FeatureOptions, ComposerTray, ComposerStatus, composerView, composerSubmit, composerKeyDown, pickFeature } from './chat.js';
+import { ComposerBand, ComposerSeg, FeatureOptions, ComposerTray, ComposerStatus, composerView, composerSubmit, composerKeyDown, pickFeature, proposeFromComposer } from './chat.js';
 import { ActPanel } from './act.js';
 import { PlanningScreen, planningRequired } from './planning.js';
 import { Timeline } from './timeline.js';
@@ -70,10 +70,13 @@ export function Panel() {
     </header>
 
     <div id="trail" class="trail" aria-label="Where this project stands" hidden=${planning}>${planning ? null : html`<${ProgressTrail} />`}</div>
-    <div id="alert-zone" class="alert-zone">${on ? html`<${Alert} />` : null}</div>
-    <div id="newloop-zone" class="newloop-zone" hidden=${!nz.show}>${nz.built ? html`<${NewLoop} />` : null}</div>
+    <div id="chrome-zones" class=${'chrome-zones' + (planning || chromeOpen() ? ' is-open' : '')} hidden=${!has}>
+      ${has && !planning ? html`<${ChromeBar} nlShown=${nz.show} />` : null}
+      <div id="alert-zone" class="alert-zone">${on ? html`<${Alert} />` : null}</div>
+      <div id="newloop-zone" class="newloop-zone" hidden=${!nz.show}>${nz.built ? html`<${NewLoop} />` : null}</div>
 
-    <div id="workspace-zone" class="workspace-zone" hidden=${!has}>${has ? html`<${WorkspaceZone} />` : null}</div>
+      <div id="workspace-zone" class="workspace-zone" hidden=${!has}>${has ? html`<${WorkspaceZone} />` : null}</div>
+    </div>
 
     ${planning ? html`<section id="planning" class="planning-zone" aria-label="Planning"><${PlanningScreen} /></section>` : null}
 
@@ -90,7 +93,7 @@ export function Panel() {
             <button type="button" class="btn btn-sm btn-ghost" id="zoom-out" title="zoom out (Ctrl + scroll)" aria-label="zoom out" onClick=${() => zoomCenter(1 / 1.2)}>−</button>
             <span class="zoom-val mono" id="zoom-val">100%</span>
             <button type="button" class="btn btn-sm btn-ghost" id="zoom-in" title="zoom in (Ctrl + scroll)" aria-label="zoom in" onClick=${() => zoomCenter(1.2)}>+</button>
-            <button type="button" class="btn btn-sm btn-ghost" id="zoom-fit" title="fits and centers the diagram" onClick=${fitCenter}>Center</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="zoom-fit" title="fits and centers the diagram and puts dragged nodes back" onClick=${fitCenter}>Center</button>
           </div>
         </div>
         <div id="past-bar" class="past-bar" hidden=${!(cm && cm.past)}>${cm && cm.past ? html`<${PastBar} />` : null}</div>
@@ -105,12 +108,11 @@ export function Panel() {
         <div class="insp-head" id="insp-head">${im ? html`<${InspectorHead} m=${im} />` : null}</div>
         <div class="insp-tabs" id="insp-tabs" role="tablist" aria-label="Inspector">${im ? html`<${InspectorTabs} m=${im} />` : null}</div>
         <div class=${'insp-body' + (im && im.chat ? ' is-chat' : '')} id="insp-body">${im ? html`<${InspectorBody} m=${im} />` : null}</div>
-        <section class=${'guard-feed' + (blocks > 0 ? ' has-blocks' : '')} id="guard-feed" aria-label="Guard: tool calls blocked by the PreToolUse hook">${on ? html`<${GuardFeed} />` : null}</section>
-        <form class=${cv ? cv.cls : 'composer m-instruct'} id="composer" aria-label="Composer: instruct the loop, act or ask" onSubmit=${composerSubmit}>
+        <form class=${cv ? cv.cls : 'composer m-instruct'} id="composer" aria-label="Composer: instruct the loop or chat" onSubmit=${composerSubmit}>
           <div class="cp-band" id="cp-band">${cv ? html`<${ComposerBand} m=${cv.m} />` : null}</div>
           <div class="cp-seg" id="cp-seg" role="tablist" aria-label="Intent" hidden=${cv ? !cv.m.act : false}>${cv ? html`<${ComposerSeg} m=${cv.m} />` : null}</div>
           <div class="cp-why" id="cp-why" hidden></div>
-          <div class="cp-act" id="cp-act" hidden=${!(cv && cv.on('act'))}>${cv && cv.on('act') ? html`<${ActPanel} />` : null}</div>
+          <div class="cp-act" id="cp-act" hidden=${!(cv && cv.showActions)}>${cv && cv.showActions ? html`<${ActPanel} onPropose=${proposeFromComposer} />` : null}</div>
           <label class="cp-feat" id="cp-feat" for="cp-feature" hidden=${cv ? !cv.on('instruct') : false}><span>about the feature:</span><select id="cp-feature"
             value=${cv ? cv.featValue : ''} onChange=${pickFeature}>${cv ? html`<${FeatureOptions} fs=${cv.m.fs} />` : null}</select></label>
           <div class="cp-tray" id="cp-tray" hidden=${!(cv && cv.showTray)}>${cv && cv.showTray ? html`<${ComposerTray} />` : null}</div>
@@ -118,7 +120,7 @@ export function Panel() {
             <textarea id="cp-text" rows="2" aria-label="Message" placeholder=${cv ? cv.placeholder : null} onKeyDown=${composerKeyDown}></textarea>
             <button type="submit" class="btn btn-primary" id="cp-send" disabled=${!!(cv && cv.sendDisabled)}>${cv ? cv.sendText : 'Instruct the loop'}</button>
           </div>
-          <div class="cp-hint mono" id="cp-hint"></div>
+          <div class="cp-hint mono" id="cp-hint">${cv ? cv.hint : ''}</div>
           <div class=${'cp-status' + (cv && cv.status ? ' ' + cv.status.kind : '')} id="cp-status" role="status" hidden=${!(cv && cv.status)}>${cv && cv.status ? html`<${ComposerStatus} s=${cv.status} />` : null}</div>
         </form>
       </aside>

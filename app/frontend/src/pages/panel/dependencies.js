@@ -31,8 +31,18 @@ export function readiness(f, info) {
 // kept across tab switches: view/ctl = pan/zoom of the graph (ctl is reached by the zoom buttons), status = highlighted state
 const dp = { view: newGraphView(), ctl: {}, status: null, mermaid: null, mermaidKey: undefined, mermaidLoading: false };
 
+/** Reading key of the graph: what an arrow means and what each edge color stands for. */
+function GraphLegend() {
+  return html`<div class="dep-legend" aria-label="Graph legend">
+    <span class="dep-legend-item"><i class="dep-key green"></i>A → B: B depends on A (A verified)</span>
+    <span class="dep-legend-item"><i class="dep-key amber"></i>A not verified yet, B waits</span>
+    <span class="dep-legend-item"><i class="dep-key red"></i>A blocked</span>
+    <span class="dep-legend-item">n/m in the header: verified / total</span>
+  </div>`;
+}
+
 function MermaidBlocks({ blocks }) {
-  return html`<details>
+  return html`<details class="dep-details">
     <summary>Graph as text <span class="dim-mono">mermaid for PR/GitHub and text for chat; copy and paste</span></summary>
     ${blocks.map((b) => html`<div key=${b.title} class="dep-block"><div class="small-label">${b.title}</div>
       <div class="cmd-row"><pre class="cmd">${b.text}</pre>
@@ -52,7 +62,8 @@ export function Dependencies() {
       <${StateMachine} counts=${ui.past ? countsOf(fs) : ctx.state && ctx.state.counts} chosen=${status} onPick=${pick} />
     </div>
     <div class="dep-graph"><${FeatureGraph} features=${fs} stages=${ctx.state && ctx.state.stages} selected=${focusFeatureId()}
-      status=${status} onSelect=${selectFeature} view=${dp.view} ctl=${dp.ctl} /></div>
+      status=${status} onSelect=${selectFeature} view=${dp.view} ctl=${dp.ctl} />
+      ${fs.length ? html`<${GraphLegend} />` : null}</div>
     <div class="dep-mermaid" hidden=${!blocks.length}>${blocks.length ? html`<${MermaidBlocks} blocks=${blocks} />` : null}</div>
   </div>`;
 }

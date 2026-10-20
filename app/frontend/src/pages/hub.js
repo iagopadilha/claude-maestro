@@ -83,7 +83,7 @@ function ProjectCard({ p }) {
       ${p.favorite ? html`<span class="hub-fav" title="favorite" aria-label="favorite">★</span>` : null}
       <a class="hub-project-name" href=${url}>${txt(p.name || p.id)}</a>
       ${loop ? html`<${Chip} text=${loop[0]} color=${loop[1]} pulse=${loop[2]} />` : null}
-      ${mode ? html`<${Chip} text=${mode[0]} color=${mode[1]} />` : null}
+      ${mode && !(loop && loop[0] === mode[0]) ? html`<${Chip} text=${mode[0]} color=${mode[1]} />` : null}
       ${p.folder_exists === false ? html`<${Chip} text="folder missing" color="#F06A5E" />` : null}
     </div>
     <div class="hub-project-path mono" title=${p.repo_path || ''}>${txt(p.repo_path)}</div>

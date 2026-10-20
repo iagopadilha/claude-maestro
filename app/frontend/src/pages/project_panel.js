@@ -1,5 +1,5 @@
 /* Panel of ONE project (/p/<id>/): port of the loop monitor with URLs relative to the project (/p/<id>/api/...),
-   plus the "Where this project stands" trail, the .specs explorer, the graph and the whiteboard.
+   plus the "Where this project stands" trail, the .specs explorer, and the graph.
    The whole page is one Preact tree (<Panel>, panel/app.js): handlers mutate ctx/ui and call renderAll(). */
 import { $, bindTabKeys } from '../util/dom.js';
 import { html, render } from '../util/preact.js';
@@ -10,7 +10,6 @@ import { ctx, ui, askKey, agentById } from './panel/context.js';
 import { Panel } from './panel/app.js';
 import { updateTitle, cancelShutdown } from './panel/header.js';
 import { nlOnLoopRunning } from './panel/new_loop.js';
-import { checkRemoteBoard } from './panel/center.js';
 import { fetchAgentLog } from './panel/inspector.js';
 import { loadHist } from './panel/history.js';
 import { initLayout } from './panel/layout.js';
@@ -56,7 +55,6 @@ function applyState(s) {
     const a = agentById(ui.sel.id);
     if (a && a.state === 'running' && pollCount % 3 === 0) fetchAgentLog(a.id);
   }
-  if (pollCount % 3 === 0) checkRemoteBoard();
   maybeReloadProgress();
   pollCount += 1;
 }

@@ -26,7 +26,7 @@ const DEFAULT_STEPS = [
 const STEP_OF_ACTION = { structure: 'structure', conformance: 'conformance', map: 'map', repos: 'repos', roadmap: 'roadmap', flows: 'flows', approve: 'approval', test_environment: 'test_environment', check: 'loop', start_loop: 'loop', follow: 'loop' };
 const TYPE_ROADMAP = /roadmap/i, TYPE_MAP = /^map$|codebase/i;
 
-const tr = { loading: false, error: null, jobs: [], following: new Map(), dialog: null, lastRead: 0, roadmap: null };
+const tr = { trailOpen: false, loading: false, error: null, jobs: [], following: new Map(), dialog: null, lastRead: 0, roadmap: null };
 const DEFAULT_BUDGET_USD = 5, MAX_BUDGET_USD = 50;
 
 // ---------- reading ----------
@@ -334,7 +334,8 @@ export function ProgressTrail() {
   const approved = approval().approved || (byId.approval && byId.approval.ok);
   const planning = planningRequired();
   const aiRoadmap = !planning && pr.next_action !== 'roadmap' && status() !== 'running' && byId.structure && byId.structure.ok;
-  return html`<div class="tr-line full-line"><span class="tr-title">Where this project stands</span>
+  const toggleTrail = () => { tr.trailOpen = !tr.trailOpen; renderAll(); };
+  return html`<div class=${'tr-line full-line' + (tr.trailOpen ? ' is-open' : ' is-compact')}><span class="tr-title">Where this project stands</span>
     <${Checklist} label="Where this project stands" steps=${steps} currentId=${STEP_OF_ACTION[pr.next_action] || null} />
     <div class="tr-action">
       <span class="tr-next">${(planning && PLANNING_TEXT[pr.next_action]) || ACTION_TEXT[pr.next_action] || ''}</span>
@@ -344,5 +345,7 @@ export function ProgressTrail() {
         <span class="spinner sm" aria-hidden="true"></span><${JobTimer} j=${j} /></button>`)}
       ${!approved && ['roadmap', 'flows', 'approve', 'structure', 'conformance', 'map', 'repos'].includes(pr.next_action) ? html`<span class="tr-note">Without an approved roadmap the loop does not start.</span>` : null}
     </div>
+    <button type="button" id="tr-toggle" class="tr-toggle" aria-expanded=${String(tr.trailOpen)} title=${tr.trailOpen ? 'Collapse the trail to one line' : 'Show the trail descriptions and notes'}
+      onClick=${toggleTrail}>${tr.trailOpen ? '▴' : '▾'}</button>
   </div>`;
 }

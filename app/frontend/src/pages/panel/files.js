@@ -7,10 +7,11 @@ import { MarkdownEditor, markdownEditorStore } from '../../components/markdown_e
 import { ctx, ui, lastN } from './context.js';
 import { renderAll, requestRender } from '../project_panel.js';
 import { reloadProgress } from './progress_trail.js';
+import { FileNote, explainFile, OUTSIDE_SPECS } from './file_explanations.js';
 
 const TREE_STALE_MS = 10000;
 // tree and editor stores outlive the tab: switching views keeps the open file, the draft and the open folders
-const fv = { tree: null, editor: null, loading: false, loadedAt: 0, error: null, pending: null, promise: null };
+const fv = { tree: null, editor: null, loading: false, loadedAt: 0, guide: false, error: null, pending: null, promise: null };
 
 function parts() {
   if (fv.tree) return;
@@ -24,14 +25,30 @@ function runPending() { if (fv.pending) { const p = fv.pending; fv.pending = nul
 export function Files() {
   parts();
   useEffect(() => { loadTree(false).then(runPending); }, [lastN(), ui.pastN, ui.pinLast]);
+  const openPath = fv.editor.path();
   return html`<div class="files">
     <aside class="files-side" aria-label=".specs tree">
-      <div class="files-side-h"><span class="small-label">.specs</span>
-        <button type="button" class="btn btn-sm btn-ghost" title="reads the tree again" onClick=${() => loadTree(true)}>Refresh</button></div>
+      <div class="files-side-h"><span class="small-label">.specs</span><span class="files-side-actions">
+        <button type="button" class="btn btn-sm btn-ghost" aria-pressed=${String(fv.guide)} title="one line explaining each file" onClick=${() => { fv.guide = !fv.guide; renderAll(); }}>${fv.guide ? 'Tree' : 'Guide'}</button>
+        <button type="button" class="btn btn-sm btn-ghost" title="reads the tree again" onClick=${() => loadTree(true)}>Refresh</button></span></div>
       <div class=${'files-status' + (fv.error ? ' err' : '')} aria-live="polite">${fv.loading ? 'loading…' : fv.error || null}</div>
-      <${FileTree} store=${fv.tree} />
+      ${fv.guide ? html`<${FilesGuide} />` : html`<${FileTree} store=${fv.tree} />`}
     </aside>
-    <${MarkdownEditor} store=${fv.editor} />
+    <div class="files-main">${openPath ? html`<${FileNote} path=${openPath} />` : null}<${MarkdownEditor} store=${fv.editor} /></div>
+  </div>`;
+}
+
+/** "Guide" mode of the side: every file of the tree with one line saying what it is; click opens it. */
+function FilesGuide() {
+  const rows = [];
+  walkTree(fv.tree.groups(), (n, parent, group) => { if (n.kind === 'file') rows.push({ n, group }); });
+  return html`<div class="files-guide">
+    ${rows.map(({ n }) => { const e = explainFile(n.path);
+      return html`<button key=${n.path} type="button" class="files-guide-row" title=${n.path} onClick=${() => openCarefully(n.path, { editable: n.editable, reason: n.reason })}>
+        <span class="files-guide-name mono">${n.path}</span><span class="files-guide-what">${e ? e.what : 'File written by the loop or by you.'}</span></button>`; })}
+    ${rows.length ? null : html`<div class="empty-note">no file in .specs</div>`}
+    <div class="small-label files-guide-out">Outside .specs</div>
+    ${OUTSIDE_SPECS.map(([name, what]) => html`<div key=${name} class="files-guide-row static"><span class="files-guide-name mono">${name}</span><span class="files-guide-what">${what}</span></div>`)}
   </div>`;
 }
 

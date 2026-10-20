@@ -1,0 +1,6 @@
+/* Polish: small cross-screen fixes found while validating the panel. */
+.limit-val{white-space:nowrap;}
+.limit-label{white-space:nowrap;}
+.limit{min-width:max-content;}
+/* hub: footer aligned with the content column (the main has 20px side padding) */
+.hub-footer-t,#hub-diag{max-width:1040px;}
