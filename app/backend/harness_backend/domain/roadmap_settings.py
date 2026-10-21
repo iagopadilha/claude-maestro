@@ -20,6 +20,7 @@ def parse_roadmap_e2e(text):
 DEFAULT_DISPATCH = "auto"
 MIN_DISPATCH, MAX_DISPATCH = 1, 8
 MIN_TURN_MINUTES, MAX_TURN_MINUTES = 1, 600
+MIN_PARALLEL_TASKS, MAX_PARALLEL_TASKS, DEFAULT_MAX_PARALLEL_TASKS = 1, 5, 3  # executors per wave inside ONE feature
 BRANCH_PATTERN = re.compile(r"[A-Za-z0-9._/-]{1,80}")
 SETUP_LIMIT = 200
 AUTOMATIC_BRANCH_WORD = "automatic"
@@ -41,10 +42,12 @@ LOOP_SETTING_HEADER_NAMES = {
     "setup": "Setup",
     "when_stuck": "When a feature gets stuck",
     "push_pr": "Push and PR",
+    "max_parallel_tasks": "Max parallel tasks",
 }
 LOOP_SETTING_DEFAULTS = {
     "dispatch": DEFAULT_DISPATCH, "e2e": False, "budget_turn": 5.0, "budget_loop": 50.0, "minutes_turn": 60,
     "branch": "", "base_branch": DEFAULT_BASE_BRANCH, "setup": "", "when_stuck": "pause", "push_pr": True,
+    "max_parallel_tasks": DEFAULT_MAX_PARALLEL_TASKS,
 }
 
 
@@ -139,6 +142,7 @@ LOOP_SETTING_CONVERTERS = {
     "setup": convert_setup,
     "when_stuck": convert_when_stuck,
     "push_pr": convert_yes_no,
+    "max_parallel_tasks": lambda raw: convert_whole_number(raw, MIN_PARALLEL_TASKS, MAX_PARALLEL_TASKS),
 }
 
 

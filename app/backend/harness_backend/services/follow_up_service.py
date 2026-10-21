@@ -13,11 +13,12 @@ one id per round. `Follow-up <n>` with a space is accepted too.
 Refused (409) while the loop runs, while any claude job runs, or without a loop worktree.
 """
 import os
-import re
 from typing import Protocol
 
 from ..domain.project_errors import (LOOP_RUNNING_CODE, InvalidRequestError, InvalidRoadmapError, JobInProgressError, LoopRunningError,
                                      RepoConflictError)
+from ..domain.follow_up_stage import (ANY_STAGE_HEADING, FEATURE_LINE, OPEN_FEATURE_STATUSES, STAGE_HEADING,  # noqa: F401  (re-exported)
+                                      list_follow_up_stages, normalize_newlines, validate_appended_stage)
 from ..engine import decisions as decisions_engine
 from ..infrastructure.claude_client import redact_secrets
 from ..repositories.loop_command_file_repository import now_iso
@@ -38,10 +39,6 @@ ROADMAP_PATH = ".specs/project/ROADMAP.md"
 FLOWS_PATH = ".specs/project/FLOWS.md"
 EDITABLE_PATHS = (ROADMAP_PATH, FLOWS_PATH)
 DRAFT_RELATIVE_PATH = ".specs/project/loop/internal/follow-up-draft.json"
-STAGE_HEADING = re.compile(r"^#{1,6}\s*Stage\s+(?P<id>Follow-up(?:[-\s]+(?P<n>\d+))?)", re.I)
-ANY_STAGE_HEADING = re.compile(r"^#{1,6}\s*Stage\s+\S+", re.I)
-FEATURE_LINE = re.compile(r"^-\s*\[([^\]]+)\]")
-OPEN_FEATURE_STATUSES = ("pending", "speccing", "specced", "approved", "building")
 NO_WORKTREE_CODE = "no_worktree"
 NO_STAGE_CODE = "no_follow_up_stage"
 FOLLOW_UP_BUSY_CODE = "follow_up_busy"
@@ -65,56 +62,6 @@ class IFollowUpService(Protocol):
     def get_follow_up(self, context) -> dict: ...
     def send_follow_up(self, context, body) -> dict: ...
     def run_follow_up(self, context) -> tuple: ...
-
-
-def normalize_newlines(text):
-    return (text or "").replace("\r\n", "\n")
-
-
-def list_follow_up_stages(roadmap_text):
-    """[{"id", "n", "features": [{"slug", "status"}]}] of the `Follow-up` stages, in file order."""
-    features, _ = loop_state.parse_roadmap(roadmap_text)
-    stages, current = [], None
-    for raw in normalize_newlines(roadmap_text).splitlines():
-        line = raw.strip()
-        if ANY_STAGE_HEADING.match(line):
-            heading = STAGE_HEADING.match(line)
-            current = {"id": heading.group("id").replace(" ", "-"), "n": int(heading.group("n")) if heading.group("n") else None,
-                       "features": []} if heading else None
-            if current:
-                stages.append(current)
-            continue
-        found = FEATURE_LINE.match(line)
-        if current is not None and found and found.group(1) in features:
-            current["features"].append({"slug": found.group(1), "status": features[found.group(1)].get("status")})
-    return stages
-
-
-def validate_appended_stage(roadmap_before, roadmap_after, flows_before, flows_after, expected_number):
-    """Why the two files are NOT 'the old text + one appended Follow-up stage (+ appended FLOWS text)'; None when they are."""
-    before, after = normalize_newlines(roadmap_before).rstrip(), normalize_newlines(roadmap_after).rstrip()
-    if not after.startswith(before) or after == before:
-        return "an earlier part of the ROADMAP was changed (or nothing was appended); only a new Follow-up stage may be added"
-    appended_lines = [line.strip() for line in after[len(before):].splitlines() if line.strip()]
-    heading = STAGE_HEADING.match(appended_lines[0]) if appended_lines else None
-    if heading is None or heading.group("n") is None or int(heading.group("n")) != expected_number:
-        return "the appended stage must be headed `## Stage Follow-up-%d - Follow-up %d`" % (expected_number, expected_number)
-    if any(ANY_STAGE_HEADING.match(line) for line in appended_lines[1:]):
-        return "only ONE stage may be appended"
-    appended_slugs = [found.group(1) for found in (FEATURE_LINE.match(line) for line in appended_lines) if found]
-    if not appended_slugs:
-        return "the appended stage has no feature"
-    features_before, _ = loop_state.parse_roadmap(before)
-    features_after, errors_after = loop_state.parse_roadmap(after)
-    if len(set(appended_slugs)) != len(appended_slugs) or any(slug in features_before for slug in appended_slugs):
-        return "a new feature reuses a slug that already exists"
-    if len(features_after) != len(features_before) + len(appended_slugs):
-        return "the appended features do not parse as the ROADMAP grammar"
-    if errors_after and len(errors_after) > len(loop_state.parse_roadmap(before)[1]):
-        return "the appended stage breaks the ROADMAP grammar: %s" % "; ".join(errors_after[:3])
-    if not normalize_newlines(flows_after).rstrip().startswith(normalize_newlines(flows_before).rstrip()):
-        return "an earlier part of FLOWS.md was changed; only new entries may be appended"
-    return None
 
 
 class FollowUpService:
