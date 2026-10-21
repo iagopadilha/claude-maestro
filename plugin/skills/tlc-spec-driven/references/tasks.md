@@ -4,6 +4,32 @@
 
 **Skip this phase when:** There are ≤3 obvious steps. In that case, tasks are implicit — go straight to Execute and list them inline in your implementation plan.
 
+## Tasks format (loop)
+
+In a project run by the loop, `tasks.md` uses THIS format (template: `app/templates/specs/TASKS.md`; it wins over the template further down).
+The engine reads it: `harness.py tasks waves <slug>` turns it into waves of parallel executors.
+
+```markdown
+### T1: <one deliverable> [P]
+**Type**: impl            <!-- impl | wiring -->
+**Files**: path/a.py, path/b.py
+**Deps**: none            <!-- T-ids, comma-separated -->
+**Reqs**: FEAT-01, FEAT-02
+**Done when**: <observable behaviour>
+**Status**: pending
+```
+
+- **Type** is `impl` or `wiring` only. There is NO test type and no test task.
+- **Files** are exactly what the task edits. Two tasks that share a file never run in the same wave (the engine separates them); keep file sets disjoint to get parallelism.
+- **Wiring** (DI registration, route table, composition, index exports) is its own task, goes LAST and depends on every task it wires.
+- **Size**: Small feature = 1 to 5 task lines. Do not split what one executor does in a single pass.
+- **Done when** is observable behaviour (a command, a response, a screen). No "tests pass" line.
+- **No tests in a project without tests**: if the project has no test suite, no task adds one.
+- **Status** (`pending|running|done|failed`) is written by the loop; the spec-writer leaves `pending`.
+- Check the plan before approving: `python app/harness.py tasks waves <slug>` (cycle, unknown dependency or missing file = a problem, no waves).
+
+---
+
 ## Why Granular Tasks?
 
 | Vague Task (BAD) | Granular Tasks (GOOD)             |

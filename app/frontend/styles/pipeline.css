@@ -115,3 +115,10 @@
 .pl-failure-who .fl{font-family:var(--pl-sans);}
 .pl-failure-status{font:400 10px var(--pl-mono);}
 .pl-failure-out{display:block;margin-top:4px;color:var(--pl-text3);overflow-wrap:anywhere;}
+.pl-task-waves{margin-top:8px;display:flex;flex-direction:column;gap:4px;}
+.pl-task-wave{display:flex;flex-wrap:wrap;align-items:center;gap:6px;}
+.pl-task-wave-name{font-size:10px;color:var(--pl-text3);width:56px;flex:none;}
+.pl-task-chip{display:inline-flex;align-items:center;gap:4px;font:11px var(--pl-mono);padding:2px 8px;border-radius:10px;border:1px solid var(--pl-line-soft);color:var(--pl-text3);}
+.pl-task-chip.running{color:var(--pl-amber);border-color:var(--pl-amber);}
+.pl-task-chip.done{color:#3fb950;border-color:#3fb950;}
+.pl-task-chip.failed{color:#f85149;border-color:#f85149;background:var(--pl-red-bg);cursor:help;}
