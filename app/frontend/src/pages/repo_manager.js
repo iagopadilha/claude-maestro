@@ -11,6 +11,8 @@ import { toast } from '../components/toast.js';
 import { pickFolder } from '../components/folder_browser.js';
 import { openDialog, confirmDialog } from '../components/dialog.js';
 import { Conformance, conformanceDefault } from '../components/conformance.js';
+import { openBigDialog } from '../components/big_dialog.js';
+import { SubprojectsPanel, loadSubprojects } from './panel/subprojects.js';
 
 const READINESS_POLL_MS = 4000; // while a map job runs in some repo
 const NATIVE_DIALOG_TIMEOUT_MS = 310000; // the back end waits up to 300 s for the system window
@@ -228,8 +230,19 @@ async function mapRepoCodebase(projectId, repo, onDone) {
     toast('Mapping ' + repo.name + ' started.', 'ok'); onDone();
   } catch (e) { toast((e.status === 409 ? 'Cannot map right now: ' : 'Mapping not started: ') + e.message, 'err'); }
 }
+/** A secondary repo that is a monorepo (readiness says so, or its unready items talk about subprojects) shows the subprojects table instead of the two buttons. */
+const isMonorepoRepo = (info) => !!info.monorepo || list(info.missing).includes('subprojects') || /subproject/i.test(String(info.detail || ''));
+/** Dialog with the same table as the panel, for the repo `info.name` (its folder = `repoPath`, so "Add folder" is made relative to it). */
+function openSubprojectsDialog(info, repoPath, onDone) {
+  openBigDialog({
+    badge: 'Monorepo', title: 'Subprojects of ' + info.name,
+    body: () => html`<${SubprojectsPanel} repo=${info.name} repoPath=${repoPath} />`,
+    onClose: () => { loadSubprojects(info.name); if (onDone) onDone(); },
+  });
+}
 /** Under a non-primary repo row: its tags, why it is not ready and the two setup actions. `info` = the repos-readiness row. */
-function RepoReadiness({ projectId, info, locked, onDone }) {
+function RepoReadiness({ projectId, info, repoPath, locked, onDone }) {
+  if (isMonorepoRepo(info)) return html`<${MonorepoReadiness} info=${info} repoPath=${repoPath} onDone=${onDone} />`;
   const running = !!(info.map && info.map.running), docs = list(info.map && info.map.files).length, miss = list(info.missing);
   return html`<div class="rp-ready" role="group" aria-label=${'Setup of ' + info.name}>
     <div class="rp-line">
@@ -243,6 +256,19 @@ function RepoReadiness({ projectId, info, locked, onDone }) {
     </div>
     ${!info.ready ? html`<div class="nl-box nl-warn" role="note">${'Not ready: ' + (info.detail || (miss.length ? 'missing ' + miss.join(' and ') : 'setup incomplete'))}</div>` : null}
     <p class="rp-help">Setting conformance or mapping writes CLAUDE.md (and docs/codebase) in that repository, so its folder shows as changed: the Workspace area then offers Commit and push.</p>
+  </div>`;
+}
+
+function MonorepoReadiness({ info, repoPath, onDone }) {
+  const confirmed = !!(info.monorepo && info.monorepo.confirmed), miss = list(info.missing);
+  return html`<div class="rp-ready" role="group" aria-label=${'Subprojects of ' + info.name}>
+    <div class="rp-line">
+      <span class=${'rp-tag mono' + (confirmed ? '' : ' bad')}>${confirmed ? 'monorepo: list confirmed' : 'monorepo: list not confirmed'}</span>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-sm" onClick=${() => openSubprojectsDialog(info, repoPath, onDone)}>Subprojects</button>
+    </div>
+    ${!info.ready ? html`<div class="nl-box nl-warn" role="note">${'Not ready: ' + (info.detail || (miss.length ? 'missing ' + miss.join(' and ') : 'setup incomplete'))}</div>` : null}
+    <p class="rp-help">The Conformance line and the code map of a monorepo live in each subproject. Open Subprojects to confirm the list, set conformance and map them.</p>
   </div>`;
 }
 
@@ -283,7 +309,6 @@ export function RepoManager({ projectId, locked = '', onChange }) {
   const inProject = new Set(repos.map((r) => normPath(r.path)));
   const extra = catalog.filter((c) => !inProject.has(normPath(c.path)));
   const lockMsg = locked || '';
-  const setMulti = (on) => run('multi', () => appApi.post(reposRoute(projectId) + '/multi', { multi: on }), on ? 'Several repositories on: pick the ones that take part.' : 'Back to a single repository.');
   const addPath = (path) => run('add:' + path, () => appApi.post(reposRoute(projectId), { path }, 30000), 'Repository added.');
   const addSuggested = async (rows) => {
     for (const c of rows) if (!(await addPath(c.path))) break; // stops at the first refusal (the error is shown); the others stay suggested
@@ -291,25 +316,22 @@ export function RepoManager({ projectId, locked = '', onChange }) {
   const addFolder = async () => { const path = await chooseFolder(); if (path) addPath(path); };
   const removeRepo = async (r) => {
     const ok = await run('rm:' + r.name, () => requestJson('DELETE', '/api/app/' + reposRoute(projectId) + '/' + encodeURIComponent(r.name), null), `${r.name} left the project (no folder or worktree was deleted).`);
-    if (ok) { setRemoving(null); focusId('rp-multi'); }
+    if (ok) { setRemoving(null); focusId('rp-add'); }
   };
   const idle = !busy;
   const readyOf = (name) => (ready ? ready.repos.find((x) => x.name === name) : null);
 
   return html`<div class="rp">
-    <label class="nl-check rp-multi" for="rp-multi"><input type="checkbox" id="rp-multi" checked=${data.multi} disabled=${!!lockMsg || !idle}
-      aria-describedby="rp-multi-help" onChange=${(e) => setMulti(e.currentTarget.checked)} /><span>This project uses several repositories</span></label>
-    <p class="rp-help" id="rp-multi-help">${lockMsg || (data.multi
-      ? 'One loop works across the ticked repositories. ' + WORKTREE_HELP + ' The plan (.specs) stays in the primary repository.'
-      : 'Off: the loop works only on this project\'s repository. ' + WORKTREE_HELP + (repos.length > 1 ? ` The other ${repos.length - 1} listed repositories are kept and come back if you check this again.` : ''))}</p>
+    <p class="rp-help" id="rp-help">${lockMsg || ('One loop works across the repositories listed here. ' + WORKTREE_HELP + ' The plan (.specs) stays in the primary repository.')}</p>
     ${err ? html`<div class="nl-box nl-bad" role="alert">${err}</div>` : null}
     <ul class="rp-list" aria-label="Repositories of the project">
-      ${(data.multi ? repos : repos.filter((r) => r.primary)).map((r) => html`<li key=${r.name} class="rp-row">
+      ${repos.map((r) => html`<li key=${r.name} class="rp-row">
         <div class="rp-line">
           <input type="checkbox" id=${'rp-chk-' + r.name} checked disabled=${r.primary || !!lockMsg || !idle} aria-label=${'Repository ' + r.name + (r.primary ? ' (primary, always part of the project)' : '')}
             onChange=${() => { setRemoving(r.name); focusId('rp-rm-no-' + r.name); }} />
           <span class="rp-name mono">${r.name}</span>
           ${r.primary ? html`<span class="rp-tag mono">primary</span>` : null}
+          ${r.role ? html`<span class="rp-tag mono" title=${r.reason || 'role of this repository in the project'}>${r.role}</span>` : null}
           ${r.exists === false ? html`<span class="rp-tag bad mono">folder missing</span>` : null}
           ${r.branch ? html`<span class="rp-tag mono" title="current branch of your folder">${r.branch}</span>` : null}
           <span class="spacer"></span>
@@ -318,7 +340,7 @@ export function RepoManager({ projectId, locked = '', onChange }) {
         </div>
         <div class="rp-path mono" title=${r.path}>${txt(r.path)}</div>
         ${r.worktree_path ? html`<div class="rp-path rp-worktree mono" title=${r.worktree_path}>${'Worktree: ' + r.worktree_path}</div>` : null}
-        ${data.multi && !r.primary && readyOf(r.name) ? html`<${RepoReadiness} projectId=${projectId} info=${readyOf(r.name)} locked=${lockMsg} onDone=${() => { load(); if (onChange) onChange(); }} />` : null}
+        ${data.multi && !r.primary && readyOf(r.name) ? html`<${RepoReadiness} projectId=${projectId} info=${readyOf(r.name)} repoPath=${r.path} locked=${lockMsg} onDone=${() => { load(); if (onChange) onChange(); }} />` : null}
         ${removing === r.name ? html`<div class="confirm-inline" role="group" aria-label=${'Confirm removing ' + r.name}>
           <span>Remove it from the project? No folder or worktree is deleted.</span>
           <button type="button" class="btn btn-danger btn-sm" id=${'rp-rm-yes-' + r.name} disabled=${!idle} onClick=${() => removeRepo(r)}>Yes, remove</button>
@@ -328,7 +350,7 @@ export function RepoManager({ projectId, locked = '', onChange }) {
         ${copyOpen === r.name ? html`<${SetupField} projectId=${projectId} repo=${r} locked=${!!lockMsg} onSaved=${() => load()} />` : null}
         ${copyOpen === r.name ? html`<${CopyList} projectId=${projectId} repo=${r} locked=${!!lockMsg} onSaved=${() => load()} />` : null}
       </li>`)}
-      ${data.multi ? extra.map((c) => html`<li key=${'cat-' + c.path} class="rp-row">
+      ${extra.map((c) => html`<li key=${'cat-' + c.path} class="rp-row">
         <div class="rp-line">
           <input type="checkbox" id=${'rp-cat-' + normPath(c.path)} checked=${false} disabled=${!!lockMsg || !idle} aria-label=${'Add repository ' + c.name}
             onChange=${(e) => { e.currentTarget.checked = false; addPath(c.path); }} />
@@ -337,10 +359,10 @@ export function RepoManager({ projectId, locked = '', onChange }) {
         </div>
         <div class="rp-path mono" title=${c.path}>${txt(c.path)}</div>
         ${c.purpose ? html`<div class="rp-purpose">${c.purpose}</div>` : null}
-      </li>`) : null}
+      </li>`)}
     </ul>
     ${data.suggested.length ? html`<${SuggestedRepos} rows=${data.suggested} locked=${!!lockMsg} busy=${busy.startsWith('add:')} onAdd=${addSuggested} />` : null}
-    ${data.multi ? html`<div class="card-row"><button type="button" class="btn btn-sm" id="rp-add" disabled=${!!lockMsg || !idle} onClick=${addFolder}>${busy.startsWith('add:') ? 'Adding…' : 'Add folder…'}</button>
-      <span class="hint">Opens the system folder window. The folder must be a git repository on a branch.</span></div>` : null}
+    ${html`<div class="card-row"><button type="button" class="btn btn-sm" id="rp-add" disabled=${!!lockMsg || !idle} onClick=${addFolder}>${busy.startsWith('add:') ? 'Adding…' : 'Add folder…'}</button>
+      <span class="hint">Opens the system folder window. The folder must be a git repository on a branch.</span></div>`}
   </div>`;
 }

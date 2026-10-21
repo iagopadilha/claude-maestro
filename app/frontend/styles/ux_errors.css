@@ -1,0 +1,13 @@
+/* ux pass: errors (loaded last, overrides the older rules) */
+.err-section{margin:10px 0;border:1px solid var(--line3);border-radius:8px;background:var(--panel);}
+.err-section-head{display:flex;align-items:center;gap:8px;width:100%;padding:8px 12px;background:none;border:0;color:var(--text);font:600 13px var(--sans);cursor:pointer;text-align:left;}
+.err-section-body{padding:4px 12px 12px;}
+.err-section-problem{border-color:#F06A5E;} .err-section-problem .err-section-title{color:#F06A5E;}
+.err-section-ok{border-color:var(--green-line);}
+.err-section-note .err-section-title,.err-section-guard .err-section-title{color:var(--muted);font-weight:500;}
+.err-ok{padding:10px 12px;border-radius:6px;background:var(--green-bg);border:1px solid var(--green-line);color:var(--green-soft);}
+.err-guard-note{font-size:12px;color:var(--muted);padding:2px 0 8px;}
+.err-guard-line{display:flex;gap:10px;align-items:baseline;padding:4px 0;border-top:1px solid var(--line3);font-size:12px;color:var(--muted);}
+.err-guard-count{flex:none;min-width:38px;color:var(--text2);}
+.err-guard-title{flex:none;color:var(--text2);}
+.err-guard-reason{color:var(--muted);}

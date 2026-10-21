@@ -1,5 +1,5 @@
 /* Hub (/): recent projects, open a folder (the system folder window), create a project from scratch,
-   forget a project, reset its specs (POST .../reset-specs), app diagnostics (GET /api/app/info), test notification and shut down the app. */
+   forget a project, reset its specs (GET .../reset-specs/preview, then POST .../reset-specs; deletes the loop worktree too), app diagnostics (GET /api/app/info), test notification and shut down the app. */
 import { $ } from '../util/dom.js';
 import { html, render, useState, useRef } from '../util/preact.js';
 import { DASH, list, txt, fmtRelative } from '../util/format.js';
@@ -9,7 +9,6 @@ import { openDialog } from '../components/dialog.js';
 import { pickFolder } from '../components/folder_browser.js';
 import { Conformance, conformanceDefault } from '../components/conformance.js';
 import { openWhyOnFirstVisit, WhyButton } from '../components/why_panel.js';
-import { RepoManager } from './repo_manager.js';
 
 const NATIVE_DIALOG_TIMEOUT_MS = 310000; // the back end waits up to 300 s for the system window
 const MODE = {
@@ -29,7 +28,7 @@ const INVALID_NAME_MSG = 'The name cannot contain \\ / : * ? " < > |';
 
 // store of the page: handlers mutate it and call draw() (Preact only touches what changed, so the focus stays)
 const hb = {
-  projects: null, loops: {}, error: null, info: null, infoError: null, forgetting: null, resetting: null, resetConfirm: '', busy: {}, opening: null, confirmShutdown: false, native: null,
+  projects: null, loops: {}, error: null, info: null, infoError: null, forgetting: null, resetting: null, resetConfirm: '', resetPreview: null, busy: {}, opening: null, confirmShutdown: false, native: null,
   testing: false, shuttingDown: false, closed: false,
 };
 let hubRoot = null;
@@ -60,12 +59,18 @@ function LiveLoop({ p, lp }) {
       <a class="btn btn-primary btn-sm hub-ask-a" href=${url}>Answer in the panel</a></div>` : null}
   </div>`;
 }
-function openRepos(p, locked) {
-  openDialog({
-    title: 'Repositories of ' + txt(p.name || p.id), width: 640,
-    content: html`<${RepoManager} projectId=${p.id} locked=${locked ? 'A loop is running in this project: the repository list is locked until it stops.' : ''} />`,
-    actions: [{ text: 'Close', cls: 'btn-primary' }],
-  });
+/** What the reset does to the loop worktree(s), read BEFORE confirming (GET .../reset-specs/preview). Text only: no options. */
+function ResetWorktreeNotice({ preview }) {
+  if (preview.state === 'loading') return html`<span class="reset-worktree dim">checking for a loop worktree…</span>`;
+  if (preview.state === 'error') {
+    return html`<span class="reset-worktree">Could not check for a loop worktree (${txt(preview.error)}). If one exists, it will be deleted too, with its local branch.</span>`;
+  }
+  if (!preview.worktrees.length) return null;
+  return html`<span class="reset-worktree" role="note">${preview.worktrees.map((w) => html`<span class="reset-worktree-item" key=${w.path}>
+      A loop worktree exists at <span class="mono">${txt(w.path)}</span> (branch <span class="mono">${txt(w.branch)}</span>${preview.worktrees.length > 1 ? `, repo ${w.repo}` : ''}).
+      ${typeof w.unpushed_commits === 'number' && w.unpushed_commits > 0 ? html` It has <strong>${w.unpushed_commits} commit${w.unpushed_commits === 1 ? '' : 's'} not pushed yet</strong>.` : null}
+    </span>`)}
+    <span class="reset-worktree-item">It will be deleted too, with its local branch. To keep its changes, finish the loop (Close loop) or push the branch before resetting; otherwise everything is deleted and cleaned.</span></span>`;
 }
 function ProjectCard({ p }) {
   const ps = p.progress_summary || {};
@@ -74,10 +79,12 @@ function ProjectCard({ p }) {
   const counts = typeof c.total === 'number' && c.total > 0 ? `${c.verified != null ? c.verified : 0}/${c.total} verified${c.blocked ? ` · ${c.blocked} blocked` : ''}` : 'no features yet';
   const askForget = () => { hb.forgetting = p.id; draw(); focusId('forget-no-' + p.id); };
   const cancelForget = () => { hb.forgetting = null; draw(); focusId('forget-' + p.id); };
-  const askReset = () => { hb.resetting = p.id; hb.resetConfirm = ''; draw(); focusId('reset-name-' + p.id); };
-  const cancelReset = () => { hb.resetting = null; hb.resetConfirm = ''; draw(); focusId('reset-' + p.id); };
+  const askReset = () => { hb.resetting = p.id; hb.resetConfirm = ''; hb.resetPreview = { id: p.id, state: 'loading' }; draw(); focusId('reset-name-' + p.id); loadResetPreview(p); };
+  const cancelReset = () => { hb.resetting = null; hb.resetConfirm = ''; hb.resetPreview = null; draw(); focusId('reset-' + p.id); };
   const typedName = hb.resetConfirm.trim();
   const nameMatches = typedName === String(p.name || '').trim() && typedName !== '';
+  const preview = hb.resetPreview && hb.resetPreview.id === p.id ? hb.resetPreview : { state: 'loading' };
+  const worktrees = preview.state === 'ready' ? preview.worktrees : [];
   return html`<li class="hub-project">
     <div class="hub-project-top">
       ${p.favorite ? html`<span class="hub-fav" title="favorite" aria-label="favorite">★</span>` : null}
@@ -95,13 +102,14 @@ function ProjectCard({ p }) {
     ${hb.loops[p.id] ? html`<${LiveLoop} p=${p} lp=${hb.loops[p.id]} />` : null}
     ${hb.resetting === p.id
       ? html`<form class="confirm-inline confirm-reset" role="group" aria-label="Confirm resetting the specs" onSubmit=${(e) => { e.preventDefault(); if (nameMatches && !hb.busy[p.id]) resetSpecs(p); }}>
-          <span id=${'reset-help-' + p.id}>Moves the plan, roadmap, flows, features and loop state to .specs/.trash/ (nothing is deleted).<br />
+          <span id=${'reset-help-' + p.id}>Moves the plan, roadmap, flows, features and loop state to .specs/.trash/ (${worktrees.length ? 'the spec files are kept there' : 'nothing is deleted'}).<br />
             RULES, PROJECT, the test environment and the codebase map stay.</span>
+          <${ResetWorktreeNotice} preview=${preview} />
           <label class="sr-only" for=${'reset-name-' + p.id}>Type the project name to confirm</label>
           <input type="text" id=${'reset-name-' + p.id} class="dlg-input mono reset-name" autocomplete="off" spellcheck="false"
             placeholder=${'type "' + txt(p.name || p.id) + '"'} aria-describedby=${'reset-help-' + p.id} value=${hb.resetConfirm}
             onInput=${(e) => { hb.resetConfirm = e.currentTarget.value; draw(); }} />
-          <button type="submit" class="btn btn-danger btn-sm" id=${'reset-yes-' + p.id} disabled=${!nameMatches || !!hb.busy[p.id]}>Reset specs</button>
+          <button type="submit" class="btn btn-danger btn-sm" id=${'reset-yes-' + p.id} disabled=${!nameMatches || !!hb.busy[p.id] || preview.state === 'loading'}>Reset specs</button>
           <button type="button" class="btn btn-sm" id=${'reset-no-' + p.id} onClick=${cancelReset}>Cancel</button>
         </form>`
       : hb.forgetting === p.id
@@ -112,8 +120,7 @@ function ProjectCard({ p }) {
         </div>`
       : html`<div class="hub-project-actions">
           <a class="btn btn-primary btn-sm" href=${url}>Open panel</a>
-          <button type="button" class="btn btn-ghost btn-sm" id=${'repos-' + p.id} onClick=${() => openRepos(p, !!hb.loops[p.id])} title="Several repositories, files to copy into the worktree">Repositories</button>
-          <button type="button" class="btn btn-ghost btn-sm" id=${'reset-' + p.id} onClick=${askReset} title="Move the plan and loop state to .specs/.trash and start from zero">Reset specs</button>
+          <button type="button" class="btn btn-ghost btn-sm" id=${'reset-' + p.id} onClick=${askReset} title="Move the plan and loop state to .specs/.trash, delete the loop worktree and its local loop branch, and start from zero">Reset specs</button>
           <button type="button" class="btn btn-ghost btn-sm" id=${'forget-' + p.id} onClick=${askForget}>Forget</button>
         </div>`}
   </li>`;
@@ -135,13 +142,25 @@ async function loadOverview() {
     hb.loops = Object.fromEntries(list(r && r.loops).filter((l) => l && l.project_id).map((l) => [l.project_id, l]));
   } catch (_) { /* no overview route: no live block */ }
 }
+async function loadResetPreview(p) {
+  let next;
+  try {
+    const r = await appApi.get('projects/' + encodeURIComponent(p.id) + '/reset-specs/preview', 15000);
+    next = { id: p.id, state: 'ready', worktrees: list(r && r.worktrees) };
+  } catch (e) { next = { id: p.id, state: 'error', error: e.message }; }
+  if (hb.resetting !== p.id) return; // cancelled or reset meanwhile
+  hb.resetPreview = next; draw();
+}
 async function resetSpecs(p) {
   hb.busy[p.id] = true; draw();
   try {
     const r = await appApi.post('projects/' + encodeURIComponent(p.id) + '/reset-specs', { confirm: hb.resetConfirm.trim() });
     const n = list(r && r.moved).length;
-    hb.resetting = null; hb.resetConfirm = '';
-    toast(n ? `Specs reset: ${n} item${n === 1 ? '' : 's'} moved to ${r.trash}.` : 'Nothing to reset: the specs were already clean.', 'ok');
+    const removed = list(r && r.worktrees_removed).length, failed = list(r && r.worktree_failures);
+    hb.resetting = null; hb.resetConfirm = ''; hb.resetPreview = null;
+    toast((n ? `Specs reset: ${n} item${n === 1 ? '' : 's'} moved to ${r.trash}.` : 'Nothing to reset: the specs were already clean.')
+      + (removed ? ` Loop worktree${removed === 1 ? '' : 's'} deleted.` : ''), 'ok');
+    if (failed.length) toast('Not everything was deleted: ' + failed.map((f) => `${f.repo}: ${f.error}`).join('; '), 'err');
     draw();
     focusId('reset-' + p.id);
     loadProjects().catch(() => {});

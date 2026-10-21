@@ -1,0 +1,83 @@
+/* Subprojects table (components/subprojects_table.js). Variables come from base.css. */
+.sp-wrap{display:flex;flex-direction:column;gap:10px;min-width:0;}
+.sp-top{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.sp-top-gap{flex:1 1 auto;}
+.sp-note{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--text2);padding:7px 10px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);}
+.sp-note-info{border-color:var(--blue-line);background:var(--blue-bg);}
+.sp-note-warn{border-color:var(--amber-line);background:var(--amber-bg);color:var(--amber-soft);}
+.sp-note-bad{border-color:var(--red-line);background:var(--red-bg);color:var(--red-text);}
+.sp-notes{margin:0;padding-left:18px;font-size:12px;color:var(--text2);}
+.sp-rejected,.sp-diffs,.sp-flags{display:flex;flex-wrap:wrap;gap:5px;align-items:center;}
+.sp-flags{margin-top:4px;}
+.sp-scroll{overflow-x:auto;border:1px solid var(--line2);border-radius:8px;}
+.sp-table{width:100%;border-collapse:collapse;font-size:12px;}
+.sp-table th{text-align:left;font-weight:500;color:var(--muted);padding:7px 10px;border-bottom:1px solid var(--line2);background:var(--panel0);white-space:nowrap;}
+.sp-table td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top;}
+.sp-table tr:last-child td{border-bottom:0;}
+.sp-row-missing{opacity:.6;}
+.sp-row-skipped .sp-c-name strong{text-decoration:line-through;color:var(--muted);}
+.sp-row-system td{background:var(--panel0);}
+.sp-path{font:11px var(--mono);color:var(--dim);margin-top:2px;word-break:break-all;}
+.sp-muted{color:var(--muted);font-size:11px;}
+.sp-bad{color:var(--red-text);font-size:11px;}
+.sp-input{font:12px var(--sans);width:100%;min-width:120px;padding:4px 7px;border-radius:5px;border:1px solid var(--line3);background:var(--bg);color:var(--text);}
+.sp-chip{display:inline-block;font:500 11px var(--sans);padding:2px 7px;border-radius:10px;border:1px solid var(--line3);background:var(--panel2);color:var(--text2);white-space:nowrap;}
+.sp-chip-ok{border-color:var(--green-line);background:var(--green-bg);color:var(--green-soft);}
+.sp-chip-info{border-color:var(--blue-line);background:var(--blue-bg);color:var(--blue);}
+.sp-chip-warn,.sp-chip-wait{border-color:var(--amber-line);background:var(--amber-bg);color:var(--amber);}
+.sp-chip-bad{border-color:var(--red-line);background:var(--red-bg);color:var(--red-text);}
+.sp-conf,.sp-map{display:flex;flex-direction:column;gap:5px;align-items:flex-start;}
+.sp-conf-radios{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
+.sp-radio{display:inline-flex;gap:4px;align-items:center;font-size:11px;color:var(--text2);cursor:pointer;}
+.sp-map-run{display:flex;gap:7px;align-items:center;color:var(--amber);}
+.sp-map-n{font-size:11px;color:var(--text2);}
+.sp-add{display:flex;}
+.sp-c-skip{white-space:nowrap;}
+.sp-confirm-list{margin:8px 0 0;padding-left:18px;font-size:12px;color:var(--text2);max-height:160px;overflow:auto;}
+
+/* Wizard step that holds the subprojects table: the card widens to fit it and the table never spills out of the card. */
+.plan-step:has(.sp-wrap),.plan-step:has(.sp-inst){width:min(1040px,100%);}
+.plan-step > .sp-wrap,.plan-step > .sp-inst{align-self:stretch;width:100%;}
+.sp-table td.sp-c-skip{white-space:nowrap;}
+.sp-c-skip .btn{margin-left:8px;}
+.sp-table td:nth-child(4){min-width:230px;}
+.sp-table td:nth-child(5){min-width:130px;}
+.sp-table .btn{margin-top:4px;}
+
+/* Installer of a monorepo's setup (components/subprojects_installer.js): step indicator, one list per step, Back / Next footer. */
+.sp-inst{display:flex;flex-direction:column;gap:12px;min-width:0;}
+.sp-inst-steps{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px 22px;font-size:12px;color:var(--muted);}
+.sp-inst-step{display:inline-flex;gap:7px;align-items:center;}
+.sp-inst-n{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;border:1px solid var(--line3);font:600 11px var(--mono);}
+.sp-inst-step.current{color:var(--text);font-weight:600;}
+.sp-inst-step.current .sp-inst-n{border-color:var(--amber);color:var(--amber);}
+.sp-inst-step.done{color:var(--text2);}
+.sp-inst-step.done .sp-inst-n{border-color:var(--green-line);background:var(--green-bg);color:var(--green-soft);}
+.sp-inst-d{margin:0;font-size:13px;line-height:1.5;color:var(--text2);}
+.sp-inst-body{display:flex;flex-direction:column;gap:10px;min-width:0;}
+.sp-inst-tools{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.sp-inst-list{list-style:none;margin:0;padding:0;border:1px solid var(--line2);border-radius:8px;overflow:hidden;}
+.sp-inst-row{display:grid;grid-template-columns:minmax(180px,1fr) auto auto 78px;gap:6px 14px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--line);font-size:12px;}
+.sp-inst-row:last-child{border-bottom:0;}
+.sp-inst-main{min-width:0;}
+.sp-inst-name{font-size:13px;}
+.sp-inst-chips{display:flex;flex-wrap:wrap;gap:5px;}
+.sp-inst-end{display:flex;justify-content:flex-end;}
+.sp-inst-empty{padding:14px 12px;border:1px dashed var(--line3);border-radius:8px;}
+.sp-inst-toggle{display:inline-flex;border:1px solid var(--line3);border-radius:6px;overflow:hidden;}
+.sp-inst-opt{font:500 11px var(--sans);padding:4px 12px;border:0;background:transparent;color:var(--muted);cursor:pointer;}
+.sp-inst-opt + .sp-inst-opt{border-left:1px solid var(--line3);}
+.sp-inst-opt[aria-pressed="true"]{background:var(--line2);color:var(--text);}
+.sp-inst-opt:disabled{cursor:default;opacity:.7;}
+.sp-inst-conf-row,.sp-inst-map-row{grid-template-columns:minmax(180px,1fr) auto minmax(0,1fr) 78px;}
+.sp-inst-map-row{grid-template-columns:minmax(180px,1fr) minmax(0,1.3fr) 78px;}
+.sp-inst-radio{gap:6px;font-size:12px;}
+.sp-inst-tag{font:500 10px var(--sans);padding:1px 6px;border-radius:9px;border:1px solid var(--blue-line);background:var(--blue-bg);color:var(--blue);}
+.sp-inst-status{min-width:0;font-size:12px;}
+.sp-inst-ok{color:var(--green-soft);}
+.sp-inst-system{background:var(--panel0);}
+.sp-inst-foot{display:flex;gap:10px;align-items:center;padding-top:10px;border-top:1px solid var(--line);}
+@media (max-width:760px){
+  .sp-inst-row,.sp-inst-conf-row,.sp-inst-map-row{grid-template-columns:1fr;}
+  .sp-inst-end{justify-content:flex-start;}
+}

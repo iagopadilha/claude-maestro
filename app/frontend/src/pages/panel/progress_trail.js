@@ -18,18 +18,21 @@ import { approveRoadmap, APPROVAL_NOTICE, nlExpand } from './new_loop.js';
 import { openProjectFile, loadTree } from './files.js';
 import { planningRequired, approvePlan } from './planning.js';
 import { repoConfirmContent, RepoManager } from '../repo_manager.js';
+import { SubprojectsPanel, loadSubprojects, onSubprojectsChanged } from './subprojects.js';
 
 const DEFAULT_STEPS = [
   ['folder', 'Folder'], ['git', 'Git'], ['structure', '.specs structure'], ['conformance', 'Conformance'], ['map', 'Code map'],
   ['roadmap', 'Roadmap'], ['flows', 'Flows'], ['approval', 'Approval'], ['test_environment', 'Test environment'], ['loop', 'Loop'],
 ];
-const STEP_OF_ACTION = { structure: 'structure', conformance: 'conformance', map: 'map', repos: 'repos', roadmap: 'roadmap', flows: 'flows', approve: 'approval', test_environment: 'test_environment', check: 'loop', start_loop: 'loop', follow: 'loop' };
+const STEP_OF_ACTION = { subprojects: 'subprojects', structure: 'structure', conformance: 'conformance', map: 'map', repos: 'repos', roadmap: 'roadmap', flows: 'flows', approve: 'approval', test_environment: 'test_environment', check: 'loop', start_loop: 'loop', follow: 'loop' };
 const TYPE_ROADMAP = /roadmap/i, TYPE_MAP = /^map$|codebase/i;
 
-const tr = { trailOpen: false, loading: false, error: null, jobs: [], following: new Map(), dialog: null, lastRead: 0, roadmap: null };
+const tr = { mapError: '', trailOpen: false, loading: false, error: null, jobs: [], following: new Map(), dialog: null, lastRead: 0, roadmap: null };
 const DEFAULT_BUDGET_USD = 5, MAX_BUDGET_USD = 50;
 
 // ---------- reading ----------
+onSubprojectsChanged(() => { reloadProgress(); });
+
 export async function reloadProgress() {
   if (tr.loading) return;
   tr.loading = true;
@@ -45,6 +48,7 @@ export async function reloadProgress() {
   const rj = ctx.progress && ctx.progress.running_job;
   if (rj) { const id = typeof rj === 'string' ? rj : rj.id; if (id && !tr.following.has(id)) follow(id, typeof rj === 'object' ? rj.type : null); }
   loadJobs();
+  if (monorepoMode()) loadSubprojects();
 }
 /** Called by the panel polling: reads the progress every ~10 s (not every 2 s). */
 export function maybeReloadProgress() { if (Date.now() - tr.lastRead > 10000) reloadProgress(); }
@@ -73,7 +77,8 @@ function follow(id, type) {
     .finally(() => { tr.following.delete(id); renderAll(); loadRoadmap(); reloadProgress(); schedulePoll(300); loadTree(true); });
   return a.promise;
 }
-const jobName = (type) => (TYPE_ROADMAP.test(type || '') ? 'Roadmap' : TYPE_MAP.test(type || '') ? 'Code map' : 'Job');
+const TYPE_SUBPROJECTS = /^subprojects$/i;
+const jobName = (type) => (TYPE_ROADMAP.test(type || '') ? 'Roadmap' : TYPE_SUBPROJECTS.test(type || '') ? 'Subprojects' : TYPE_MAP.test(type || '') ? 'Code map' : 'Job');
 const jobsOf = (re) => tr.jobs.filter((j) => re.test(j.type || ''));
 /** True while a code map job runs. */
 export const mapRunning = () => jobsOf(TYPE_MAP).some((j) => j.state === 'running');
@@ -86,6 +91,7 @@ export function MapStatus({ written = 0, total = 0 }) {
     const t = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(t);
   }, [running]);
+  if (tr.mapError && !running) return html`<div class="nl-box nl-bad" role="alert"><strong>The map was not started</strong>. ${tr.mapError}</div>`;
   if (!j) return null;
   if (running) return html`<div class="nl-msg" role="status"><div class="spinner" aria-hidden="true"></div><span>${`Mapping the code… ${elapsed(j)}. It takes 1 to 5 minutes; this screen updates by itself.${total ? ` ${written} of ${total} documents written.` : ''}`}</span></div>`;
   if (j.state === 'error') return html`<div class="nl-box nl-bad" role="alert"><strong>The last map did not work</strong> (${elapsed(j)}). ${j.error || 'No details were returned.'}</div>`;
@@ -101,7 +107,8 @@ function conformanceInput(allowLater) {
 }
 /** Trail action (also used by the planning checklist): dialog that creates the .specs structure. */
 export async function initializeStructure() {
-  const field = conformanceInput(true);
+  // The Conformance is never asked here: a monorepo sets it per subproject, a single repository in the next step of the installer.
+  const field = { node: html`<p class="dlg-text">${'The Conformance (STANDARD or LEGACY) is chosen in the next step, never here.'}</p>`, value: () => null };
   openDialog({
     title: 'Initialize the .specs structure',
     content: [
@@ -134,15 +141,29 @@ export function chooseConformance() {
     ],
   });
 }
-/** Trail action (also used by the planning checklist): starts the code map job. */
-export async function mapCodebase() {
-  const ok = await confirmDialog({ title: 'Map the code?', text: 'Runs claude with the /orchestrator skill in map mode: it reads the project and writes 7 short documents in docs/codebase/ at the root (stack, architecture, conventions...), committed with the code so the team can reuse them. They are a guide, not the source of truth: the code wins. Spends tokens and may take a few minutes. It does not touch the code.', yesText: 'Map now' });
-  if (!ok) return;
+/** Starts the root map job without asking (the callers confirm first). The job has no spend cap: no budget is sent.
+    Returns true when the job started; on a refusal the reason stays in `mapStartError()`. */
+export async function startMapJob() {
+  tr.mapError = ''; renderAll();
   try {
-    const r = await ctx.api.post('codebase/map', {});
+    const r = await ctx.api.post('codebase/map', {}, 15000); // answers 202 at once: a slow answer is a failure, said inside the step
     if (r.job) follow(r.job, 'map');
     toast('Mapping started' + (r.detail ? ': ' + r.detail : '.'), 'ok'); renderAll();
-  } catch (e) { toast((e.status === 409 ? 'Cannot map right now: ' : 'Mapping not started: ') + e.message, 'err'); }
+    return true;
+  } catch (e) {
+    tr.mapError = (e.status === 409 ? 'Cannot map right now: ' : 'Mapping not started: ') + e.message; renderAll();
+    toast(tr.mapError, 'err');
+    return false;
+  }
+}
+/** The last code map job ({state, started_at, finished_at, error}) or null, and the reason the last start was refused. */
+export const lastMapJob = () => jobsOf(TYPE_MAP)[0] || null;
+export const mapStartError = () => tr.mapError;
+/** Trail action (also used by the planning checklist): starts the code map job. */
+export async function mapCodebase() {
+  const ok = await confirmDialog({ title: 'Map the code?', text: 'Runs claude with the /orchestrator skill in map mode: it reads the project and writes 7 short documents in docs/codebase/ at the root (stack, architecture, conventions...), committed with the code so the team can reuse them. They are a guide, not the source of truth: the code wins. It may take a few minutes. It does not touch the code. No spend cap.', yesText: 'Map now' });
+  if (!ok) return;
+  await startMapJob();
 }
 /** Trail action: the Repositories manager in a dialog (conformance and map of the other repos). */
 function openReposSetup() {
@@ -280,21 +301,40 @@ async function sendRoadmap(kind) {
 }
 
 // ---------- drawing ----------
+/** The one branch point between a single project and a confirmed monorepo (progress.monorepo is true only when the
+    subproject list is confirmed). A single project always gets today's dialogs and buttons. */
+export const monorepoMode = (progress = ctx.progress) => !!(progress && progress.monorepo === true);
+const MAIN_ACTION_ID = 'tr-main-action';
+const mainButton = (text, fn, cls = 'btn-primary') => html`<button type="button" id=${MAIN_ACTION_ID} class=${'btn btn-sm ' + cls} onClick=${fn} disabled=${!fn}>${text}</button>`;
+/** Button of each next action for a single project: builder(planning) returns a vnode or null. */
+const ACTION_BUTTONS = {
+  structure: () => mainButton('Initialize structure', initializeStructure),
+  conformance: () => mainButton('Choose conformance', chooseConformance),
+  map: () => (mapRunning() ? mainButton('Mapping…', null, 'btn-pending') : mainButton('Map codebase', mapCodebase)),
+  repos: () => mainButton('Set up repositories', openReposSetup),
+  roadmap: (planning) => (planning ? null : mainButton('Generate roadmap', openRoadmapDialog)),
+  flows: (planning) => (planning ? null : mainButton('Open FLOWS.md', () => openProjectFile('FLOWS.md'))),
+  approve: (planning) => mainButton('Approve roadmap', planning ? approvePlan : approveWithNotice),
+  test_environment: () => mainButton('Describe the test environment', () => openProjectFile('TEST-ENVIRONMENT.md')),
+  check: () => mainButton('Go to Start loop', () => { nlExpand(); openNewLoop(); setTimeout(() => { const b = document.getElementById('btn-start'); if (b) b.focus(); }, 60); }),
+};
+ACTION_BUTTONS.start_loop = ACTION_BUTTONS.check;
+/** Buttons that replace the single-project ones in a monorepo (`subprojects`, `conformance`, `map`): empty until the table is mounted. */
+const MONOREPO_ACTION_BUTTONS = {};
+export function registerMonorepoActionButton(action, builder) { MONOREPO_ACTION_BUTTONS[action] = builder; }
+/** Monorepo: the three steps are answered by the subprojects table, shown in a dialog from the trail button. */
+function openSubprojectsDialog() {
+  openDialog({ title: 'Subprojects', width: 1040, content: html`<${SubprojectsPanel} />`, actions: [{ text: 'Close' }] });
+}
+const subprojectsButton = (text) => () => mainButton(text, openSubprojectsDialog);
+registerMonorepoActionButton('subprojects', subprojectsButton('Open subprojects'));
+registerMonorepoActionButton('conformance', subprojectsButton('Choose conformance per subproject'));
+registerMonorepoActionButton('map', subprojectsButton('Map the subprojects'));
 function actionButton(action) {
-  const B = (text, fn, cls = 'btn-primary') => html`<button type="button" id="tr-main-action" class=${'btn btn-sm ' + cls} onClick=${fn} disabled=${!fn}>${text}</button>`;
   const planning = planningRequired();
-  switch (action) {
-    case 'structure': return B('Initialize structure', initializeStructure);
-    case 'conformance': return B('Choose conformance', chooseConformance);
-    case 'map': return mapRunning() ? B('Mapping…', null, 'btn-pending') : B('Map codebase', mapCodebase);
-    case 'repos': return B('Set up repositories', openReposSetup);
-    case 'roadmap': return planning ? null : B('Generate roadmap', openRoadmapDialog);
-    case 'flows': return planning ? null : B('Open FLOWS.md', () => openProjectFile('FLOWS.md'));
-    case 'approve': return B('Approve roadmap', planning ? approvePlan : approveWithNotice);
-    case 'test_environment': return B('Describe the test environment', () => openProjectFile('TEST-ENVIRONMENT.md'));
-    case 'check': case 'start_loop': return B('Go to Start loop', () => { nlExpand(); openNewLoop(); setTimeout(() => { const b = document.getElementById('btn-start'); if (b) b.focus(); }, 60); });
-    default: return null;
-  }
+  const table = monorepoMode() ? MONOREPO_ACTION_BUTTONS : ACTION_BUTTONS;
+  const build = table[action] || (monorepoMode() ? ACTION_BUTTONS[action] : null);
+  return build ? build(planning) : null;
 }
 const PLANNING_TEXT = {
   roadmap: 'Plan the roadmap in the chat below.', flows: 'Ask the planning chat for the missing flows (FLOWS.md).',
@@ -302,11 +342,12 @@ const PLANNING_TEXT = {
 };
 const ACTION_TEXT = {
   structure: 'Create the .specs folder for the loop to keep its state.', conformance: 'Say whether the code follows the skill pattern or is legacy.',
+  subprojects: 'Confirm the list of subprojects of this repository.',
   repos: 'Give every other repository a Conformance line and a code map.',
   map: 'Map the existing code so the roadmap starts from what already exists.', roadmap: 'Generate the roadmap from the project goal.',
   flows: 'Write one flow per feature in FLOWS.md (what the verifier checks).',
   approve: 'Review and approve the roadmap: without approval the loop does not start.', test_environment: 'Optional: say how to start the app for flow tests.',
-  check: 'All set: check and start the loop.', start_loop: 'All set: check and start the loop.', follow: 'Loop in progress: follow it below.',
+  check: 'All set: check and start the loop.', start_loop: 'All set: check and start the loop.', follow: '',
 };
 
 /** Label of a running job; ticks every second on its own. */
@@ -316,8 +357,28 @@ function JobTimer({ j }) {
   return html`<span class="tr-job-t" data-job=${j.id}>${`${jobName(j.type)} · ${elapsed(j)}`}</span>`;
 }
 
-/** Content of #trail. */
-export function ProgressTrail() {
+const READ_ONLY_MARK = { ok: '✓', optional: '◌', pending: '○' };
+/** One line per subproject of a confirmed monorepo: name, stack, Conformance and whether it has a code map. */
+function SubprojectLines({ subprojects }) {
+  if (!list(subprojects).length) return null;
+  return html`<ul class="tr-ro-subs" aria-label="Subprojects">${subprojects.map((sub) => html`<li key=${sub.path} class="tr-ro-sub">
+    <span class="tr-ro-sub-name mono" title=${sub.path}>${sub.path}</span>
+    <span class="tr-ro-sub-meta">${[txt(sub.stack), sub.conformance ? String(sub.conformance) : 'no Conformance', sub.map_files > 0 ? 'map: yes' : 'map: no'].join(' · ')}</span>
+  </li>`)}</ul>`;
+}
+/** Context tab after the approval: the checks as plain lines (mark, label, one-line detail), no button, no chip, no table. */
+function ReadOnlyTrail({ steps, progress }) {
+  return html`<div class="tr-line tr-readonly"><ul class="tr-ro-list" aria-label="Where this project stands">${steps.map((step) => html`<li key=${step.id} class=${'tr-ro-step is-' + step.state}>
+      <span class="tr-ro-mark" aria-hidden="true">${READ_ONLY_MARK[step.state] || '○'}</span>
+      <span class="tr-ro-label">${step.title}</span><span class="sr-only">${step.state === 'ok' ? ' (done)' : ' (' + step.state + ')'}</span>
+      ${step.detail ? html`<span class="tr-ro-detail" title=${step.detail}>${step.detail}</span>` : null}</li>`)}</ul>
+    <${SubprojectLines} subprojects=${progress.subprojects} /></div>`;
+}
+
+/** Checks of the project trail. `vertical` = the list in the Context tab of the GLOBAL zone (one check per line, always expanded).
+    `readOnly` (default: same as `vertical`) = no action button, no AI roadmap, no job chips, no subprojects table (CTX-01);
+    the planning screen keeps the full trail. */
+export function ProgressTrail({ vertical = false, readOnly = vertical } = {}) {
   const pr = ctx.progress;
   if (!pr) {
     return html`<div class="tr-line"><span class="tr-title">Where this project stands</span>
@@ -330,12 +391,13 @@ export function ProgressTrail() {
     const e = byId[id] || {};
     return { id, title: e.title || titles[id] || id, state: e.ok ? 'ok' : e.optional ? 'optional' : 'pending', detail: e.detail || '' };
   });
+  if (readOnly) return html`<${ReadOnlyTrail} steps=${steps} progress=${pr} />`;
   const runningJobs = tr.jobs.filter((j) => j.state === 'running');
   const approved = approval().approved || (byId.approval && byId.approval.ok);
   const planning = planningRequired();
   const aiRoadmap = !planning && pr.next_action !== 'roadmap' && status() !== 'running' && byId.structure && byId.structure.ok;
   const toggleTrail = () => { tr.trailOpen = !tr.trailOpen; renderAll(); };
-  return html`<div class=${'tr-line full-line' + (tr.trailOpen ? ' is-open' : ' is-compact')}><span class="tr-title">Where this project stands</span>
+  return html`<div class=${'tr-line full-line' + (vertical ? ' is-vertical' : tr.trailOpen ? ' is-open' : ' is-compact')}><span class="tr-title">Where this project stands</span>
     <${Checklist} label="Where this project stands" steps=${steps} currentId=${STEP_OF_ACTION[pr.next_action] || null} />
     <div class="tr-action">
       <span class="tr-next">${(planning && PLANNING_TEXT[pr.next_action]) || ACTION_TEXT[pr.next_action] || ''}</span>
@@ -343,9 +405,10 @@ export function ProgressTrail() {
       ${aiRoadmap ? html`<button type="button" id="tr-ai-roadmap" class="btn btn-sm btn-ghost tr-ai-sep" onClick=${openRoadmapDialog} title="Refine the roadmap with Claude. Does not start the loop.">AI roadmap</button>` : null}
       ${runningJobs.map((j) => html`<button key=${j.id} type="button" id=${'tr-job-' + j.id} class="tr-job" onClick=${TYPE_ROADMAP.test(j.type || '') ? openRoadmapDialog : null} title="claude job running">
         <span class="spinner sm" aria-hidden="true"></span><${JobTimer} j=${j} /></button>`)}
-      ${!approved && ['roadmap', 'flows', 'approve', 'structure', 'conformance', 'map', 'repos'].includes(pr.next_action) ? html`<span class="tr-note">Without an approved roadmap the loop does not start.</span>` : null}
+      ${!approved && ['roadmap', 'flows', 'approve', 'structure', 'subprojects', 'conformance', 'map', 'repos'].includes(pr.next_action) ? html`<span class="tr-note">Without an approved roadmap the loop does not start.</span>` : null}
     </div>
-    <button type="button" id="tr-toggle" class="tr-toggle" aria-expanded=${String(tr.trailOpen)} title=${tr.trailOpen ? 'Collapse the trail to one line' : 'Show the trail descriptions and notes'}
-      onClick=${toggleTrail}>${tr.trailOpen ? '▴' : '▾'}</button>
+    ${vertical && monorepoMode() ? html`<div class="tr-subprojects"><${SubprojectsPanel} /></div>` : null}
+    ${vertical ? null : html`<button type="button" id="tr-toggle" class="tr-toggle" aria-expanded=${String(tr.trailOpen)} title=${tr.trailOpen ? 'Collapse the trail to one line' : 'Show the trail descriptions and notes'}
+      onClick=${toggleTrail}>${tr.trailOpen ? '▴' : '▾'}</button>`}
   </div>`;
 }

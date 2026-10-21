@@ -1,27 +1,22 @@
 /* Root of the project panel (/p/<id>/): the whole page as one Preact tree. Before the first /state only the frame
-   shows (as the old static template did); each region renders its content once ctx.state arrives. Container flags
-   (hidden parts, classes, colors, titles) come from the models of the owner modules.
-   Planning mode (state.planning_required): the PlanningScreen takes the place of the loop panel; header and trail
-   stay. The loop regions stay in the DOM (hidden and empty) because the one-time setup of startPanel is bound to them. */
+   shows (as the old static template did); each region renders its content once ctx.state arrives.
+   Two modes in a table (MODES), each with its header and the zones above the content:
+   - loop (roadmap approved): the navbar and, right below it, the content (.z-body): the GLOBAL zone (blue aside, valid for the whole
+     loop) and the LOOP zone (amber main, depends on the selected turn). No alert band, no New loop card, no Workspace zone: the status
+     dialog (from the navbar indicator) and the Start dialog replaced them.
+   - planning (state.planning_required): the PlanningScreen takes the place of both zones; the header is the navbar frame with the
+     Planning pill on the left and a Workspace button (dialog) instead of the WORKSPACE band.
+   The zones stay in the DOM (hidden in planning) because the one-time setup of startPanel is bound to them. */
 import { html } from '../../util/preact.js';
 import { disconnectedDetail } from '../../api/api_client.js';
 import { WhyButton } from '../../components/why_panel.js';
 import { ctx, ui } from './context.js';
-import { BrandSub, RepoLine, StatusPill, Limits, HeaderActions, headerModel } from './header.js';
-import { GuardBadge, totalBlocks, openGuardFeed } from './guard_feed.js';
-import { ProgressTrail } from './progress_trail.js';
-import { Alert, idleText, ChromeBar, chromeOpen } from './alert.js';
-import { NewLoop, nlZone } from './new_loop.js';
-import { RoadmapSidebar } from './roadmap_sidebar.js';
-import { CenterTabs, Caption, PastBar, Legend, CenterCanvas, centerModel, zoomCenter, fitCenter } from './center.js';
-import { InspectorHead, InspectorTabs, InspectorBody, inspectorModel } from './inspector.js';
-import { ComposerBand, ComposerSeg, FeatureOptions, ComposerTray, ComposerStatus, composerView, composerSubmit, composerKeyDown, pickFeature, proposeFromComposer } from './chat.js';
-import { ActPanel } from './act.js';
+import { BrandSub, RepoLine, RepoChip, StatusPill, NavbarLoopStatus, Meters, HeaderActions, headerModel } from './header.js';
+import { errorCount, openErrors } from './errors.js';
+import { idleText, StatusDialog } from './alert.js';
 import { PlanningScreen, planningRequired } from './planning.js';
-import { Timeline } from './timeline.js';
-import { WorkspaceZone } from './workspace.js';
-
-const SEP_TITLE = 'drag, use the arrows or double-click to restore';
+import { GlobalZone, consumeViewRequest } from './global_zone.js';
+import { LoopZone } from './loop_zone.js';
 
 /** Content of #closed: "App shut down" (header) or "Project not found" (polling 404). */
 function ClosedCard({ c }) {
@@ -36,12 +31,76 @@ function ClosedCard({ c }) {
   </div>`;
 }
 
+function Brand({ has, withRepoLine }) {
+  const hd = headerModel();
+  return html`<div class="brand">
+    <a class="logo logo-link" href="/" title="back to the projects" aria-label="back to the projects">M</a>
+    <div>
+      <div class="brand-name"><a href="/" class="brand-link">Claude Maestro</a></div>
+      <div class="brand-sub mono" id="brand-sub" title=${has ? hd.repo : null}>${has ? html`<${BrandSub} />` : '—'}</div>
+      ${has && withRepoLine ? html`<${RepoLine} />` : null}
+    </div>
+  </div>`;
+}
+function GuardBadge() {
+  const blocks = errorCount();
+  return html`<button type="button" class="guard-badge mono" id="guard-badge" hidden=${!blocks} title="open the list of errors and warnings" onClick=${openErrors}>
+    <span class="gb-dot"></span>${blocks ? `${blocks} problem${blocks === 1 ? '' : 's'}` : ''}</button>`;
+}
+function HelpActions() { return html`<div class="header-actions" id="header-extra"><${WhyButton} /></div>`; }
+
+/** Loop mode header: the navbar (NAV-01..04). */
+function Navbar({ has }) {
+  return html`<header id="header" class="header navbar">
+    <${Brand} has=${has} withRepoLine=${false} />
+    ${has ? html`<${RepoChip} />` : null}
+    ${has
+      ? html`<${NavbarLoopStatus} />`
+      : html`<div class="nb-status nb-tone-muted" id="navbar-status" role="status"><span class="dot"></span><span class="mono nb-status-text">connecting…</span></div>`}
+    <div class="limits nb-meters" id="limits" aria-label="Cost and progress">${has ? html`<${Meters} />` : null}</div>
+    <${GuardBadge} />
+    <div class="spacer"></div>
+    <div class="header-actions" id="header-actions">${has ? html`<${HeaderActions} mode="loop" />` : null}</div>
+    <${HelpActions} />
+  </header>`;
+}
+/** Planning mode header (WS-01): the same navbar frame as the loop mode, with the "Planning" pill on the LEFT right after the project block
+    and the repo chip, never centered; the Workspace button (next to Shut down app) opens the Workspace dialog. */
+function PlanningHeader({ has }) {
+  const hd = headerModel();
+  return html`<header id="header" class="header navbar nb-planning">
+    <${Brand} has=${has} withRepoLine=${false} />
+    ${has ? html`<${RepoChip} />` : null}
+    <div class="pill nb-pill" id="status-pill" role="status" aria-live="polite" style=${has ? hd.pillStyle : null}>
+      ${has ? html`<${StatusPill} />` : html`<span class="dot" id="status-dot"></span><span class="mono" id="status-text">connecting…</span>`}
+    </div>
+    <div class="limits" id="limits" aria-label="Loop limits"></div>
+    <${GuardBadge} />
+    <div class="spacer"></div>
+    <div class="header-actions" id="header-actions">${has ? html`<${HeaderActions} mode="planning" />` : null}</div>
+    <${HelpActions} />
+  </header>`;
+}
+/** Loop mode: no zones above the content; only the status dialog (mounted here, opens from the navbar). */
+function LoopTop({ has }) { return has ? html`<${StatusDialog} />` : null; }
+/** Planning mode: only the PlanningScreen. The WORKSPACE band and the "Writing the plan in <path>" line are gone (WS-02): the
+    Workspace dialog (navbar button) shows that content. The zone element stays, empty and hidden, for the one-time panel setup. */
+function PlanningTop({ has }) {
+  return html`<div id="chrome-zones" class="chrome-zones is-open" hidden>
+      <div id="workspace-zone" class="workspace-zone" hidden></div>
+    </div>
+    <section id="planning" class="planning-zone" aria-label="Planning"><${PlanningScreen} /></section>`;
+}
+
+const MODES = {
+  loop: { Header: Navbar, Top: LoopTop },
+  planning: { Header: PlanningHeader, Top: PlanningTop },
+};
+
 export function Panel() {
+  consumeViewRequest(); // old entry points of the removed center views (openProjectFile, openErrors...) open a tab of the global zone
   const has = !!ctx.state, planning = has && planningRequired(), on = has && !planning; // on = the loop panel shows
-  const im = on ? inspectorModel() : null; // first: it drops a selection that no longer exists
-  const hd = headerModel(), blocks = totalBlocks(), nz = planning ? { show: false, built: false } : nlZone();
-  const cm = on ? centerModel() : null, cv = on ? composerView() : null;
-  const canvasKind = cm ? cm.kind : null;
+  const { Header, Top } = MODES[planning ? 'planning' : 'loop'];
   return html`<div id="app" data-mode=${planning ? 'planning' : null}>
     <div id="banner-offline" class="banner banner-offline" role="alert" hidden=${!ctx.offline}>
       <span class="dot dot-red"></span>
@@ -49,91 +108,13 @@ export function Panel() {
       <span id="banner-offline-detail">${ctx.offline ? disconnectedDetail(ctx.offlineMsg) : ''}</span>
     </div>
 
-    <header id="header" class="header">
-      <div class="brand">
-        <a class="logo logo-link" href="/" title="back to the projects" aria-label="back to the projects">M</a>
-        <div>
-          <div class="brand-name"><a href="/" class="brand-link">Claude Maestro</a></div>
-          <div class="brand-sub mono" id="brand-sub" title=${has ? hd.repo : null}>${has ? html`<${BrandSub} />` : '—'}</div>
-          ${has ? html`<${RepoLine} />` : null}
-        </div>
-      </div>
-      <div class="pill" id="status-pill" role="status" aria-live="polite" style=${has ? hd.pillStyle : null}>
-        ${has ? html`<${StatusPill} />` : html`<span class="dot" id="status-dot"></span><span class="mono" id="status-text">connecting…</span>`}
-      </div>
-      <div class="limits" id="limits" aria-label="Loop limits">${on ? html`<${Limits} />` : null}</div>
-      <button type="button" class="guard-badge mono" id="guard-badge" hidden=${!blocks} aria-describedby=${blocks ? 'guard-tip' : null}
-        onClick=${openGuardFeed}>${blocks ? html`<${GuardBadge} total=${blocks} />` : null}</button>
-      <div class="spacer"></div>
-      <div class="header-actions" id="header-actions">${has ? html`<${HeaderActions} />` : null}</div>
-      <div class="header-actions" id="header-extra"><${WhyButton} /></div>
-    </header>
+    <${Header} has=${has} />
+    <${Top} has=${has} />
 
-    <div id="trail" class="trail" aria-label="Where this project stands" hidden=${planning}>${planning ? null : html`<${ProgressTrail} />`}</div>
-    <div id="chrome-zones" class=${'chrome-zones' + (planning || chromeOpen() ? ' is-open' : '')} hidden=${!has}>
-      ${has && !planning ? html`<${ChromeBar} nlShown=${nz.show} />` : null}
-      <div id="alert-zone" class="alert-zone">${on ? html`<${Alert} />` : null}</div>
-      <div id="newloop-zone" class="newloop-zone" hidden=${!nz.show}>${nz.built ? html`<${NewLoop} />` : null}</div>
-
-      <div id="workspace-zone" class="workspace-zone" hidden=${!has}>${has ? html`<${WorkspaceZone} />` : null}</div>
+    <div class="z-body" hidden=${planning}>
+      <${GlobalZone} on=${on} />
+      <${LoopZone} on=${on} planning=${planning} />
     </div>
-
-    ${planning ? html`<section id="planning" class="planning-zone" aria-label="Planning"><${PlanningScreen} /></section>` : null}
-
-    <main class="main" hidden=${planning}>
-      <aside class="left" id="left" aria-label="Roadmap">${on ? html`<${RoadmapSidebar} />` : null}</aside>
-      <div class="sep sep-v" id="sep-left" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Roadmap width" title=${SEP_TITLE}></div>
-
-      <section class="center" id="center" aria-label="Loop view">
-        <div class="center-bar">
-          <button type="button" class="btn btn-sm left-toggle" id="left-toggle" aria-expanded="false" aria-controls="left">Roadmap</button>
-          <div class="seg" role="tablist" aria-label="View" id="center-tabs"><${CenterTabs} view=${ui.view} /></div>
-          <div class="caption" id="caption">${on ? html`<${Caption} view=${ui.view} />` : null}</div>
-          <div class="zoom-ctl" id="zoom-ctl" role="group" aria-label="Diagram zoom" hidden=${cm ? !cm.zoom : false}>
-            <button type="button" class="btn btn-sm btn-ghost" id="zoom-out" title="zoom out (Ctrl + scroll)" aria-label="zoom out" onClick=${() => zoomCenter(1 / 1.2)}>−</button>
-            <span class="zoom-val mono" id="zoom-val">100%</span>
-            <button type="button" class="btn btn-sm btn-ghost" id="zoom-in" title="zoom in (Ctrl + scroll)" aria-label="zoom in" onClick=${() => zoomCenter(1.2)}>+</button>
-            <button type="button" class="btn btn-sm btn-ghost" id="zoom-fit" title="fits and centers the diagram and puts dragged nodes back" onClick=${fitCenter}>Center</button>
-          </div>
-        </div>
-        <div id="past-bar" class="past-bar" hidden=${!(cm && cm.past)}>${cm && cm.past ? html`<${PastBar} />` : null}</div>
-        <div class=${'canvas-wrap' + (canvasKind === 'dg' ? ' dgmode' : canvasKind === 'full' ? ' fullmode' : '')}>
-          <div class=${'canvas' + (canvasKind ? ' ' + canvasKind : '')} id="canvas">${cm ? html`<${CenterCanvas} cm=${cm} />` : null}</div>
-        </div>
-        <div class="legend" id="legend" hidden=${cm ? !cm.legend : false}>${on ? html`<${Legend} view=${ui.view} />` : null}</div>
-      </section>
-
-      <div class="sep sep-v" id="sep-right" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Inspector width" title=${SEP_TITLE}></div>
-      <aside class="right" aria-label="Inspector">
-        <div class="insp-head" id="insp-head">${im ? html`<${InspectorHead} m=${im} />` : null}</div>
-        <div class="insp-tabs" id="insp-tabs" role="tablist" aria-label="Inspector">${im ? html`<${InspectorTabs} m=${im} />` : null}</div>
-        <div class=${'insp-body' + (im && im.chat ? ' is-chat' : '')} id="insp-body">${im ? html`<${InspectorBody} m=${im} />` : null}</div>
-        <form class=${cv ? cv.cls : 'composer m-instruct'} id="composer" aria-label="Composer: instruct the loop or chat" onSubmit=${composerSubmit}>
-          <div class="cp-band" id="cp-band">${cv ? html`<${ComposerBand} m=${cv.m} />` : null}</div>
-          <div class="cp-seg" id="cp-seg" role="tablist" aria-label="Intent" hidden=${cv ? !cv.m.act : false}>${cv ? html`<${ComposerSeg} m=${cv.m} />` : null}</div>
-          <div class="cp-why" id="cp-why" hidden></div>
-          <div class="cp-act" id="cp-act" hidden=${!(cv && cv.showActions)}>${cv && cv.showActions ? html`<${ActPanel} onPropose=${proposeFromComposer} />` : null}</div>
-          <label class="cp-feat" id="cp-feat" for="cp-feature" hidden=${cv ? !cv.on('instruct') : false}><span>about the feature:</span><select id="cp-feature"
-            value=${cv ? cv.featValue : ''} onChange=${pickFeature}>${cv ? html`<${FeatureOptions} fs=${cv.m.fs} />` : null}</select></label>
-          <div class="cp-tray" id="cp-tray" hidden=${!(cv && cv.showTray)}>${cv && cv.showTray ? html`<${ComposerTray} />` : null}</div>
-          <div class="cp-box">
-            <textarea id="cp-text" rows="2" aria-label="Message" placeholder=${cv ? cv.placeholder : null} onKeyDown=${composerKeyDown}></textarea>
-            <button type="submit" class="btn btn-primary" id="cp-send" disabled=${!!(cv && cv.sendDisabled)}>${cv ? cv.sendText : 'Instruct the loop'}</button>
-          </div>
-          <div class="cp-hint mono" id="cp-hint">${cv ? cv.hint : ''}</div>
-          <div class=${'cp-status' + (cv && cv.status ? ' ' + cv.status.kind : '')} id="cp-status" role="status" hidden=${!(cv && cv.status)}>${cv && cv.status ? html`<${ComposerStatus} s=${cv.status} />` : null}</div>
-        </form>
-      </aside>
-    </main>
-
-    <div class="sep sep-h" id="sep-foot" hidden=${planning} role="separator" aria-orientation="horizontal" tabindex="0" aria-label="Timeline height" title=${SEP_TITLE}></div>
-    <footer class="footer" id="footer" hidden=${planning}>
-      <div class="footer-title">
-        <div class="strong">Turns</div>
-        <div class="mono dim-sm">● = latest turn (live)</div>
-      </div>
-      <div class="timeline" id="timeline" role="group" aria-label="Loop turns">${on ? html`<${Timeline} />` : null}</div>
-    </footer>
 
     <div id="idle-note" class="idle-note mono">${on ? idleText() : ''}</div>
     <div id="closed" class="closed" hidden=${!ui.closed}>${ui.closed ? html`<${ClosedCard} c=${ui.closed} />` : null}</div>

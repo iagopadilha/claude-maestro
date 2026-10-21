@@ -1,0 +1,50 @@
+/* Navbar of the loop mode (NAV-01..04): one row with project and repo chip on the left, status indicator, compact meters,
+   then the actions. Loaded after ux_header.css (same-specificity-plus rules below win). Tokens of base.css only. */
+#app>.header.navbar{flex-wrap:wrap;align-items:center;gap:6px 14px;padding:8px 16px;border-bottom:1px solid var(--line);}
+#app>.header.navbar>.brand{flex:0 1 auto;min-width:0;max-width:340px;align-items:center;}
+#app>.header.navbar .brand-sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px;}
+#app>.header.navbar>.spacer{flex:1 1 0;min-width:0;}
+#app>.header.navbar>.header-actions{flex:none;flex-wrap:wrap;align-items:center;gap:8px;}
+
+/* repo chip: short name, full path and branch in the tooltip */
+.nb-repo{display:inline-flex;align-items:center;gap:6px;flex:0 1 auto;min-width:0;max-width:240px;height:24px;padding:0 4px 0 10px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);color:var(--text2);font-size:12px;}
+.nb-repo-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;}
+.nb-repo-copy{flex:none;border:0;background:transparent;color:var(--muted);font:500 11px var(--mono);padding:0 6px;cursor:pointer;border-radius:4px;}
+.nb-repo-copy:hover{color:var(--text);background:var(--hover-wash2);}
+
+/* status indicator: a button when a click has something to show */
+.nb-status{display:inline-flex;align-items:center;gap:7px;flex:none;height:24px;padding:0 10px;border:1px solid var(--line2);border-radius:12px;background:var(--panel);color:var(--text2);font:inherit;white-space:nowrap;}
+.nb-status-text{font-size:11px;}
+.nb-status.is-click{cursor:pointer;}
+.nb-status.is-click:hover{border-color:var(--line4);}
+.nb-tone-muted .dot{background:var(--muted);}
+.nb-tone-amber{border-color:var(--amber-line);background:var(--amber-bg);color:var(--amber);}
+.nb-tone-green{border-color:var(--green-line);background:var(--green-bg);color:var(--green);}
+.nb-tone-green .dot{background:var(--green);}
+.nb-tone-red{border-color:var(--red-line);background:var(--red-bg);color:var(--red);}
+.nb-tone-red .dot{background:var(--red);}
+.nb-status.is-attention{border-color:var(--amber);box-shadow:0 0 0 2px var(--amber-glow);}
+.nb-status.is-attention.nb-tone-red{border-color:var(--red);box-shadow:0 0 0 2px var(--red-glow);}
+.nb-status.is-attention.nb-tone-muted{color:var(--text);}
+
+/* compact meters */
+.nb-meters{display:flex;align-items:center;gap:6px 14px;flex:0 1 auto;}
+.nb-meters:empty{display:none;}
+.nb-meter{display:flex;flex-direction:column;gap:2px;min-width:78px;}
+.nb-meter-label{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);white-space:nowrap;}
+.nb-meter-val{font-size:12px;white-space:nowrap;}
+.nb-meter-val .of{color:var(--dim);}
+.nb-meter-bar{height:3px;background:var(--line);border-radius:2px;overflow:hidden;}
+.nb-meter-bar>div{height:100%;background:var(--green);}
+.nb-meter.is-attention .nb-meter-val,.nb-meter.is-attention .nb-meter-label{color:var(--amber);}
+.nb-meter.is-attention .nb-meter-bar>div{background:var(--amber);}
+.nb-meter.is-danger .nb-meter-val,.nb-meter.is-danger .nb-meter-label{color:var(--red);}
+.nb-meter.is-danger .nb-meter-bar>div{background:var(--red);}
+
+/* status dialog, cost cap: number field next to the button */
+.band-detail .free input[type="number"]{flex:0 0 140px;border:1px solid var(--line3);border-radius:8px;background:var(--bg);color:var(--text);font:500 14px var(--mono);padding:8px 10px;}
+.band-detail .free input[type="number"][aria-invalid="true"]{border-color:var(--red);}
+
+/* planning mode (WS-01): same frame, the Planning pill sits on the left right after the project block and the repo chip, never centered */
+#app>.header.navbar>.pill{flex:none;align-self:center;margin:0;order:0;}
+#app>.header.navbar>.limits:empty{display:none;}

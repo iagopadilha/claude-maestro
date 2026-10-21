@@ -1,4 +1,4 @@
-/* Compact top of the panel: thin trail line and ONE summary bar for the alert, new loop and workspace zones.
+/* Compact top of the panel: thin trail line (planning) and the workspace zone (planning). The alert and new-loop zones are retired (navbar + dialogs).
    Expanded zones scroll with the page (#app), never inside. Loaded last. Tokens only. */
 .chrome-zones{flex:none;display:block;}
 .chrome-zones[hidden]{display:none;}

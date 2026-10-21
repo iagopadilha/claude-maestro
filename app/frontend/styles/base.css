@@ -71,6 +71,8 @@ a{color:var(--amber);text-decoration:none;} a:hover{color:var(--amber-soft);text
 .btn:disabled{opacity:.55;cursor:not-allowed;}
 .btn-primary{background:var(--amber);border-color:var(--amber);color:var(--bg);font-weight:600;}
 .btn-primary:hover:not(:disabled){background:var(--amber-soft);border-color:var(--amber-soft);}
+/* A link styled as a button keeps the button's text color on hover (the plain `a:hover` color would match the amber background). */
+a.btn:hover{text-decoration:none;color:var(--text);} a.btn-primary:hover{color:var(--bg);}
 .btn-danger{background:var(--red);border-color:var(--red);color:var(--red-ink);font-weight:600;}
 .btn-danger:hover:not(:disabled){background:var(--red-hover);border-color:var(--red-hover);}
 .btn-ghost{background:transparent;}

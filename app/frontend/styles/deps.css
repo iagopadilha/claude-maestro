@@ -1,11 +1,11 @@
 /* "Dependencies" tab: layout kept inside the viewport (no page scroll), legend, mermaid as an overlay. */
-.canvas > .dep { position: absolute; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; min-height: 0; min-width: 0; overflow: hidden; }
+.canvas > .dep { position: absolute; inset: 0; display: block; gap: 8px; min-height: 0; min-width: 0; overflow: hidden; }
 .dep-top { min-width: 0; overflow: hidden; }
 .dep-top-t { min-width: 0; flex-wrap: wrap; }
 .dep-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .me { min-width: 0; flex: none; }
-.dep-graph { min-height: 0; min-width: 0; }
-.dep-graph .gf { overflow: hidden; top: 26px; bottom: 36px; }
+.dep-graph { position: absolute; inset: 0; min-height: 0; min-width: 0; overflow: hidden; }
+.dep-graph .gf { overflow: hidden; top: 0; bottom: 0; }
 .gf-port { stroke: none; }
 .gf-port.green { fill: var(--green); }
 .gf-port.amber { fill: var(--amber); }

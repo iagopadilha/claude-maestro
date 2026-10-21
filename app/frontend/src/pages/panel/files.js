@@ -1,5 +1,4 @@
-/* "Files" tab: .specs explorer (GET specs/tree) grouped into Project, Codebase, Features (with status)
-   and Loop, with a markdown reader and editing (PUT specs/file). */
+/* Files explorer + Markdown editor (GET specs/tree, PUT specs/file): planning only. The loop screen has no Files tab and no editing: it reads through plan_files_dialog.js. Grouped into Project, Codebase, Features (with status) and Loop. */
 import { html, useEffect } from '../../util/preact.js';
 import { confirmDialog } from '../../components/dialog.js';
 import { FileTree, fileTreeStore, normalizeTree, walkTree } from '../../components/file_tree.js';
@@ -91,7 +90,7 @@ export function openFeatureSpec(slug) {
     const files = dir ? dir.items.filter((x) => x.kind === 'file') : [];
     const target = files.find((x) => /(^|\/)spec\.md$/i.test(x.path)) || files[0];
     if (target) openCarefully(target.path, { editable: target.editable, reason: target.reason });
-    else fv.editor.showMessage(`Feature ${slug} has no spec yet (.specs/features/${slug}/spec.md). The spec-writer creates that file when the loop reaches it.`);
+    else fv.editor.showMessage(`Feature ${slug} has no spec yet (.specs/features/${slug.replace(/[<>:"/\|?*]/g, '-')}/spec.md). The spec-writer creates that file when the loop reaches it.`);
   };
   loadTree(true).then(runPending);
 }
