@@ -46,7 +46,7 @@ Why a panel (base text of the front's "Why use the panel?" dialog):
 ## Layout
 ```
 harness.py                          single CLI: serve | demo | loop | check | state | notify | summary | deliver | rules |
-                                    audit | graph | classify | scale | doctor | install
+                                    audit | graph | classify | scale | inventory | doctor | install
 backend/harness_backend/
   composition.py                    composition root (wires the three modules and the app controller)
   config/app_config.py              AppConfig + load_app_config (data folder, ports, engine, templates)
@@ -60,7 +60,8 @@ backend/harness_backend/
   infrastructure/                   structured_log, activity_monitor, process_runner, claude_client, git_client
   engine/                           run_loop, loop_state, notify, delivery, loop_summary, graph_view, audit_deps,
                                     rules, scale, monitor_proc, classify_structure, app_paths, project_repos (REPOS.json),
-                                    close_loop, repo_catalog
+                                    close_loop, repo_catalog, subprojects, code_inventory, context_files, context_block,
+                                    system_map, readiness_checks, setup_files (uncommitted setup files: carry, commit, readiness block), decisions (VALIDATE.md grammar)
   demo/                             `harness.py demo`: story catalog, workspace, seeder, story player, transcript writer,
                                     animator, runner and the `claude`/engine stubs (never runs a real loop)
 backend/tests/                      engine/, infra/, demo/, api/test_read_*.py, api/test_commands_*.py, api/test_projects_*.py
@@ -73,10 +74,11 @@ docs/                               ARCHITECTURE.md, API.md, HOW_TO_USE.md, MONI
 | Module | Files |
 |---|---|
 | Engine, infrastructure and CLI | `harness.py`, `engine/**`, `config/envload.py`, `infrastructure/process_runner.py`, `infrastructure/claude_client.py`, `infrastructure/git_client.py`, `services/app_diagnostics_service.py`, `api/controllers/app_controller.py`, `backend/tests/engine/**`, `backend/tests/infra/**`, `.env.example`, `docs/HOW_TO_USE.md` |
-| Loop read | `services/loop_read_module.py`, `services/loop_status_service.py`, `services/loop_panel_service.py`, `services/agent_history_service.py`, `services/guard_event_service.py`, `services/turn_service.py`, `services/roadmap_view_service.py`, `repositories/loop_file_repository.py`, `repositories/claude_transcript_repository.py`, `repositories/loop_read_formatting.py`, `api/controllers/loop_read_controller.py`, `backend/tests/api/test_read_*.py` |
+| Loop read | `services/loop_read_module.py`, `services/loop_status_service.py`, `services/loop_panel_service.py`, `services/agent_history_service.py`, `services/guard_event_service.py`, `services/error_center_service.py`, `services/error_event_sync_service.py`, `services/turn_timeline.py`, `services/launch_log_parser.py`, `repositories/error_event_repository.py`, `services/turn_service.py`, `services/roadmap_view_service.py`, `repositories/loop_file_repository.py`, `repositories/claude_transcript_repository.py`, `repositories/loop_read_formatting.py`, `api/controllers/loop_read_controller.py`, `backend/tests/api/test_read_*.py` |
 | Loop commands | `services/loop_commands_module.py`, `services/loop_control_service.py`, `services/chat_service.py`, `services/action_service.py`, `services/whiteboard_service.py`, `services/engine_script_service.py`, `services/loop_worktree_service.py`, `repositories/chat_repository.py`, `repositories/whiteboard_repository.py`, `repositories/answers_repository.py`, `repositories/loop_command_file_repository.py`, `repositories/agent_transcript_repository.py`, `api/controllers/loop_commands_controller.py`, `api/controllers/chat_controller.py`, `api/controllers/action_controller.py`, `backend/tests/api/test_commands_*.py` |
-| Projects, structure, roadmap and specs | `services/projects_module.py`, `services/project_service.py`, `services/specs_structure_service.py`, `services/project_progress_service.py`, `services/roadmap_service.py`, `services/spec_file_service.py`, `services/claude_job_service.py`, `services/folder_picker_service.py`, `services/planning_service.py`, `services/planning_gates.py`, `services/planning_requirement_service.py`, `repositories/project_repository.py`, `repositories/specs_file_repository.py`, `repositories/planning_thread_repository.py`, `infrastructure/workspace_file_guard.py`, `domain/flows_document.py`, `domain/project_errors.py`, `api/controllers/planning_controller.py`, `api/controllers/project_responses.py`, `api/controllers/project_controller.py`, `api/controllers/roadmap_controller.py`, `api/controllers/specs_controller.py`, `templates/**`, `backend/tests/api/test_projects_*.py` |
-| Multi-repo | `services/multi_repo_module.py`, `services/repo_registry_service.py`, `services/repo_readiness_service.py`, `services/workspace_service.py`, `services/repo_catalog_service.py`, `api/controllers/repo_controller.py`, `api/controllers/repo_readiness_controller.py`, `api/controllers/workspace_controller.py`, `api/controllers/repo_catalog_controller.py`, `engine/project_repos.py`, `engine/close_loop.py`, `engine/repo_catalog.py` (the close and repo-in-use logic also touches `loop_worktree_service.py` and `loop_status_service.py`) |
+| Projects, structure, roadmap and specs | `services/projects_module.py`, `services/project_service.py`, `services/specs_structure_service.py`, `services/project_progress_service.py`, `services/roadmap_service.py`, `services/spec_file_service.py`, `services/claude_job_service.py`, `services/folder_picker_service.py`, `services/planning_service.py`, `services/planning_gates.py`, `services/planning_requirement_service.py`, `services/subprojects_service.py`, `services/subproject_validation_service.py`, `services/subproject_map_service.py`, `services/system_map_service.py`, `services/code_inventory_service.py`, `services/context_block_service.py`, `services/map_job_runner.py`, `repositories/subprojects_file_repository.py`, `api/controllers/subprojects_controller.py`, `repositories/project_repository.py`, `repositories/specs_file_repository.py`, `repositories/planning_thread_repository.py`, `infrastructure/workspace_file_guard.py`, `domain/flows_document.py`, `domain/project_errors.py`, `api/controllers/planning_controller.py`, `api/controllers/project_responses.py`, `api/controllers/project_controller.py`, `api/controllers/roadmap_controller.py`, `api/controllers/specs_controller.py`, `templates/**`, `backend/tests/api/test_projects_*.py` |
+| Loop panel focus and wrap-up | `engine/decisions.py`, `services/decisions_service.py`, `services/wrap_up_service.py`, `services/follow_up_service.py`, `api/controllers/decisions_controller.py`, `api/controllers/follow_up_controller.py` (wrap-up routes live in `api/controllers/workspace_controller.py`; `GET loop/settings` and `POST loop/raise-limit` in `loop_commands_controller.py`; `GET codebase/tree` and `codebase/file` in `loop_read_controller.py` + `loop_panel_service.py`; scope `plan` in `chat_service.py`; `parse_loop_settings` in `domain/roadmap_settings.py`), `backend/tests/api/test_{decisions_service,wrap_up_service,follow_up_service,loop_settings,loop_raise_limit,codebase_tree,chat_plan_scope,roadmap_loop_settings_parser}.py`, `backend/tests/engine/test_{decisions,critical_decision_pause,cost_cap_pause,orchestrator_model,meta_and_paused_status,close_loop_force_remove}.py` |
+| Multi-repo | `services/multi_repo_module.py`, `services/repo_registry_service.py`, `services/repo_readiness_service.py`, `services/workspace_service.py`, `services/setup_commit_service.py`, `services/repo_catalog_service.py`, `api/controllers/repo_controller.py`, `api/controllers/setup_commit_controller.py`, `api/controllers/repo_readiness_controller.py`, `api/controllers/workspace_controller.py`, `api/controllers/repo_catalog_controller.py`, `engine/project_repos.py`, `engine/setup_files.py`, `engine/close_loop.py`, `engine/repo_catalog.py` (the close and repo-in-use logic also touches `loop_worktree_service.py` and `loop_status_service.py`) |
 | Core | `composition.py`, `config/app_config.py`, `config/skill_locator.py`, `domain/project.py`, `api/router.py`, `api/http_server.py`, `infrastructure/structured_log.py`, `infrastructure/activity_monitor.py` |
 | Front end | `frontend/**` |
 | Demo | `demo/**` (`harness.py demo`), `backend/tests/demo/**` |
@@ -117,15 +119,25 @@ re-evaluated on every call: a worktree created later is picked up without reopen
 
 ## Data the app keeps
 - `~/.loop-harness/` (or `LOOP_DATA_DIR`): `repo-catalog.json` (the repo catalog, written only by the catalog job), `config.json` (`app_root_dir`, `orchestrator_skill_dir`,
-  `claude_transcripts_dir`, `output_dir`, `claude_binary`, `idle_hours`), `projects.json` (`{version, projects[]}`, one
+  `claude_transcripts_dir`, `output_dir`, `claude_binary`, `idle_hours`, `orchestrator_model`: model alias or id of the loop's orchestrator turns, default `opus`, `""` = no `--model` flag), `projects.json` (`{version, projects[]}`, one
   item per project: `id, name, repo_path, opened_at, last_opened_at, favorite`), `app.json` of the live app (`pid, port,
   url, token, started_at, app_root_dir`), an optional `.env` and `logs/app.jsonl`.
 - In each project, under `.specs/` (layout of `engine/loop_state.py`): `project/` (`PROJECT.md`, `ROADMAP.md`,
   `STATE.md`, `FLOWS.md`, `RULES.md`, `TEST-ENVIRONMENT.md`, `phases/stage-NN.md`), `project/loop/` (`ANSWERS.md`, `VALIDATE.md`,
   `DEPENDENCIES.md`, `GRAPH.md`, `NOTICE.txt`), `project/loop/json/` (`LOOP.json`, `LOOP-CMD.json`, `MONITOR.json`,
   `meta.json`, `ROADMAP-APPROVED.json`, ...) and `project/loop/internal/` (`LOOP.lock`, `PAUSE`, `turns/`, `snapshots/`,
-  `chat/`, `jobs/`, `planning/thread.json`, `whiteboard.json`, `roadmap-goal.md`, logs). Multi-repo projects add `project/REPOS.json` (kept by Reset specs) and, in `project/loop/json/`, `SCOPE.json` (`roots`), one `delivery.json` per repo and `last-run.json` (kept by Reset specs). Project ids are a short hash of the normalized folder
+  `chat/`, `jobs/`, `planning/thread.json`, `whiteboard.json`, `roadmap-goal.md`, `decisions-review.json`, `follow-up-draft.json`, `delivery-pending.json`, logs). Multi-repo projects add `project/REPOS.json` (kept by Reset specs) and, in `project/loop/json/`, `SCOPE.json` (`roots`), one `delivery.json` per repo and `last-run.json` (kept by Reset specs). Project ids are a short hash of the normalized folder
   path: the same folder always gets the same id.
+
+## Loop panel: navbar, dialogs, decisions and wrap-up
+The loop-mode panel is a navbar plus the two zones; the old alert band, Start card and Workspace zone are gone (planning mode keeps its own header, with the Planning pill on the left and a **Workspace** button that opens the Workspace dialog; there is no WORKSPACE band). Pieces and who owns what:
+- **Run settings.** The nine loop settings live in the ROADMAP header (`**Dispatch:**`, `**E2E:**`, `**Max spend per turn:**`, `**Max spend for the loop:**`, `**Max minutes per turn:**`, `**Branch:**`, `**Setup:**`, `**When a feature gets stuck:**`, `**Push and PR:**`). `domain/roadmap_settings.parse_loop_settings` is the only parser (`settings`, `problems`, `missing`, `defaults`); `LoopControlService` turns it into `run_loop.py` options (`convert_settings_to_loop_flags`) and `GET loop/settings` returns it. The start body keeps only `push` and `remove_worktree_on_finish`, which go to `meta.json` `delivery` (or, before the worktree exists, to `delivery-pending.json` of the repository, merged by the engine); `LoopControlService.read_delivery` is the one reader.
+- **Models.** `run_loop.py --orchestrator-model` (default `opus`) adds `--model` to every orchestrator argv (normal, correction, resume); the app passes `orchestrator_model` from `config.json`. Subagents keep `model: sonnet` in their frontmatter and app jobs keep `JOB_MODEL_CEILING` (Sonnet).
+- **Spend cap.** `--max-cost` defaults to 50. The cap in force is `meta.json` `max_cost_usd` when set (`POST loop/raise-limit`), else the option. Passing it (after a turn, or before one) writes LOOP status `paused` with `cost cap reached: US$ x of y` and exits 10; `cost_usd` is never reset; one notice at 80 % (`cost_warned_at`, `cost_warned_cap`). `loop_state.LOOP_STATUS` knows `paused`; `close_loop` and `loop_summary` record `cost_usd`, `max_cost_usd`, `turns` (`last-run.json`).
+- **Decisions.** `engine/decisions.py` (stdlib) owns the `VALIDATE.md` line grammar (`parse`, `append`, `line_count`, `new_critical`, the id = sha1 of the raw line). The engine's three writers use `append` (turn stamped, level `important`); after each turn `run_loop.pause_on_critical_decision` compares `VALIDATE.md` with `meta.decisions_mark` and turns a new `level=critical` line into `awaiting_user` (`critical decision: ...`, options `keep as decided` / `change it: ...`). `DecisionsService` reads the list with the review state of `decisions-review.json` and writes only that file and the `decisions` key of `follow-up-draft.json`; one instance is shared by `LoopPanelService` (`state.decisions_summary`), the wrap-up and `DecisionsController`.
+- **Wrap-up and follow-up.** `WrapUpService` orchestrates what exists: delivery through `EngineScriptService` (`delivery.py`) and the close through `LoopWorktreeService.close_loop` (`close_loop.py`, with `force_remove` for `remove_anyway`, always after the verified backup); modes `safe`, `keep_worktree`, `remove_anyway`; a refusal is `RepoConflictError` code `wrap_up_blocked` with `reasons` (409). `FollowUpService` runs a `follow_up` claude job (Sonnet, hook profile `planning`, edit only ROADMAP.md and FLOWS.md, in the loop worktree), keeps the result only when it is an appended `Follow-up <n>` stage and otherwise restores both files from a snapshot; `run` renews the roadmap approval and starts a round through `LoopControlService.start_new_loop` on the same worktree.
+- **Read-only plan.** `LoopPanelService.build_codebase_tree` / `read_codebase_file` list and read the `docs/codebase` maps of the work folder (root and subprojects); `ChatService` scope `plan` answers questions with the same read-only job as the other scopes, limited by a prompt prefix to the plan, specs, maps, decisions and loop state.
+- **Front end** (`frontend/src`): `pages/panel/app.js` (mode table: planning screen or navbar + `.z-body`), `pages/panel/header.js` (navbar parts: repo chip, status indicator, meters, actions in order) with the presentational `components/navbar_status.js`; `pages/panel/alert.js` (status dialog bodies: answer, resume, cost-cap raise, stopped, done), `pages/panel/start_loop_dialog.js` (+ request helpers in `new_loop.js`), `pages/panel/plan_files_dialog.js` (+ `components/big_dialog.js`, `file_explanations.js`), `pages/panel/decisions.js` with `components/decision_list.js`, `pages/panel/wrap_up.js` (Wrap-up view and Finish dialog), `pages/panel/global_zone.js` (tab registry: Context, Plan & files, Dependencies, Errors). Styles: `styles/navbar.css`, `styles/decisions.css`, `styles/wrap_up.css` (colors only from the tokens of `base.css`).
 
 ## HTTP API
 Pages: `GET /` (hub) and `GET /p/<project_id>/` (project panel) serve the same `frontend/index.html` with
@@ -144,10 +156,10 @@ Pages: `GET /` (hub) and `GET /p/<project_id>/` (project panel) serve the same `
 | `POST /api/app/projects/pick-folder` `{}` | native folder dialog (tkinter in a subprocess, 300 s timeout) -> `{"path": "...\|null", "reason": "...\|null"}` |
 | `GET /api/app/system/folders?path=` | in-browser folder browser (fallback without tkinter): `{"path", "parent", "folders": [{name, path, has_specs, has_git}], "truncated"}` |
 | `POST /api/app/projects/<id>/forget` | removes it from the registry |
-| `POST /api/app/projects/<id>/reset-specs` `{"confirm": "<project name>"}` | "Reset specs" (`SpecsResetService`): MOVES the planning/loop state (`features/`, ROADMAP, FLOWS, STATE, `phases/`, `archive/`, the loop folder) to `.specs/.trash/<YYYYMMDD-HHMMSS>/` (paths relative to `.specs/`), then recreates ROADMAP/FLOWS/STATE from `templates/specs` and an empty `features/`. Keeps RULES, PROJECT, TEST-ENVIRONMENT, `.env.test`, `ACCESS.json`, `rules.tests.json`, `SCOPE.json`, `PERMISSIONS.json`, `docs/codebase`, `CLAUDE.md`. The lists live in `RESET_MOVED_PATHS` / `RESET_KEPT_PATHS`. -> `{"ok", "moved": [...], "trash": ".specs/.trash/<stamp>\|null", "kept": [...]}`; 400 without the exact name in `confirm`; 409 (`code` `loop_running` / `planning_busy`) while a loop or claude job runs. Idempotent (nothing to move = empty `moved`, `trash` null). Never follows a link, only touches `<work>/.specs/`; `.specs/.trash/` is git-ignored and never listed or read by the app |
+| `POST /api/app/projects/<id>/reset-specs` `{"confirm": "<project name>"}` | "Reset specs" (`SpecsResetService`): MOVES the planning/loop state (`features/`, ROADMAP, FLOWS, STATE, `phases/`, `archive/`, the loop folder) to `.specs/.trash/<YYYYMMDD-HHMMSS>/` (paths relative to `.specs/`), then recreates ROADMAP/FLOWS/STATE from `templates/specs` and an empty `features/`. Keeps RULES, PROJECT, TEST-ENVIRONMENT, `.env.test`, `ACCESS.json`, `rules.tests.json`, `SCOPE.json`, `PERMISSIONS.json`, `docs/codebase`, `CLAUDE.md`. The lists live in `RESET_MOVED_PATHS` / `RESET_KEPT_PATHS`. -> `{"ok", "moved": [...], "trash": ".specs/.trash/<stamp>\|null", "kept": [...]}`; 400 without the exact name in `confirm`; 409 (`code` `loop_running` / `planning_busy`) while a loop or claude job runs. Idempotent (nothing to move = empty `moved`, `trash` null). It always resets the PRIMARY checkout's `.specs/` and then deletes the project's loop worktree(s) (`LoopWorktreeRemovalService`: only a worktree registered in the repo's `git worktree list`, at the repo's loop worktree path, on a `loop/*` branch; `git worktree remove --force` + prune + `git branch -D`, no merge/push) -> also `"worktrees_removed": [{repo, path, branch, branch_deleted}]`, `"worktree_failures": [...]`; `GET .../reset-specs/preview` -> `{ok, worktrees, skipped}` tells the confirmation what will be deleted (`unpushed_commits` int or null). Never follows a link, only touches `<primary>/.specs/`; `.specs/.trash/` is git-ignored and never listed or read by the app |
 | `GET /api/app/overview` | the running loops of every project (only projects whose `LOOP.lock` PID is alive): project, stage, feature, turn, cost, repos and the pending question, for the hub cards |
 | `GET`, `POST /api/app/projects/<id>/repos` | list the project's repos / add one (`{"path", "copy"?}`; refused when it is not a git repo, has a detached HEAD or is already listed) |
-| `POST /api/app/projects/<id>/repos/multi` `{"multi"}` | the "This project uses several repositories" checkbox; 409 `loop_running` while a loop runs |
+| `PATCH /api/app/projects/<id>/repos/<name>` `{"role"?, "reason"?}` (alias `PUT .../role`) | switches a repo between `edit` (the loop changes it) and `reference` (read only, no worktree) and/or stores its one-sentence reason; the repos come from the planning chat (`REPOS-SUGGESTED.json` applied after each reply). `POST .../repos/multi` and `.../repos/scope/propose` no longer exist and the confirm step is gone (`scope/confirm` is a compatible no-op); `GET repos` carries `role`, `reason`, `changed_by_feature`, `rejected` |
 | `DELETE /api/app/projects/<id>/repos/<name>` | removes a repo from the list; never touches a folder or a worktree; 409 for the primary repo or while a loop runs |
 | `PUT /api/app/projects/<id>/repos/<name>/copy` `{"copy"}` | stores the copy list (files to copy into the worktree); `{"copy": null}` = back to automatic (the key leaves `REPOS.json`). Repo objects carry `detected_setup`, `setup_configured`, `copy_configured` |
 | `GET /api/app/projects/<id>/repos/<name>/copy-suggestions` | git-ignored files that look like local configuration (`.env`, `.env.*`, `appsettings.*.json`, `*.local.*`); `node_modules`, `bin`, `obj`, `dist` are never listed |
@@ -161,9 +173,15 @@ The loop read routes (`health`, `state`, `history`, `agent/<id>/log`, `turn/<n>`
 belongs to the app. `GET /p/<id>/api/health` returns `{"ok": true, "repo", "work", "pid"}` (the engine's `monitor_proc`
 checks `work`).
 
+Loop panel routes (see `API.md`): `GET loop/settings`, `POST loop/raise-limit`, `GET decisions[?turn=N]`, `POST decisions/<id>/review`, `POST decisions/<id>/change`,
+`GET codebase/tree`, `GET codebase/file?path=`, `GET wrap-up`, `POST wrap-up/finish` (409 `wrap_up_blocked` with `reasons`), `GET follow-up`, `POST follow-up/send`, `POST follow-up/run`, chat scope `plan`;
+`state` gains `decisions_summary` and `meta.max_cost_usd`.
+
 Multi-repo routes: `GET workspace`, `POST workspace/create` `{"repos"?}` (a job; 409 `busy`), `GET workspace/job/<job>` (the steps to draw),
 `POST workspace/repos/<name>/commit-push` `{"message"?, "push"?}` (`WorkspaceService.commit_and_push` -> `GitClient.commit_all_and_push`: `git add -A`,
-commit and push of the user's folder, current branch only, never forced; 409 `busy`, `worktree_exists`, `commit_push_failed`),
+commit and push in a LOOP WORKTREE only, never forced; 409 `busy`, `user_folder_refused` (no worktree: the user's folder is saved by `commit-setup`), `not_loop_branch`, `commit_push_failed`),
+`POST workspace/repos/<name>/commit-setup` `{"confirm_branch"}` (`SetupCommitService`, `SetupCommitController`: commits only `engine/setup_files.list_setup_files` on the folder's current branch and pushes it to its upstream; 409 `detached_head`, `protected_branch`, `no_upstream`, `busy`, `nothing_to_commit`, `commit_failed`, `push_failed`),
+`POST|PATCH|DELETE workspace/repos[/<name>]` (the same `RepoRegistryService` as the hub's `repos` routes: add with `role` and `reason`, edit role/reason, remove),
 `GET close-loop/check` (per repo: can close and the reasons), `POST close-loop` `{"confirm_compare_link"?, "repos"?}`. Hub routes of the per-repo
 readiness guard (`RepoReadinessService`, `RepoReadinessController`): `GET /api/app/projects/<id>/repos-readiness`,
 `PUT .../repos/<name>/conformance`, `POST .../repos/<name>/map` (details in `API.md`). Starting a loop (or
@@ -182,7 +200,8 @@ Projects module routes:
 | `POST roadmap/approve` `{"confirm": true}` | writes `ROADMAP-APPROVED.json` through `loop_state.approve_roadmap` -> `{ok, approval: {approved, reason, at, features}}`; 409 with the loop running; 422 `{"ok": false, "error", "code": "planning_gates", "gates": [...]}` while a non-optional planning gate (below) is not ok (an invalid or empty ROADMAP fails the `features`/`fields` gates) |
 | `POST roadmap/generate` `{"goal", "map_first": bool, "budget_usd"}` | job `claude -p "/orchestrator roadmap --headless --goal-file ..."` (see `SKILL_BRIDGE.md`) -> 202 `{ok, job, detail}`; 409 `code: "planning_required"` in planning mode (the planning chat replaces it) |
 | `POST roadmap/refine` `{"text", "budget_usd"}` | resumes the session of the last roadmap job (`--resume`) -> 202; 409 `planning_required` in planning mode |
-| `POST codebase/map` `{"budget_usd"}` | job `claude -p "/orchestrator map"` -> 202 |
+| `POST codebase/map` `{"budget_usd"}` | job `claude -p "/orchestrator map --inventory <path>"` (built by `MapJobRunner`: snapshot and free inventory run in the job thread) -> 202 `{ok, job, detail}` |
+| `GET\|PUT subprojects`, `POST subprojects/{detect,validate,conformance,map,system-map}` | monorepo subprojects (details in `API.md`) |
 | `GET jobs` / `GET jobs/<job>` | project jobs: `{id, type: "roadmap\|roadmap_refine\|map\|planning", state: "running\|ok\|error", started_at, finished_at, cost_usd, reply, error}` |
 | `GET planning` | planning screen (below) |
 | `POST planning/send` `{"text"}` | one message of the planning chat -> 202 `{ok, job_id}`. Refuses: 400 empty text or longer than 8000 characters; 409 `code: "loop_running"`; 409 (no code) when the loop worktree exists; 409 `code: "planning_prerequisites"` (+ `gates`) while the `git`, `structure`, `conformance` or non-optional `map` gate fails; 409 `code: "planning_busy"` while a reply (or any claude job of the project) runs |
@@ -233,6 +252,33 @@ documents (created = deleted, changed/deleted = restored, larger files only repo
 appends a note to the reply. Thread: `.specs/project/loop/internal/planning/thread.json` (messages + the `session_id`,
 which never leaves through the API). The chat never approves.
 
+## Monorepos
+A repo with several projects (`backend/`, `frontend/`...) is a **monorepo** when the list in `.specs/project/SUBPROJECTS.json` says so and the user confirmed it.
+Each subproject then has its own `CLAUDE.md` (with its Conformance and a `maestro:context` block) and its own map in `<path>/docs/codebase/`; the root keeps only
+`docs/codebase/SYSTEM.md` (how the subprojects talk, with a **Who talks to whom** section: `<consumer> -> <provider>: <how> (<env name>; <routes or topics>)` plus shared resources, asked by the system-map prompt in the orchestrator skill `references/monorepo.md`; then routes, DTOs, auth, env names) and no root Conformance. A project that is not a monorepo changes nothing.
+
+- **List.** `engine/subprojects.py` detects (folder layout only, no AI), reads/writes the repo's entry (keyed by the repo folder name, so a secondary repo of `REPOS.json` can be one too) and
+  answers `owner_of(path)`. The AI step (`SubprojectValidationService`) only suggests through `SUBPROJECTS-SUGGESTED.json`; the service checks it before merging. The user confirms or picks **Not a monorepo**.
+- **Map jobs.** `MapJobRunner` is the one place that starts a map job (root, one subproject, or `SYSTEM.md` through `SystemMapService`): snapshot of the tree, optional inventory, `claude -p` with
+  `--model sonnet` (`JOB_MODEL_CEILING`), guard profile `spec`/`subprojects`/`systemmap`, revert of anything written outside the allowed folders. **No spend cap:** the subproject, system and root map jobs and Validate with AI pass
+  `budget_usd=None` (no `--max-budget-usd`) and ignore a `budget_usd` in the request.
+- **Parallel subproject maps.** `SubprojectMapService` starts one job per selected subproject AT ONCE (at most `max_parallel_maps`, `config.json`, default 6; the rest are `queued` and start as others end), with a persisted queue
+  (`map-queue.json`: `state`, `items{path: state, started_at, finished_at, error, job_id, documents}`, `system{state, error}`, `include_system`) and a watcher thread per job. The one-job-per-repository rule of `ClaudeJobService` is relaxed
+  with a `parallel_key` (the subproject folder): jobs that all carry a key and have different keys run together; a job without a key is exclusive both ways (planning chat, validate, system map, follow-up, loop). Each subproject path is
+  checked against `get_blocking_job` before the start; a restart reads a `running` file with no job alive as `stopped` (the running items `failed`: "interrupted"). When every item is `done` and the call had no explicit `paths`
+  (`include_system`), the queue's `on_queue_finished` callback (`SystemMapService`) starts the system map by itself and the queue follows it (`system.state`). The payload (`public_queue`) is also served as `map_queue` in `GET subprojects`.
+- **Legacy root block.** Confirming a monorepo list (`SubprojectsService.update_list`) removes the Conformance block the app wrote in the root `CLAUDE.md` of an earlier version (between its markers, nothing else touched).
+- **Installer (front end).** `components/subprojects_installer.js` (monorepo: 1 Subprojects, 2 Conformance, 3 Maps) and `components/project_installer.js` (single repository: 1 Conformance, 2 Map) are presentational, with the state and the calls in `pages/panel/subprojects.js` and `pages/panel/project_installer.js`; both follow the planning gates; `pages/panel/repo_setup_dialog.js` hosts the same installer for any repository of the project. **Initialize structure** never picks the Conformance.
+- **Inventory.** `engine/code_inventory.py` (free, stdlib) measures files, finds entry points and giant files. `CodeInventoryService` holds the thresholds (`inventory_giant_lines`, `inventory_giant_kb`) and runs it before a map job;
+  a giant file blocks nothing by itself: the check warns when a feature touches one without a `refactor-*` feature in its `deps=` (or `note=giant-accepted`), `engine/readiness_checks.py`.
+- **`maestro:context` block.** `engine/context_block.py` keeps one generated block between `<!-- maestro:context -->` and `<!-- /maestro:context -->` in each `CLAUDE.md`: the Conformance as one sentence, where the map and
+  `SYSTEM.md` are, build/run/test commands and the giant-file rule. Everything outside the markers is preserved; a damaged marker pair is reported and the file left alone. `ContextBlockService` rewrites it after a Conformance
+  or map is written and when the list is confirmed. A `CLAUDE.md` lists the map once: with a context block, the older `<!-- CODEBASE:BEGIN -->` block (`run_hints.write_codebase_block`) is not written and an existing one is removed.
+- **SYSTEM.md between turns.** Executors never edit `SYSTEM.md`: a feature that changes a route, DTO, auth scheme or env name writes `.specs/features/<slug>/contract.md`, and `run_loop.merge_verified_contracts`
+  merges it with `engine/system_map.py` after the feature is verified (ledger `contract-merged.json`).
+- **Agents.** Executors and verifiers get one `SUBPROJECT:` line per touched subproject (`subprojects.py for-paths`: its `CLAUDE.md`, map, skill, Conformance, plus `SYSTEM:`); nothing is printed for a single project.
+- **Preflight.** `readiness_checks` adds the subprojects problems/warnings (list not confirmed, missing Conformance or map, giant files, uncommitted map/`CLAUDE.md`/`SYSTEM.md` files) to `--check` and to the planning readiness.
+
 ## Multi-repo projects
 One project can work on several git repositories. A single-repo project is the same thing with one entry: no `REPOS.json`, no
 migration, and its files and output stay as they were.
@@ -248,14 +294,19 @@ keeps `REPOS.json`. Removing a repo only edits the list.
 start**, so nothing is silent: it prints one line per step (`[loop] [<repo>] check|warn|worktree-add|reattach|copy|setup|ready|reuse|error: ...`;
 a single-repo project keeps its old lines without the `[<repo>]` tag). `WorkspaceService` parses those lines into steps. The
 **Create workspace** button runs the same code as a job, so the panel can stream the steps before the first loop. State per repo:
-`not_created | ready | loop_running | dirty | missing`. A repo with uncommitted changes in the user's folder gets a warning: the worktree
-is born from the last commit. `.specs/`, `CLAUDE.md` and `.claude` are copied only into the primary worktree. In a multi-repo project each
+`not_created | ready | loop_running | dirty | missing | read_only` (`read_only` = a reference repository). **Base (BR-01):** `run_loop.choose_base` starts a NEW worktree from the integration branch (the ROADMAP `Branch base:` first, then `delivery.integration_branch()`: `LOOP_PR_BASE` /
+`LOOP_INTEGRATION_BRANCH`, default `developer`) when it exists as a local branch, else from the folder's current branch with a warning that names it; `meta.json` records `base`, `base_sha` (short sha) and `carried_setup_files` (per repo under `repos`). **Setup files (BR-02):**
+`engine/setup_files.py` (read-only over the user's folder; stdlib) lists the uncommitted setup files (`docs/codebase/*.md` of the repo and each non-skipped subproject, `CLAUDE.md` with an app block, `.specs/project/**` and `.specs/features/**` but never `.specs/project/loop/**` or `.env*`, in a confirmed
+monorepo the root `CLAUDE.md` and `docs/codebase/*.md`) and `carry_setup_files` copies the ones a new worktree lacks (committed or not, never over an existing file); `run_loop` ignores `carried_setup_files` in the pre-turn dirty check, so they wait for the first checkpoint commit. Other uncommitted
+files are never carried (a warning). **Readiness (RD-01/RD-02):** ONE `uncommitted` block per edit repo (`readiness_checks.uncommitted_blocks`, also structured in `planning/readiness.json`), and no "generate and APPROVE the roadmap" problem while an installer step is open (`roadmap_problems(setup_open=...)`, `installer_problems`).
+`.specs/`, `CLAUDE.md` and `.claude` are copied only into the primary worktree. In a multi-repo project each
 worktree is prepared automatically: `resolve_setup` takes the stored setup (or the CLI `--setup`) and otherwise `detect_setup.detect_setup`
 (lockfiles, `.sln`/`.csproj`, `requirements.txt`...), `resolve_copy` takes the stored list and otherwise the git-ignored local config files;
 a single-repo project without `REPOS.json` keeps no automatic copy or setup. `--check` reports a PROBLEM for every extra repo without a
 `Conformance:` line. `meta.json` gets a `repos` map only when the project is multi-repo (`branch`, `base` and
-`worktree` stay the primary's, so old readers work). The panel shows this as the **Workspace** band (`frontend/src/pages/panel/workspace.js`;
-the repo list and the checkbox are in `pages/repo_manager.js`).
+`worktree` stay the primary's, so old readers work). The planning screen shows this in the **Workspace dialog** (`frontend/src/pages/panel/workspace_dialog.js`, opened by the navbar button; per repo the role tag, the reason, the branches, the setup state and the commit of the setup files, fed by `GET workspace`) and the Start dialog as a read-only list of rows (`pages/panel/workspace.js`;
+the repo list is in `pages/repo_manager.js`). The Workspace dialog is the ONLY place to add, switch the role of (edits | reference) and remove repositories by hand (PATCH/DELETE `workspace/repos/<name>`, locked while a loop or job runs); the hub "Repositories" dialog and the Workspace bar button were removed, `pages/repo_scope.js` keeps only `ROLE_TEXT`, `roleKey`, `chooseFolder`). **Commit setup files and push** (`SetupCommitService`) commits only the setup files on the folder's current branch and pushes it to its upstream, after a confirmation naming the branch; refused on `main`/`master`, a detached HEAD, a running loop or job, or without an upstream. The legacy `commit-push` route now acts only on a loop worktree.
+**Roles and setup per repo.** `REPOS.json` entries carry `role` (`edit|reference`) and `reason`; there is no confirm gate (`is_scope_defined` = "there is an edit repo"). A repository added opens the per-repo **Set up** dialog (`repo_setup_dialog.js`, the same installer; a reference repo skips the Conformance and its map is optional); `WorkspaceService.describe_setup_state` gives `setup.state`, and the planning gates count every edit repo (a reference repo's missing map is only a WARNING).
 
 **Roadmap grammar.** `paths=<repo>:<path>` (no prefix = primary repo) and `repo-order=<name,name>` (build and commit order). A repo name
 that is not in `REPOS.json` is an error naming the feature. Two features collide only when they use the same repo and an overlapping
@@ -273,7 +324,7 @@ integration and other protected branches are never pushed). Each PR body gets a 
 worktree keeps its own `delivery.json`; the primary's also holds the aggregate under `repos`. A failure in one repo is reported and
 nothing is rolled back.
 
-**Close loop.** A button in the Workspace band that runs `engine/close_loop.py` outside `claude -p`. A repo can close only when the loop is
+**Close loop.** In loop mode **Finish** (`WrapUpService`, see above) and a **Close loop** button in the workspace details of the panel run `engine/close_loop.py` outside `claude -p`. A repo can close only when the loop is
 not running, the push is confirmed (`delivery.json` and the remote hold HEAD), a PR exists (`PR created` or `PR already existed`; a compare
 link alone needs a confirmation), the tree is clean outside `.specs/` and no copied file changed. Order, fixed: (1) verified backup of each
 worktree, (2) the durable `.specs/` files go back to the primary repo (ROADMAP with statuses, FLOWS, STATE, `features/*/{spec,design,tasks}.md`,
@@ -313,30 +364,26 @@ SAME order as the skills' `testenv.py`, first hit wins:
 | 1 | real environment variable | always |
 | 2 | `<project>/.specs/project/.env.test` | always |
 | 3 | `~/.loop-harness/.env` (`LOOP_DATA_DIR`) | always |
-| 4 | plugin `shared/.env` (when the plugin is installed) | only if the project accepted the shared fallback |
-| 5 | user-level shared `~/.claude/skills/_shared/.env` (the generic DEV account) | only if the project accepted the shared fallback |
+| 4 | plugin `shared/.env` (when the plugin is installed) | always (shared layer) |
+| 5 | user-level shared `~/.claude/skills/_shared/.env` (the generic DEV account) | always (shared layer) |
 
-Layers 4 and 5 are the user's SHARED account. A project accepts them with `.specs/project/ACCESS.json`, key `shared_fallback: true`.
-A name that only a shared layer defines, without acceptance, has the source `shared-blocked` and stops the run like a missing one.
+Layers 4 and 5 are the user's SHARED account and are ALWAYS read (no per-project acceptance); a name only they define has the source `shared`.
 A blank `NAME=` line never hides a lower layer. The user-level shared folder is found through `LOOP_USER_SHARED_DIR` (tests), then
 `user_shared_dir` in `~/.loop-harness/config.json`, then the default `~/.claude/skills/_shared`; the home is never hardcoded. `envload.load()`
 copies `.env` files into `os.environ`, so an environment value identical to a file layer's is treated as that file's (a copied shared value
 cannot jump the acceptance gate). `;`-lists (`TEST_USER_EMAILS` ...) also give `TEST_USER_<n>_EMAIL/_PASSWORD/_ROLE`, with the origin of the list.
 
-**`ACCESS.json`** (`engine/access_settings.py`): `{"grafana_read": bool, "shared_fallback": bool}`, both false by default; tolerant read
-(only a JSON `true` counts), atomic write. It is a per-person choice, so `.specs/project/ACCESS.json` is added to the `.gitignore` lines the
-app maintains (`ENV_IGNORE_LINES`) and Reset specs keeps it.
+**`ACCESS.json`** (`engine/access_settings.py`) is a legacy file: its `grafana_read` / `shared_fallback` keys are ignored and dropped by `migrate_access_file` (an existing `false` is migrated to the new default, always on). Access is computed: credentials from the layers above, MCP servers from `engine/mcp_access.py` (see the Access card below).
 
 **Endpoints** (`TestEnvironmentController` -> `TestEnvironmentService` -> `TestEnvironmentRepository`; errors `{"ok": false, "error", "code"?}`):
-- `GET /p/<id>/api/test-environment` -> `{ok, ready, names: [{name, source: missing|env|project|machine|shared|shared-blocked, set, secret,
-  path_label}], fill_in: [FILL_IN lines], access: {grafana_read, shared_fallback}, shared_paths: [labels of the shared files found]}`.
-  `names` = every `$NAME` the document mentions (comments included, like the preflight). `ready` = no missing name, no `FILL_IN`, no
-  `shared-blocked` name. Never a value.
+- `GET /p/<id>/api/test-environment` -> `{ok, ready, names: [{name, source: missing|env|project|machine|shared, set, secret,
+  path_label}], fill_in: [FILL_IN lines], access: {credential_layers: [{name, label, path, exists, names}], mcp: [{server, tools, configured}]}, shared_paths: [labels of the shared files found]}`. `access` feeds the **Access** card (`TestEnvironmentService.describe_access`): the three credential layers (project > machine > shared) with the source of each name, and the MCP read access found in `~/.claude.json`.
+  `names` = every `$NAME` the document mentions (comments included, like the preflight). `ready` = no missing name and no `FILL_IN`. Never a value.
 - `PUT .../test-environment/values` `{"values": {"NAME": "value"}, "target": "project"|"shared"}` -> `{ok, saved: [names]}`. A name outside the
   document is a 400 `unknown_name`; values are one line, at most 500 characters. `project` writes `.specs/project/.env.test` (created, kept
   git-ignored); `shared` writes the user-level shared `.env` (created when missing). Only the `KEY=value` line of a saved name changes; every
   other byte (comments, blank lines, other keys, CRLF/LF, BOM) stays; the write is atomic. A value is never echoed, logged or put in an error.
-- `PUT .../test-environment/access` `{"grafana_read"?: bool, "shared_fallback"?: bool}` -> `{ok, access}`.
+- `PUT .../test-environment/access` was removed (there is nothing to toggle).
 
 **Default `.env.test`** (`engine/test_env_fallback.py`, `ensure_env_test(root)`). A project that has a test environment always gets
 `.specs/project/.env.test`, already filled from the machine-level layers (3, 4 and 5 above, highest first). Only TEST keys are copied
@@ -347,12 +394,11 @@ does not define (a commented line does not count), never edits an existing line,
 the value) and adds `.specs/project/.env.test` to `.gitignore`. Called when the test environment is created
 (`SpecsStructureService.create_env_test_template`, only when the file is born there: structure/initialize and the first planning message) and at the start of
 `run_loop.test_environment_problems` (Check/Start with a `TEST-ENVIRONMENT.md`). Because layer 2 wins, the loop can work with that file
-alone. Note: copying a layer-4/5 value into the project file is explicit and bypasses the `shared_fallback` acceptance for those names.
+alone. Layers 4 and 5 are read anyway, so the copy only makes the value visible in the project file.
 
 **Preflight.** `run_loop.test_environment_problems` (runs when the roadmap has `regression=yes` or `--e2e`) first fills the default
 `.env.test`, then uses the same resolution: only a name that is STILL undefined is a PROBLEM, with an action ("add NAME=value to
-.specs/project/.env.test or ~/.loop-harness/.env"); a `shared-blocked` one asks to "accept the shared fallback in the Test environment
-tab". It stops the loop before the first turn and names every name. Undefined `$SAMPLE_*` names (test data of one feature) and forgotten
+.specs/project/.env.test or ~/.loop-harness/.env"); It stops the loop before the first turn and names every name. Undefined `$SAMPLE_*` names (test data of one feature) and forgotten
 dependencies are WARNINGS (`test_environment_warnings`, `credential_check.credential_warnings`): the loop runs.
 
 **What the AI can and cannot see.** Before each planning message the app writes `.specs/project/loop/internal/credential-names.json`
@@ -360,15 +406,14 @@ dependencies are WARNINGS (`test_environment_warnings`, `credential_check.creden
 readable (`Read`) but not in `PLANNING_EDITABLE_PATHS`. Values are visible to the app and to `claude -p` only through the environment of the
 real tests the project runs; they are never in a document, a response, a log or a prompt.
 
-**Grafana read-only opt-in** (`grafana_read: true`; `engine/grafana_access.py`). The planning reply and the loop's `claude -p` (the spec-writer
-and verifier-flow subagents run inside it) get the user's `grafana` MCP server and only these tools: `mcp__grafana__query_loki_logs`,
-`list_loki_label_names`, `list_loki_label_values`, `query_loki_stats`, `query_loki_patterns`, `find_error_pattern_logs`, `list_datasources`.
-The server definition is the user's `mcpServers.grafana` of `~/.claude.json` (override `LOOP_CLAUDE_CONFIG_FILE` in tests); only that entry is
-copied into a minimal config at `<data dir>/.secrets/grafana-mcp.json` (credentials stay in that file, under the folder the guard's `secrets`
-rule blocks; the argv carries only its path), together with `--strict-mcp-config`, so no other MCP joins it. The 7 tools go in
-`--allowedTools`; the known Grafana writers (`create_annotation`, `update_dashboard`, `create_incident`, ...) are also in `--disallowedTools`.
-No usable definition = the feature stays off (empty MCP config, as always). With `grafana_read` false nothing changes. Spec subagents
-declare an explicit `tools:` list: to use these MCP tools their frontmatter must list them (a plugin change, see the report of this feature).
+**MCP read access, always on** (`engine/mcp_access.py`; replaces the old `grafana_read` opt-in). The planning reply and every loop `claude -p` (the spec-writer and
+verifier-flow subagents run inside it) get each of the user's `grafana`, `mcp-mysql-dev` and `mcp-mysql-prod` servers that `~/.claude.json` defines
+(`mcpServers`; override `LOOP_CLAUDE_CONFIG_FILE` in tests), with READ tools only: Grafana `query_loki_logs`, `list_loki_label_names`, `list_loki_label_values`,
+`query_loki_stats`, `query_loki_patterns`, `find_error_pattern_logs`, `list_datasources` (the known writers are also in `--disallowedTools`); MySQL `mysql_query`,
+which the guard rule `sql-write` keeps read only. Only those definitions are copied into one minimal config at `<data dir>/.secrets/mcp-access.json`
+(`--mcp-config <file> --strict-mcp-config`; credentials stay in that file, under the folder the guard's `secrets` rule blocks; the argv carries only its path).
+A server that is not configured is just absent (no error); no server = the empty strict config. `run_loop.py --check --planning` warns when the plan names a server
+that is not configured. Spec subagents declare an explicit `tools:` list: to use these MCP tools their frontmatter must list them.
 
 ## Bridge with the skill
 `SKILL_BRIDGE.md`: how the plugin skill finds the app (`LOOP_APP_HOME`, else `~/.loop-harness/config.json` ->

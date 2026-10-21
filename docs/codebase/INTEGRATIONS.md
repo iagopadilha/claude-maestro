@@ -22,7 +22,7 @@ No database, no queue, no inbound webhooks. Everything is local files, subproces
 
 **Purpose:** worktrees, branches, push of the feature branch, pull request.
 **Implementation:** `infrastructure/git_client.py`, `engine/delivery.py` (`gh pr create` or compare link), `engine/close_loop.py`, `services/loop_worktree_service.py`.
-**Configuration:** `LOOP_INTEGRATION_BRANCH` / `LOOP_PR_BASE`, `LOOP_PR_MODE` (auto|link|off), `LOOP_PR_DRAFT`, `LOOP_GIT_USER`.
+**Configuration:** the base/integration branch comes from the ROADMAP `Branch base:` first, then `LOOP_PR_BASE` / `LOOP_INTEGRATION_BRANCH`, default `developer`; `LOOP_PR_MODE` (auto|link|off), `LOOP_PR_DRAFT`, `LOOP_GIT_USER`.
 **Authentication:** the user's git identity and `gh` login. Never pushes to the integration branch directly.
 
 ## Notifications

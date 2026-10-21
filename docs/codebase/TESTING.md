@@ -20,11 +20,19 @@
 | Guard hook tests | `plugin/skills/orchestrator/hooks/test_guard*.py` | Block/allow rules of the guard. |
 
 ## Doubles
-- `engine/fake_claude.py` stands in for the `claude` CLI; `engine/fake_app.py` for the app. Tests do not call the real model.
+- `engine/fake_claude.py` stands in for the `claude` CLI; `engine/fake_app.py` for the app. Tests do not call the real model. Scenario keys (JSON) include `argv_log` (a file that gets one JSON line with the whole argv of every call, used to check `--model`) and `decision_lines` (`{"<turn>": ["- [slug] turn=.. level=.. doubt | chose: .. | revert: .."]}`, lines that turn appends to `VALIDATE.md`).
+
+## Loop panel feature tests
+- Back end `api` (run from `app/backend` as `python -m unittest tests.api.<module>`, or from `app` with `discover -s backend/tests/api -t backend -p <file>`): `test_loop_settings`, `test_roadmap_loop_settings_parser`, `test_loop_raise_limit`, `test_decisions_service`, `test_wrap_up_service`, `test_follow_up_service`, `test_codebase_tree`, `test_chat_plan_scope`, `test_feature_routes_wiring`.
+- Engine: `test_decisions`, `test_critical_decision_pause`, `test_cost_cap_pause`, `test_orchestrator_model`, `test_meta_and_paused_status`, `test_close_loop_force_remove`.
+- Monorepo setup installer (`api`): `test_parallel_subproject_maps` (parallel start, refusal of a non-map job while maps run, no `--max-budget-usd`, system map by itself), `test_subproject_map_service` (queue, interrupted after a restart), `test_system_map_service`, `test_root_map_no_budget` (no `--max-budget-usd`, a `budget_usd` is ignored), `test_subprojects_service` (legacy root Conformance block removed on confirm), `test_context_block_service`, `test_subprojects_describe_e2e_fixes`.
+- Planning workspace and repositories (`api`): `test_workspace_service`, `test_workspace_repos_roles`, `test_workspace_uncommitted`, `test_workspace_commit_push_guard` (409 `user_folder_refused` / `not_loop_branch`), `test_setup_commit` (refusals, only setup files, local bare `origin`), `test_repo_registry`, `test_repo_readiness`, `test_repo_readiness_monorepo`. Engine: `test_worktree_base_branch`, `test_worktree_carries_setup_files`, `test_setup_files_committed_and_root`, `test_carried_setup_files_not_leftovers`, `test_readiness_uncommitted_block`, `test_readiness_checks`.
+- Headless browser E2E (not a tracked test): both features were checked once with the fake `claude`, port 47960, scratch repos only, screenshots under `.playwright-cli/imagens/` (`monorepo-installer/`, `planning-workspace/`); no real `claude` run.
+- Whole suite: `python -m unittest discover -s backend/tests -t backend` from `app/`.
 
 ## Missing
 - Front end (`app/frontend`, Preact ES modules, no npm): no unit or component tests found.
-- Browser e2e: not found in tracked tests (only Playwright session artifacts are git-ignored).
+- Browser e2e: not found in tracked tests (the one-off fake-claude runs above leave only git-ignored Playwright artifacts).
 - Coverage measurement, lint and type-check config: not found.
 - Real end-to-end loop against a live `claude` subscription: not covered (by design, needs the user's account).
 
