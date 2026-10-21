@@ -284,6 +284,16 @@ def uncommitted_warnings(repos, primary_repo=None):
     return [setup_files.block_text(block) for block in uncommitted_blocks(repos, primary_repo)]
 
 
+def uncommitted_items(repos, primary_repo=None):
+    """RDY-01: the structured twin of `uncommitted_warnings`: one `{kind, repo, files, text, fix}` per repo with uncommitted changes."""
+    items = []
+    for block in uncommitted_blocks(repos, primary_repo):
+        files = list(dict.fromkeys(list(block.get("setup_files") or []) + list(block.get("other_changes") or [])))
+        items.append({"kind": "uncommitted", "repo": block["repo"], "files": files, "text": setup_files.block_text(block),
+                      "fix": "Commit these files (the worktree is born from the last commit)"})
+    return items
+
+
 # ---------------------------------------------------------------- build / run / test commands
 def find_dotnet(folder, max_depth=3):
     """First .sln/.csproj up to `max_depth` folders below `folder` (ignores bin/obj/node_modules/.git/.specs). Empty if none."""

@@ -58,7 +58,8 @@ class ProjectController:
         return Response.json(200, {"ok": True, "project": data, "url": data["url"]})
 
     def pick_folder(self, request):
-        return Response.json(200, self.folder_picker_service.pick_folder_with_dialog())
+        body = request.body if isinstance(request.body, dict) else {}
+        return Response.json(200, self.folder_picker_service.pick_folder_with_dialog(initial=body.get("initial")))
 
     def forget_project(self, request):
         def forget():

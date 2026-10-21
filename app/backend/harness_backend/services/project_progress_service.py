@@ -7,6 +7,7 @@ The planning gates (what "Approve roadmap" requires) are built from the same fac
 """
 import os
 import re
+from types import SimpleNamespace
 from typing import Protocol
 
 from ..domain.flows_document import check_flow_coverage
@@ -14,7 +15,8 @@ from ..domain.roadmap_settings import parse_roadmap_e2e
 from ..repositories.specs_file_repository import list_test_environment_problems, loop_state, run_hints
 from .planning_gates import (GATE_CONFORMANCE, GATE_FLOWS, GATE_GIT, GATE_MAP, GATE_REPOS, GATE_STRUCTURE, GATE_SUBPROJECTS,
                              are_gates_ok, build_planning_gates, build_subproject_conformance_gate, build_subproject_map_gate,
-                             build_subprojects_gates, describe_map_documents, read_subproject_state)
+                             build_subprojects_gates, check_sent_imports_coverage, describe_map_documents, read_subproject_state)
+from .planning_import_service import META_FILE_NAME, PlanningImportService
 from .roadmap_service import extract_open_questions
 
 MODE_NEW = "new"
@@ -75,6 +77,7 @@ class ProjectProgressService:
         self.readiness_provider = None  # set by the projects module: `provider(context) -> readiness result | None` (None = the gate `ready` is absent)
         self.subprojects_provider = None  # set by the projects module: `provider(context) -> SubprojectsService.describe dict | None`
         self.repo_readiness_provider = None  # set by the multi-repo module: `provider(context) -> [{name, missing, detail}]` of the extra edit repos
+        self.coverage_recorder = None  # set by the projects module: `recorder(context, result)` = PlanningImportService.record_coverage
         self.repo_reference_warning_provider = None  # set by the multi-repo module: `provider(context) -> [text]` WARNINGs of reference repos without a map
 
     # ------------------------------------------------ loop status (same derivation as the panel's loop status)
@@ -106,7 +109,19 @@ class ProjectProgressService:
 
     def build_planning_gates(self, context):
         """The planning checklist (gate ids in the contract order; see planning_gates.py)."""
-        return build_planning_gates(self.read_project_facts(context))
+        facts = self.read_project_facts(context)
+        self.record_import_coverage(context, facts)
+        return build_planning_gates(facts)
+
+    def record_import_coverage(self, context, facts):
+        """Writes the coverage line of the newest import's IMPORT-LOG.md (when it was sent and IMPORT-COVERAGE.md exists). Never raises."""
+        imports = facts.get("imports") or []
+        if self.coverage_recorder is None or not imports or not imports[0].get("sent_at") or not (facts.get("import_coverage_text") or "").strip():
+            return
+        try:
+            self.coverage_recorder(context, check_sent_imports_coverage(facts)[0])
+        except Exception as failure:  # noqa: BLE001
+            self.log.warn("import_coverage_not_recorded", type=type(failure).__name__, message=str(failure)[:200])
 
     # ------------------------------------------------ checklist
     def build_progress_summary(self, context):
@@ -193,7 +208,19 @@ class ProjectProgressService:
             "project_text": self.specs_file_repository.read_text(os.path.join(project_dir, "PROJECT.md")),
             "flows_exists": flows_text is not None, "flow_coverage": check_flow_coverage(features, flows_text or ""),
             "approval": loop_state.roadmap_approval_for_run(work, repo),
+            "imports": self.read_import_metas(work),
+            "import_coverage_text": self.specs_file_repository.read_text(os.path.join(project_dir, "IMPORT-COVERAGE.md")) or "",
         }
+
+    def read_import_metas(self, work):
+        """The `import.json` of every spec import of the project, newest first (what the import coverage gate checks)."""
+        root = PlanningImportService.imported_root(SimpleNamespace(work_dir=work))
+        metas = []
+        for entry in sorted(os.listdir(root), reverse=True) if os.path.isdir(root) else []:
+            meta = self.specs_file_repository.read_json(os.path.join(root, entry, META_FILE_NAME))
+            if meta.get("import_id") == entry:
+                metas.append(meta)
+        return metas
 
     @staticmethod
     def read_environment_facts(work, roadmap_text, folder_exists):

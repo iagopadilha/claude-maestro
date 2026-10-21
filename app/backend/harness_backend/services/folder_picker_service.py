@@ -14,6 +14,7 @@ PATH_OUTPUT_PREFIX = "PATH:"
 NO_TKINTER_OUTPUT_PREFIX = "NO_TKINTER:"
 LISTED_FOLDERS_LIMIT = 500
 CANCELLED_REASON = "cancelled"
+INITIAL_FOLDER_VARIABLE = "HARNESS_DIALOG_INITIAL_DIR"
 FOLDER_DIALOG_CODE = (
     "import sys\n"
     "try:\n"
@@ -25,7 +26,12 @@ FOLDER_DIALOG_CODE = (
     "    sys.exit(" + str(NO_TKINTER_EXIT_CODE) + ")\n"
     "root.withdraw()\n"
     "root.attributes('-topmost', True)\n"
-    "chosen = filedialog.askdirectory(parent=root, title='Choose the project folder', mustexist=True)\n"
+    "import os\n"
+    "dialog_options = {'parent': root, 'title': 'Choose the project folder', 'mustexist': True}\n"
+    "initial_folder = os.environ.get('" + INITIAL_FOLDER_VARIABLE + "', '')\n"
+    "if initial_folder and os.path.isdir(initial_folder):\n"
+    "    dialog_options['initialdir'] = initial_folder\n"
+    "chosen = filedialog.askdirectory(**dialog_options)\n"
     "root.destroy()\n"
     "print('" + PATH_OUTPUT_PREFIX + "' + (chosen or ''))\n"
 )
@@ -41,7 +47,7 @@ def list_system_roots():
 
 
 class IFolderPickerService(Protocol):
-    def pick_folder_with_dialog(self) -> dict: ...
+    def pick_folder_with_dialog(self, initial=None) -> dict: ...
     def list_subfolders(self, path) -> dict: ...
 
 
@@ -52,10 +58,13 @@ class FolderPickerService:
         self.dialog_argv = list(dialog_argv) if dialog_argv else [sys.executable, "-c", FOLDER_DIALOG_CODE]
         self.timeout_seconds = timeout_seconds
 
-    def pick_folder_with_dialog(self):
-        """{"path": "...|null", "reason": "..."}: null with a reason when there is no tkinter, it failed or the user cancelled."""
-        code, output, error = self.process_runner.run_and_wait(self.dialog_argv, None, self.timeout_seconds,
-                                                               extra_env={"PYTHONIOENCODING": "utf-8"})
+    def pick_folder_with_dialog(self, initial=None):
+        """{"path": "...|null", "reason": "..."}: null with a reason when there is no tkinter, it failed or the user cancelled.
+        `initial`: an existing folder the dialog opens in (anything else is ignored)."""
+        extra_env = {"PYTHONIOENCODING": "utf-8"}
+        if isinstance(initial, str) and initial.strip() and os.path.isdir(os.path.expanduser(initial.strip())):
+            extra_env[INITIAL_FOLDER_VARIABLE] = os.path.abspath(os.path.expanduser(initial.strip()))
+        code, output, error = self.process_runner.run_and_wait(self.dialog_argv, None, self.timeout_seconds, extra_env=extra_env)
         lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
         for line in reversed(lines):
             if line.startswith(PATH_OUTPUT_PREFIX):

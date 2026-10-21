@@ -9,7 +9,8 @@ open_questions, flows, test_environment, ready (not optional; only when the fact
 import json
 import os
 
-from ..domain.roadmap_settings import LOOP_SETTING_HEADER_NAMES, parse_loop_settings
+from ..domain.import_coverage import check_coverage, parse_coverage
+from ..domain.roadmap_settings import DEFAULT_BASE_BRANCH, LOOP_SETTING_HEADER_NAMES, parse_loop_settings
 from .loop_worktree_service import get_environment_integration_branch
 
 GATE_GIT = "git"
@@ -24,6 +25,8 @@ GATE_FIELDS = "fields"
 GATE_OPEN_QUESTIONS = "open_questions"
 GATE_FLOWS = "flows"
 GATE_TEST_ENV = "test_environment"
+GATE_IMPORT_COVERAGE = "import_coverage"  # only after a spec import was sent: every source item is in IMPORT-COVERAGE.md; not optional
+IMPORT_COVERAGE_MISSING = "IMPORT-COVERAGE.md missing"
 GATE_READY = "ready"  # last: the cached readiness check (`readiness_service`); only present when the facts carry `readiness`
 PREREQUISITE_GATES = (GATE_GIT, GATE_STRUCTURE, GATE_SUBPROJECTS, GATE_CONFORMANCE, GATE_MAP)  # `subprojects` exists only for a monorepo (or an unreadable SUBPROJECTS.json)
 FILL_IN_MARK = "FILL_IN"
@@ -73,6 +76,7 @@ def build_planning_gates(facts):
     gates = build_code_prerequisite_gates(facts)
     gates.extend(build_repos_gates(facts))  # right after the map
     gates.extend(build_plan_gates(facts))
+    gates.extend(build_import_coverage_gates(facts))  # only after a spec import was sent
     gates.extend(build_readiness_gates(facts))
     return gates
 
@@ -222,6 +226,30 @@ def build_plan_gates(facts):
     ]
 
 
+def check_sent_imports_coverage(facts):
+    """[{covered, dropped, missing}] of every SENT import (newest first) against `facts["import_coverage_text"]`; [] without one."""
+    coverage = parse_coverage(facts.get("import_coverage_text") or "")
+    return [check_coverage(meta.get("items") or {}, coverage) for meta in facts.get("imports") or [] if meta.get("sent_at")]
+
+
+def build_import_coverage_gates(facts):
+    """[import_coverage] when a spec import was sent (nothing otherwise); not optional: ok only when no source item is missing from
+    `.specs/project/IMPORT-COVERAGE.md`. Items: `missing: <id>` first, then `dropped: <item> - <reason>` (shown, never blocking)."""
+    results = check_sent_imports_coverage(facts)
+    if not results:
+        return []
+    if not (facts.get("import_coverage_text") or "").strip():
+        return [create_gate(GATE_IMPORT_COVERAGE, "Import coverage (IMPORT-COVERAGE.md)", False, IMPORT_COVERAGE_MISSING,
+                            [IMPORT_COVERAGE_MISSING])]
+    covered = sum(len(result["covered"]) for result in results)
+    dropped = [entry for result in results for entry in result["dropped"]]
+    missing = [item for result in results for item in result["missing"]]
+    items = ["missing: %s" % item for item in missing]
+    items += ["dropped: %s — %s" % (entry["item"], entry["reason"] or "no reason given") for entry in dropped]
+    detail = "%d covered, %d dropped, %d missing" % (covered, len(dropped), len(missing))
+    return [create_gate(GATE_IMPORT_COVERAGE, "Import coverage (IMPORT-COVERAGE.md)", not missing, detail, items)]
+
+
 def build_readiness_gates(facts):
     """[ready] only when the facts carry the cached readiness result, else []. Invalid loop settings of the ROADMAP header are added
     as `warning:` items (never a problem: the loop starts with the default of each one)."""
@@ -257,17 +285,32 @@ def format_loop_setting_value(key, value):
     return str(value)
 
 
+def resolve_base_branch(loop_settings):
+    """{"name", "source": "roadmap|env|default"}: the ROADMAP `Branch base` line (valid), then LOOP_PR_BASE / LOOP_INTEGRATION_BRANCH, then
+    `developer`. Same order as the engine; the panel payload (`loop_control_service.get_loop_settings`) adds it as `base_branch_resolved`."""
+    invalid_names = {item["name"] for item in loop_settings["problems"]}
+    if "base_branch" not in loop_settings["missing"] and LOOP_SETTING_HEADER_NAMES["base_branch"] not in invalid_names:
+        return {"name": loop_settings["settings"]["base_branch"], "source": "roadmap"}
+    name = get_environment_integration_branch()
+    return {"name": name, "source": "default" if name == DEFAULT_BASE_BRANCH else "env"}
+
+
 def describe_loop_settings_for_ai(loop_settings):
     """The loop settings as the loop will read them (the ROADMAP header; a missing line shows the default), plus one WARNING per
     invalid value. The AI sets them in the ROADMAP header with the exact names; the Start dialog only shows them."""
     settings, problems = loop_settings["settings"], loop_settings["problems"]
     invalid_names = {item["name"] for item in problems}
+    resolved_base = resolve_base_branch(loop_settings)
     if "base_branch" in loop_settings["missing"] or LOOP_SETTING_HEADER_NAMES["base_branch"] in invalid_names:
         settings = dict(settings, base_branch=get_environment_integration_branch())  # no usable line: the environment, then developer (as the engine resolves it)
     lines = ["- [OK] loop_settings: decided here in planning (ROADMAP header lines `**Name:** value`), read by the loop at Start; a missing line = the default"]
     for key, header_name in LOOP_SETTING_HEADER_NAMES.items():
         mark = " (invalid in the ROADMAP: the default is used)" if header_name in invalid_names else ""
         lines.append("    * %s: %s%s" % (header_name, format_loop_setting_value(key, settings[key]), mark))
+    lines.append("    * base_branch_resolved: %s (source: %s)" % (resolved_base["name"], resolved_base["source"]))
+    lines.append("    * Branch base: by default the loop branches from `developer`. To change it, write `Branch base: main` (or `release/2.0`) in the "
+                 "ROADMAP header. Order: ROADMAP, then LOOP_INTEGRATION_BRANCH, then developer. The PR goes to the same branch.")
+    lines.append("    * Max parallel tasks: executors per wave inside one feature (1..5, default 3)")
     lines.extend("- [WARNING] loop_settings: %s" % text for text in describe_loop_settings_problems(loop_settings))
     return lines
 

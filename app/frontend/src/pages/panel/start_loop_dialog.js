@@ -9,6 +9,7 @@ import { copyText } from '../../components/copy.js';
 import { ctx, approval } from './context.js';
 import { registerRenderer } from '../project_panel.js';
 import { UncommittedContextNotice, WorkspaceNotice, WorkspaceState, loadWorkspace } from './workspace.js';
+import { BranchAndParallelInfo, requestBranchAndParallel } from './roadmap_preview.js';
 import { APPROVAL_NOTICE, approveRoadmap, nl, nlStartingNow, requestLoopSettings, requestLoopCheck, requestLoopStart } from './new_loop.js';
 
 // ROADMAP header name of each setting (the names of design.md "Data shapes"), used to match the `problems` of GET loop/settings
@@ -121,6 +122,7 @@ function StartLoopBody({ api, onStarted }) {
   useFollowPanel();
   const [info, setInfo] = useState({ loading: true, error: null, data: null });
   const [state, setState] = useState({ push: true, removeWorktree: true, check: null, checking: false, checkErr: null, startErr: null, pushTouched: false });
+  const [extra, setExtra] = useState(null);  // read-only base branch (with source) and max parallel tasks
   const set = (patch) => setState((current) => ({ ...current, ...patch, check: null, startErr: null, checkErr: null, pushTouched: current.pushTouched || 'push' in patch }));
   useEffect(() => {
     let alive = true;
@@ -130,6 +132,7 @@ function StartLoopBody({ api, onStarted }) {
       setInfo({ loading: false, error: null, data });
       setState((current) => (current.pushTouched ? current : { ...current, push: data.settings.push_pr !== false }));
     }).catch((e) => alive && setInfo({ loading: false, error: e.message, data: null }));
+    requestBranchAndParallel().then((value) => alive && setExtra(value)).catch(() => {});
     nl.onRunning = () => api.close();
     return () => { alive = false; if (nl.onRunning) nl.onRunning = null; };
   }, []);
@@ -172,6 +175,7 @@ function StartLoopBody({ api, onStarted }) {
   return html`<div class="sl">
     <${Approval} />
     <${DecidedInPlanning} info=${info.data} />
+    <${BranchAndParallelInfo} info=${extra} explain=${false} />
     <${Models} info=${info.data} />
     <${Choices} state=${state} set=${set} integrationBranch=${info.data.integrationBranch} />
     <section class="sl-sec" aria-labelledby="sl-workspace"><h3 class="sl-h" id="sl-workspace">Workspace</h3>

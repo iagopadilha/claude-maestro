@@ -20,6 +20,7 @@ from ..repositories.answers_repository import USER_INSTRUCTION_QUESTION, USER_NO
 from ..repositories.loop_command_file_repository import read_json_object, write_json_atomic
 from .dispatch_default import compute_default_dispatch
 from .loop_worktree_service import get_integration_branch
+from .planning_gates import resolve_base_branch
 
 ENGINE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "engine"))
 if ENGINE_DIR not in sys.path:
@@ -367,6 +368,7 @@ class LoopControlService:
         reattach_branch = None if worktree_created else self.find_reattach_branch(context)
         return 200, {"settings": loop_settings["settings"], "problems": loop_settings["problems"], "missing": loop_settings["missing"], "defaults": loop_settings["defaults"],
                      "integration_branch": get_integration_branch(self.read_roadmap_text(context)),
+                     "base_branch_resolved": resolve_base_branch(loop_settings),
                      "delivery": self.read_delivery(context),
                      "workspace": {"repos": repos, "worktree_created": worktree_created, "branch": meta.get("branch") or "",
                                    "reattach_branch": reattach_branch,

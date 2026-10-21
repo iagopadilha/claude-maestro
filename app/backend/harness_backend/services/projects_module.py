@@ -157,6 +157,7 @@ def build_projects_module(config, log, get_app_url, folder_dialog_argv=None, job
                                        test_environment_service, planning_repos_service=planning_repos_service,
                                        project_capabilities_service=project_capabilities_service, readiness_service=readiness_service)
     planning_import_service = PlanningImportService(specs_file_repository, planning_service, log)
+    project_progress_service.coverage_recorder = planning_import_service.record_coverage
     spec_change_service = SpecChangeService(SpecChangeThreadRepository(), specs_file_repository, project_progress_service,
                                             claude_job_service, claude_client, WorkspaceFileGuard(), log)
     spec_file_service = SpecFileService(specs_file_repository, project_progress_service, log)

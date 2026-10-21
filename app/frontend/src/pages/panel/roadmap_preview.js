@@ -1,7 +1,8 @@
 /* Roadmap preview (planning screen, ROADMAP tab): the SAME FeatureGraph component of the loop (components/graph.js), fed by
    GET roadmap: pan, zoom, fit, keyboard and node selection. Clicking a node shows a details card under the graph. Read-only.
    Its pan/zoom view lives here (module level), apart from the loop panel's. */
-import { html, useState } from '../../util/preact.js';
+import { html, useState, useEffect } from '../../util/preact.js';
+import { ctx } from './context.js';
 import { computeGraphLayout, FeatureGraph, newGraphView } from '../../components/graph.js';
 import { list } from '../../util/format.js';
 
@@ -84,7 +85,42 @@ function RoadmapGraph({ data }) {
   </div>`;
 }
 
-/** The graph, or the parse errors instead of it, or nothing (empty roadmap). `rm` = { data, error }. */
+const BASE_SOURCE_LABEL = { roadmap: 'ROADMAP', env: 'env LOOP_INTEGRATION_BRANCH', default: 'default' };
+const BASE_BRANCH_RULE = 'By default the loop branches from `developer`. To change it, write `Branch base: main` (or `release/2.0`) in the ROADMAP header. Order: ROADMAP, then LOOP_INTEGRATION_BRANCH, then developer. The PR goes to the same branch.';
+
+/** GET loop/settings -> only what the read-only block shows: { baseBranch: {name, source}|null, maxParallel: number|null }. */
+export async function requestBranchAndParallel() {
+  const data = await ctx.api.get('loop/settings', 15000);
+  const resolved = data && data.base_branch_resolved;
+  const maxParallel = data && data.settings ? Number(data.settings.max_parallel_tasks) : NaN;
+  return {
+    baseBranch: resolved && resolved.name ? { name: String(resolved.name), source: String(resolved.source || 'default') } : null,
+    maxParallel: Number.isFinite(maxParallel) && maxParallel > 0 ? maxParallel : null,
+  };
+}
+
+/** Read-only base branch (with where it came from) and max parallel tasks. Missing fields render nothing. `explain` adds the rule sentence. */
+export function BranchAndParallelInfo({ info, explain }) {
+  if (!info || (!info.baseBranch && info.maxParallel == null)) return null;
+  const base = info.baseBranch;
+  return html`<div class="plan-rm-settings">
+    ${base ? html`<${Row} k="Base branch"><span class="mono">${base.name}</span> (${BASE_SOURCE_LABEL[base.source] || base.source})<//>` : null}
+    ${base && explain ? html`<div class="sl-muted">${BASE_BRANCH_RULE}</div>` : null}
+    ${info.maxParallel != null ? html`<${Row} k="Max parallel tasks">${info.maxParallel} (executors per wave inside one feature)<//>` : null}
+  </div>`;
+}
+
+function LoopSettingsBlock() {
+  const [info, setInfo] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    requestBranchAndParallel().then((v) => alive && setInfo(v)).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  return html`<${BranchAndParallelInfo} info=${info} explain=${true} />`;
+}
+
+/** The graph, or the parse errors instead of it, or nothing (empty roadmap); then the read-only loop settings. `rm` = { data, error }. */
 export function RoadmapPreview({ rm }) {
   const data = rm && rm.data;
   if (!data) return null;
@@ -94,5 +130,5 @@ export function RoadmapPreview({ rm }) {
       <ul>${errors.map((e, i) => html`<li key=${i}>${String(e)}</li>`)}</ul></div>`;
   }
   if (!list(data.features).length) return null;
-  return html`<${RoadmapGraph} data=${data} />`;
+  return html`<${RoadmapGraph} data=${data} /><${LoopSettingsBlock} />`;
 }

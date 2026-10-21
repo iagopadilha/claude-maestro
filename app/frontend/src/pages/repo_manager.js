@@ -8,17 +8,17 @@ import { html, useState, useEffect, useRef } from '../util/preact.js';
 import { list, txt } from '../util/format.js';
 import { appApi, requestJson } from '../api/api_client.js';
 import { toast } from '../components/toast.js';
-import { pickFolder } from '../components/folder_browser.js';
+import { pickFolderNativeFirst } from '../components/folder_browser.js';
 import { openDialog, confirmDialog } from '../components/dialog.js';
 import { Conformance, conformanceDefault } from '../components/conformance.js';
 import { openBigDialog } from '../components/big_dialog.js';
 import { SubprojectsPanel, loadSubprojects } from './panel/subprojects.js';
 
 const READINESS_POLL_MS = 4000; // while a map job runs in some repo
-const NATIVE_DIALOG_TIMEOUT_MS = 310000; // the back end waits up to 300 s for the system window
 const WORKTREE_HELP = 'The loop never works in your folders. For each repository it creates its own separate folder (a git worktree) next to yours, on a new loop/<date> branch from the branch your folder is on now. Nothing is cloned or pushed.';
 const reposRoute =(id) => 'projects/' + encodeURIComponent(id) + '/repos';
 export const normPath = (p) => String(p == null ? '' : p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+const parentFolder = (p) => { const t = String(p || '').replace(/[\\/]+$/, ''); const k = Math.max(t.lastIndexOf('\\'), t.lastIndexOf('/')); return k > 0 ? t.slice(0, k) : ''; };
 const focusId = (id) => setTimeout(() => { const el = document.getElementById(id); if (el) el.focus(); }, 0);
 const fmtSize = (n) => (typeof n === 'number' ? (n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : n + ' B') : '');
 
@@ -84,13 +84,8 @@ export async function repoConfirmContent(api, projectId) {
 }
 
 // ---------- add folder ----------
-async function chooseFolder() {
-  const browse = () => pickFolder({ title: 'Repository folder', buttonText: 'Add this folder' });
-  try {
-    const r = await appApi.post('projects/pick-folder', {}, NATIVE_DIALOG_TIMEOUT_MS);
-    if (r && r.path) return r.path;
-    return r && /folder browser/i.test(String(r.reason || '')) ? browse() : null; // null = the window was cancelled
-  } catch (_) { return browse(); }
+async function chooseFolder(initial = '') {
+  return pickFolderNativeFirst({ title: 'Repository folder', buttonText: 'Add this folder', initial }); // null = the window was cancelled
 }
 
 // ---------- files to copy ----------
@@ -313,7 +308,7 @@ export function RepoManager({ projectId, locked = '', onChange }) {
   const addSuggested = async (rows) => {
     for (const c of rows) if (!(await addPath(c.path))) break; // stops at the first refusal (the error is shown); the others stay suggested
   };
-  const addFolder = async () => { const path = await chooseFolder(); if (path) addPath(path); };
+  const addFolder = async () => { const primary = repos.find((r) => r.primary) || repos[0]; const path = await chooseFolder(primary && primary.path ? parentFolder(primary.path) : ''); if (path) addPath(path); };
   const removeRepo = async (r) => {
     const ok = await run('rm:' + r.name, () => requestJson('DELETE', '/api/app/' + reposRoute(projectId) + '/' + encodeURIComponent(r.name), null), `${r.name} left the project (no folder or worktree was deleted).`);
     if (ok) { setRemoving(null); focusId('rp-add'); }

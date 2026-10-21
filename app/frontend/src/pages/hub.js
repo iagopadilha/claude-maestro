@@ -6,11 +6,10 @@ import { DASH, list, txt, fmtRelative } from '../util/format.js';
 import { appApi, createPolling, showDisconnectedBanner } from '../api/api_client.js';
 import { toast } from '../components/toast.js';
 import { openDialog } from '../components/dialog.js';
-import { pickFolder } from '../components/folder_browser.js';
+import { pickFolderNativeFirst } from '../components/folder_browser.js';
 import { Conformance, conformanceDefault } from '../components/conformance.js';
 import { openWhyOnFirstVisit, WhyButton } from '../components/why_panel.js';
 
-const NATIVE_DIALOG_TIMEOUT_MS = 310000; // the back end waits up to 300 s for the system window
 const MODE = {
   new: ['new project', '#8AA4FF'], no_specs: ['no .specs', '#8B9098'], planning: ['planning', '#A58BFF'],
   ready_for_loop: ['ready for the loop', '#5CC8D6'], in_loop: ['in loop', '#F2B544'], done: ['done', '#5BD38A'],
@@ -195,10 +194,10 @@ async function openFolder() {
   hb.native = mine;
   setOpening({ native: true, text: 'Pick the folder in the system window that opened (it may be behind the browser).' });
   try {
-    const r = await appApi.post('projects/pick-folder', {}, NATIVE_DIALOG_TIMEOUT_MS);
+    const picked = await pickFolderNativeFirst({ title: 'Open a project folder', buttonText: 'Open this folder' });
     if (hb.native !== mine) return;
     hb.native = null;
-    if (r && r.path) openPath(r.path);
+    if (picked) openPath(picked);
     else setOpening(null); // dialog cancelled
   } catch (e) {
     if (hb.native !== mine) return;
@@ -230,13 +229,7 @@ function CreateProjectForm({ handle }) {
   const sep = p.includes('/') && !p.includes('\\') ? '/' : '\\';
   const choose = async () => {
     // the system folder window first (Windows Explorer); the in-app browser only when the system window is unavailable
-    let c = null, fallback = false;
-    try {
-      const r = await appApi.post('projects/pick-folder', {}, NATIVE_DIALOG_TIMEOUT_MS);
-      if (r && r.path) c = r.path;
-      else fallback = !!(r && /folder browser/i.test(String(r.reason || '')));
-    } catch (e) { fallback = true; }
-    if (fallback) c = await pickFolder({ title: 'Parent folder of the new project', buttonText: 'Use this folder', initial: p });
+    const c = await pickFolderNativeFirst({ title: 'Parent folder of the new project', buttonText: 'Use this folder', initial: p });
     if (c) editParent(c);
     if (nameRef.current) nameRef.current.focus();
   };
