@@ -44,7 +44,7 @@ class GuardTestCase(unittest.TestCase):
         os.makedirs(os.path.join(self.project, ".specs", "project"))
         os.makedirs(self.data_dir)
         self.env = dict(os.environ)
-        for name in ("LOOP_APP_HOME", "LOOP_PR_BASE", "LOOP_INTEGRATION_BRANCH", "GUARD_PROD_HINTS"):
+        for name in ("LOOP_APP_HOME", "LOOP_PR_BASE", "LOOP_INTEGRATION_BRANCH", "GUARD_PROD_HINTS", "LOOP_SPECS_DIR", "LOOP_TURN", "LOOP_HEADLESS"):  # LOOP_SPECS_DIR inherited from a loop turn would send these tests' blocks to the REAL guard.log
             self.env.pop(name, None)
         self.env["LOOP_DATA_DIR"] = self.data_dir
 
@@ -120,6 +120,60 @@ class TestLayoutResolution(GuardTestCase):
         self.assertEqual(self.bash("git commit -m x"), BLOCKED)
         self.assertIn("git-write", read_text(flat_log))
         self.assertFalse(os.path.exists(self.specs("project", "loop", "internal", "guard.log")))
+
+
+class TestGuardLogTurnAndAttempt(GuardTestCase):
+    """Each guard.log line says in which loop turn it happened and what the agent tried; the block message tells the agent it is final."""
+
+    def log_lines(self):
+        return [json.loads(line) for line in read_text(self.specs("project", "loop", "internal", "guard.log")).splitlines()]
+
+    def blocked_run(self, command="git push origin loop/x", **env):
+        saved = dict(self.env)
+        self.env.update(env)
+        try:
+            payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": self.project}
+            return subprocess.run([sys.executable, GUARD, "--profile", "executor"], input=json.dumps(payload), capture_output=True, text=True, env=self.env)
+        finally:
+            self.env = saved
+
+    def finish_turns(self, *numbers):
+        for number in numbers:
+            self.write_json(self.specs("project", "loop", "internal", "turns", "%03d.json" % number), {"turn": number})
+
+    def test_the_turn_in_progress_is_the_last_finished_turn_plus_one(self):
+        self.finish_turns(1, 2, 7)
+        self.blocked_run(LOOP_HEADLESS="1")
+        self.assertEqual(self.log_lines()[0]["turn"], 8)
+
+    def test_the_first_turn_has_no_file_yet(self):
+        os.makedirs(self.specs("project", "loop", "internal", "turns"))
+        self.blocked_run(LOOP_HEADLESS="1")
+        self.assertEqual(self.log_lines()[0]["turn"], 1)
+
+    def test_outside_the_headless_loop_the_turn_is_unknown_never_a_guess(self):
+        self.finish_turns(1, 2)
+        self.env.pop("LOOP_HEADLESS", None)
+        self.blocked_run()
+        self.assertIsNone(self.log_lines()[0]["turn"])
+
+    def test_an_exported_loop_turn_wins(self):
+        self.finish_turns(1, 2)
+        self.blocked_run(LOOP_HEADLESS="1", LOOP_TURN="12")
+        self.assertEqual(self.log_lines()[0]["turn"], 12)
+
+    def test_the_log_keeps_what_was_tried_clipped(self):
+        self.blocked_run("git push origin loop/x   &&   echo " + "z" * 400)
+        attempt = self.log_lines()[0]["attempt"]
+        self.assertTrue(attempt.startswith("git push origin loop/x && echo z"))
+        self.assertLessEqual(len(attempt), 200)
+
+    def test_the_block_message_keeps_its_prefix_and_ends_with_the_final_instruction(self):
+        result = self.blocked_run()
+        self.assertEqual(result.returncode, BLOCKED)
+        self.assertTrue(result.stderr.startswith("BLOCKED by the orchestrator guard [git-push]: "))
+        self.assertIn("This block is final: do not retry this command or a variant of it. Continue without it, or report it in your final return.",
+                      result.stderr.strip().splitlines()[-1])
 
 
 class TestStateWrite(GuardTestCase):
@@ -726,6 +780,40 @@ class TestMultiRootScope(GuardTestCase):
         self.assertEqual(self.bash(in_second + "dotnet test > TestResults/out.log"), PASSED)
         if os.name == "nt":
             self.assertEqual(self.run_in("Read", {"file_path": os.path.join(self.second, ".Env.Local")}, self.project), BLOCKED)
+
+
+class TestQuotedSedInLoopWorktree(GuardTestCase):
+    """False positive of the real run: `cd "<loop worktree>" && sed -i 's/a/b/; s/c/d/' file` was blocked by `repo-only`:
+    the `;` inside the quoted sed script split the statement and the script's tail was judged as a file path."""
+
+    def setUp(self):
+        super().setUp()
+        self.worktree = os.path.join(self.tmp, "shop-worktree-loop")
+        self.outside = os.path.join(os.path.expanduser("~"), "not-a-worktree-of-this-project")
+        os.makedirs(self.worktree)
+        self.write_json(self.specs("project", "loop", "json", "SCOPE.json"), {"roots": [self.project, self.worktree], "features": {}})
+
+    def forward(self, path):
+        return path.replace("\\", "/")
+
+    def test_cd_into_the_loop_worktree_then_sed_with_semicolons_passes(self):
+        script = "'s/^- \[a\] status=pending/- [a] status=speccing/; s/^- \[b\] status=pending/- [b] status=speccing/'"
+        command = 'cd "%s" && sed -i %s .specs/project/ROADMAP.md' % (self.forward(self.worktree), script)
+        self.assertEqual(self.bash(command, "orchestrator"), PASSED)
+
+    def test_quoted_forward_slash_cd_and_plain_sed_pass(self):
+        command = 'cd "%s" && sed -i s/a/b/ src/a.ts' % self.forward(self.worktree)
+        self.assertEqual(self.bash(command, "orchestrator"), PASSED)
+
+    def test_a_target_really_outside_stays_blocked(self):
+        script = "'s/a/b/; s/c/d/'"
+        outside_file = self.forward(os.path.join(self.outside, "a.ts"))
+        self.assertEqual(self.bash('cd "%s" && sed -i %s %s' % (self.forward(self.worktree), script, outside_file), "orchestrator"), BLOCKED)
+        self.assertEqual(self.bash('cd "%s" && sed -i %s a.ts' % (self.forward(self.outside), script), "orchestrator"), BLOCKED)
+
+    def test_semicolon_outside_quotes_still_splits_statements(self):
+        command = 'cd "%s"; echo x > %s' % (self.forward(self.worktree), self.forward(os.path.join(self.outside, "a.log")))
+        self.assertEqual(self.bash(command, "orchestrator"), BLOCKED)
 
 
 if __name__ == "__main__":

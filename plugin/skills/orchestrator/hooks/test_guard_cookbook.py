@@ -81,7 +81,7 @@ class CookbookCase(unittest.TestCase):
         os.makedirs(os.path.join(self.project, ".specs", "project", "loop", "json"))
         os.makedirs(self.data_dir)
         self.env = dict(os.environ)
-        for name in ("LOOP_APP_HOME", "LOOP_PR_BASE", "LOOP_INTEGRATION_BRANCH", "GUARD_PROD_HINTS"):
+        for name in ("LOOP_APP_HOME", "LOOP_PR_BASE", "LOOP_INTEGRATION_BRANCH", "GUARD_PROD_HINTS", "LOOP_SPECS_DIR", "LOOP_TURN", "LOOP_HEADLESS"):  # LOOP_SPECS_DIR inherited from a loop turn would send these tests' blocks to the REAL guard.log
             self.env.pop(name, None)
         self.env["LOOP_DATA_DIR"] = self.data_dir  # no real app, no notification channel
         self.write_permissions(COOKBOOK_PERMISSIONS)

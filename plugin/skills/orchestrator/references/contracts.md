@@ -1,6 +1,6 @@
 # Return contracts
 
-Every subagent returns structured text with fixed fields. The orchestrator reads those fields and nothing else. If a return comes in the wrong format, treat it as a failure of that dispatch and resend once, citing the expected format; the second time, quarantine.
+Every subagent returns structured text with fixed fields. The orchestrator reads those fields and nothing else. **One return = one feature**: every agent is dispatched for exactly one feature (one `FEATURE: <slug>` line in its prompt) and its return has one `FEATURE:`; a return that covers several features is a failed dispatch (resend one agent per feature). If a return comes in the wrong format, treat it as a failure of that dispatch and resend once, citing the expected format; the second time, quarantine.
 
 No contract includes file content. Specs, diffs and logs stay on disk; the return carries a pointer.
 
@@ -111,4 +111,4 @@ LAYERS_NOT_COVERED: <e.g. "UI e2e">, or "-"
 
 ## `Plan` (native agent, phase 2)
 
-No fixed contract. The orchestrator reads the output and converts it to the `ROADMAP.md` format defined in `state.md`, plus one flow per feature in `FLOWS.md` (same reference). Every feature is born `pending`, without `PATHS` — the `spec-writer` fills `PATHS`.
+No fixed contract. The orchestrator reads the output and converts it to the `ROADMAP.md` format defined in `state.md`, plus one flow per feature in `FLOWS.md` (same reference). Every feature is born `pending`, without `PATHS` — the `spec-writer` fills `PATHS` — with a descriptive slug (kebab case, 3 to 6 meaningful words) and a `title="..."` (a short sentence of what the user gets); see `state.md`, "Names".

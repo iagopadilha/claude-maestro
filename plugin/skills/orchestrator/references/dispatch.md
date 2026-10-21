@@ -12,11 +12,19 @@ When dispatching `executor-generic`, include in the prompt a line `SKILL: <name>
 
 ## What always goes in the executor prompt
 
-- Path of the spec and, if they exist, of `design.md` and `tasks.md`. **Path, not content.**
+- The first line `FEATURE: <slug>` (exactly one feature per agent, in every dispatch of every role; the panel's pipeline reads it) and the path of the spec and, if they exist, of `design.md` and `tasks.md`. **Path, not content.**
 - The literal `PATHS` list, with the instruction not to leave it, and the line `SCOPE_FEATURE: <slug>` (the guard reads it to limit editing to this feature's `PATHS` only, not the union of the wave).
 - A warning when another executor is running in parallel on the same tree, with the neighbor's paths.
 - Multi-repo project: the worktree path of every repo the `PATHS` touch (from `meta.repos`), the `PATHS` as absolute paths in those worktrees, and the `repo-order=` of the feature. Dispatch the repos of one feature in that order (producer before consumer); the executor edits only inside those worktrees and never in the user's original repo folders.
 - The verifier's `FAIL` block or the reviewer's `FINDINGS`, when it is a resend.
+
+## Monorepo: subproject and contract lines (only when `SUBPROJECTS.json` is confirmed)
+
+Before dispatching any agent for a feature, run `python "<engine>/subprojects.py" for-paths <root> --paths <the feature's paths>` and `python "<engine>/system_map.py" pending <root> --slugs <the feature's deps=>`, and **paste their lines** (`SUBPROJECT:`, `SYSTEM:`, `CONTRACT-PENDING:`) into the prompt of every agent of that feature: executors, verifiers, spec-writer and spec-reviewer. No `SUBPROJECT:` line = nothing changes. Agents rely on their loaded `CLAUDE.md` (with its `maestro:context` block) for stack, conformance and run commands, and read PROJECT.md only for the plan and the capabilities; the line only says which subproject applies.
+
+After a feature is VERIFIED the engine merges its `contract.md` into `docs/codebase/SYSTEM.md` between turns (one feature at a time, no lane rule needed) and records it in LOOP.json as `contract_merge: {slug: {changed, warnings}}`. When the loop status shows `changed: true`, the NEXT checkpoint commit adds `docs/codebase/SYSTEM.md`; show any merge warnings in the checkpoint report. Back-end executors never edit `SYSTEM.md`; front-end executors read it and the pending `contract.md` of their `deps=`. See `references/monorepo.md`.
+
+**Contract delta is part of the dispatch (back-end feature in a monorepo).** When the feature's paths fall in a subproject, the executor prompt MUST contain the `for-paths` output lines as printed (`SUBPROJECT:`, `SYSTEM:`) plus the `CONTRACT-PENDING:` lines, AND this instruction, verbatim in substance: "write .specs/features/<slug>/contract.md (routes, env, events it adds/changes) - required for back-end features in a monorepo". A prompt without those lines is why a real run produced no `contract.md` and nothing reached `SYSTEM.md`. Before marking such a feature `verified` the orchestrator (or the verifier it dispatched) checks that `.specs/features/<slug>/contract.md` exists; if it is missing, send the executor back once for it instead of verifying. The engine double-checks after the turn: a back-end feature that became `verified` without the file gets a `WARNING contract` line in `VALIDATE.md` and the warning in `LOOP.json` `contract_merge`. The instruction must also say: "use exactly these lines, no table" (`- [add|change|remove] route|dto|auth|env <identity> — <purpose> (<file>)`), e.g. `- [add] route GET /health — liveness probe (Api/HealthController.cs)`; a contract.md with no such line merges nothing and raises a warning.
 
 ## Collision between features
 
@@ -77,18 +85,20 @@ Cost to remember before choosing a worktree: dependencies must be installed in t
 
 ## Parallelism by phase
 
-| Phase | Parallel? |
+Every feature is its own lane with ONE agent per step (`SKILL.md`, "Lanes"): never one agent that covers two features, and no feature waits for another to reach the same phase.
+
+| Step | Parallel? |
 |---|---|
 | Brownfield | Yes, always. Seven disjoint documents, 3 at a time. |
-| Specs | Yes. They write only in `.specs/features/<slug>/`, never collide. |
-| Gate | Yes. Read-only. |
-| Execution | Only with disjoint `PATHS` or a worktree. |
-| Verification | Serial by default. Two simultaneous builds on the same repo fight over cache and artifacts. |
-| Commit | Always serial, always the orchestrator. |
+| Specs | Yes, one `spec-writer` per feature. They write only in `.specs/features/<slug>/`, never collide. |
+| Gate | Yes, one `spec-reviewer` per feature. Read-only. A feature enters it as soon as its own spec is back. |
+| Execution | One executor per feature, in parallel only with disjoint `PATHS` (and deps verified) or a worktree; a colliding feature waits as `approved` while the others go on. |
+| Verification | One `verifier` per feature, in parallel by default. Serialize only two that would build the same project or solution output (the other lanes keep moving). |
+| Commit | Always serial, always the orchestrator; one feature at a time, as soon as ITS verification passed. |
 
 Before dispatching 2+ executors in parallel, **check disjointness by code**, not by eye: `python "<app>/harness.py" state disjoint <root> <slug1> <slug2>` (exit 1 = `paths` conflict).
 
-Ceiling of 3 simultaneous in any phase. Dispatch the whole batch in a single message, otherwise it runs in series.
+Ceiling: one agent per lane, so at most `--wave` simultaneous (default 3, never more than 8); brownfield mappers 3. Dispatch the whole round (one agent per live lane, each at its own step) in a single message, otherwise it runs in series.
 
 ## .NET projects
 
