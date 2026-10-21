@@ -23,7 +23,8 @@ def normalize_newlines(text):
 
 
 def list_follow_up_stages(roadmap_text):
-    """[{"id", "n", "features": [{"slug", "status"}]}] of the `Follow-up` stages, in file order."""
+    """[{"id", "n", "features": [{"slug", "status", "title", "deps", "paths"}], "lines": {slug: feature line text}}] of the `Follow-up` stages,
+    in file order. `lines` lets `describe_stage_change` see an edit of any field of a feature line."""
     features, _ = loop_state.parse_roadmap(roadmap_text)
     stages, current = [], None
     for raw in normalize_newlines(roadmap_text).splitlines():
@@ -31,13 +32,16 @@ def list_follow_up_stages(roadmap_text):
         if ANY_STAGE_HEADING.match(line):
             heading = STAGE_HEADING.match(line)
             current = {"id": heading.group("id").replace(" ", "-"), "n": int(heading.group("n")) if heading.group("n") else None,
-                       "features": []} if heading else None
+                       "features": [], "lines": {}} if heading else None
             if current:
                 stages.append(current)
             continue
         found = FEATURE_LINE.match(line)
         if current is not None and found and found.group(1) in features:
-            current["features"].append({"slug": found.group(1), "status": features[found.group(1)].get("status")})
+            fields = features[found.group(1)]
+            current["features"].append({"slug": found.group(1), "status": fields.get("status"), "title": fields.get("title", ""),
+                                        "deps": fields.get("deps", ""), "paths": fields.get("paths", "")})
+            current["lines"][found.group(1)] = line
     return stages
 
 
@@ -66,3 +70,63 @@ def validate_appended_stage(roadmap_before, roadmap_after, flows_before, flows_a
     if not normalize_newlines(flows_after).rstrip().startswith(normalize_newlines(flows_before).rstrip()):
         return "an earlier part of FLOWS.md was changed; only new entries may be appended"
     return None
+
+
+def _heading_index(lines, round_number):
+    """Index of the first `Follow-up <round_number>` heading line, or None."""
+    for index, raw in enumerate(lines):
+        heading = STAGE_HEADING.match(raw.strip())
+        if heading and heading.group("n") is not None and int(heading.group("n")) == round_number:
+            return index
+    return None
+
+
+def validate_round_stage(baseline_roadmap, after_roadmap, baseline_flows, after_flows, round_number, executed_slugs):
+    """Why the round's edit is NOT 'only the Follow-up <n> stage changed (+ appended FLOWS text)'; None when it is."""
+    before_lines = normalize_newlines(baseline_roadmap).rstrip().split("\n")
+    after_lines = normalize_newlines(after_roadmap).rstrip().split("\n")
+    before_cut = _heading_index(before_lines, round_number)
+    frozen = before_lines if before_cut is None else before_lines[:before_cut]
+    while frozen and not frozen[-1].strip():
+        frozen = frozen[:-1]
+    if [line.rstrip() for line in after_lines[:len(frozen)]] != [line.rstrip() for line in frozen]:
+        return "a line above the Follow-up %d stage was changed; only that stage may be edited" % round_number
+    headings = [raw.strip() for raw in after_lines if ANY_STAGE_HEADING.match(raw.strip())]
+    own = [h for h in headings if (STAGE_HEADING.match(h) and STAGE_HEADING.match(h).group("n") is not None
+                                   and int(STAGE_HEADING.match(h).group("n")) == round_number)]
+    if not own:
+        return "the Follow-up %d stage is missing" % round_number
+    if len(own) > 1:
+        return "the Follow-up %d stage appears more than once" % round_number
+    if headings[-1] != own[0]:
+        return "the Follow-up %d stage must be the last stage of the ROADMAP" % round_number
+    stage = next((s for s in list_follow_up_stages(after_roadmap) if s["n"] == round_number), None)
+    executed = set(executed_slugs or [])
+    for feature in (stage or {}).get("features", []):
+        if feature["slug"] in executed:
+            return "feature slug `%s` of Follow-up %d collides with an already executed feature" % (feature["slug"], round_number)
+    if not normalize_newlines(after_flows).rstrip().startswith(normalize_newlines(baseline_flows).rstrip()):
+        return "an earlier part of FLOWS.md was changed; only new entries may be appended"
+    return None
+
+
+def _feature_lines(stage_text_lines):
+    return {found.group(1): line.strip() for line in stage_text_lines for found in [FEATURE_LINE.match(line.strip())] if found}
+
+
+def describe_stage_change(before_stage, after_stage):
+    """{"added", "removed", "edited"} slug lists between two stages (dicts of list_follow_up_stages, or None).
+
+    A stage dict carries only slug/status, so `edited` compares the feature entries (any field) of the same slug;
+    an optional `lines` key ({slug: feature line text}) makes the comparison exact on the line text.
+    """
+    def entries(stage):
+        stage = stage or {}
+        lines = stage.get("lines")
+        if isinstance(lines, dict):
+            return {slug: text for slug, text in lines.items()}
+        return {f["slug"]: sorted((k, str(v)) for k, v in f.items()) for f in stage.get("features", [])}
+    before, after = entries(before_stage), entries(after_stage)
+    return {"added": [s for s in after if s not in before],
+            "removed": [s for s in before if s not in after],
+            "edited": [s for s in after if s in before and after[s] != before[s]]}
