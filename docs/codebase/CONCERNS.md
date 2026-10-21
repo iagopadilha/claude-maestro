@@ -6,7 +6,11 @@
 Short, evidence-based. Not a backlog.
 
 ## Size and concentration
-- `app/backend/harness_backend/engine/run_loop.py` is about 1,650 lines and `engine/loop_state.py` about 770: the loop engine is concentrated in few big modules, harder to change safely.
+- `app/backend/harness_backend/engine/run_loop.py` is about 2,370 lines and `engine/loop_state.py` about 850: the loop engine is concentrated in few big modules, harder to change safely.
+- `plugin/skills/orchestrator/hooks/guard.py` is about 1,335 lines (the 1,500-line limit is near) and every new rule (headless, per-task scope) lands there: split it before adding more.
+
+## Duplicated logic
+- Credential layers are resolved twice, with the same 5-layer order: `plugin/shared/testenv.py` (stdlib, used by the skills) and `app/backend/harness_backend/engine/credential_check.py` (the app). Nothing enforces that they stay equal (the blank-value rule and the user shared folder lookup were copied by hand): change both together.
 
 ## Shell execution
 - `app/backend/harness_backend/engine/run_loop.py:767` and `:827` run a setup command with `shell=True`; `plugin/shared/verify.py:130` does the same for verify commands. The command comes from project config/spec, so it is trusted input: unclear whether that is validated anywhere.
@@ -16,6 +20,7 @@ Short, evidence-based. Not a backlog.
 
 ## Test gaps
 - No front end tests, no browser e2e, no CI config found. See `TESTING.md`.
+- Task waves are shown in the pipeline List view (a `tasks` block on features being built) but not in the Diagram view.
 
 ## Process and tooling
 - The guard blocks some shell commands by text match: a read-only command that merely contained a loop-related file name was blocked for a mapper agent. Expect false positives; use dedicated Read/Grep/Glob tools.
