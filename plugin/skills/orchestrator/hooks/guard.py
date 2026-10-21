@@ -51,7 +51,7 @@ INSTALL = re.compile(
 # credentials: .secrets/, the plugin's shared .env, a project's .env.test (test VALUES; TEST-ENVIRONMENT.md only holds names), the app's data folder (.env, and app.json with the panel token), SSH keys.
 # `[\\/]+` because a Read/Glob/Grep input is checked as JSON text, where a Windows backslash comes doubled.
 SECRET_HINT = re.compile(
-    r"\.secrets[\\/]|[\\/]shared[\\/]+\.env(?!\.example)|\.env\.test(?!\.example)|\.loop-harness[\\/]+(?:\.env(?!\.example)|app\.json)|\bid_(rsa|ed25519)\b", re.I
+    r"\.secrets[\\/]|[\\/]_?shared[\\/]+\.env(?!\.example)|\.env\.test(?!\.example)|\.loop-harness[\\/]+(?:\.env(?!\.example)|app\.json)|\bid_(rsa|ed25519)\b", re.I
 )
 # state only the orchestrator writes: the project files it owns and the WHOLE loop folder (.specs/project/loop/).
 # The flat names after `loop` are the old plugin layout (read until migrated). PROJECT.md and TEST-ENVIRONMENT.md stay editable.
@@ -132,7 +132,15 @@ NULL_TARGETS = {"/dev/null", "$null", "nul", "null"}
 
 # rules that not even PERMISSIONS.json releases: workflows never push to the integration branch/main nor force, and the
 # roadmap approval and the panel's trigger endpoints are only ever the user's click
-HARD = {"push-protected", "push-force", "approval-write", "panel-trigger", "grafana-write"}
+HARD = {"push-protected", "push-force", "approval-write", "panel-trigger", "grafana-write", "headless-push", "headless-gh"}
+
+# headless loop (LOOP_HEADLESS=1, exported by the engine): delivery belongs to the engine, so the session only commits
+HEADLESS_RULES = ["headless-push", "headless-gh"]
+HEADLESS_MSG = "git push / gh: delivery belongs to the engine (harness.py deliver / Finish); in a headless loop you only commit"
+
+
+def is_headless():
+    return os.environ.get("LOOP_HEADLESS") == "1"
 
 PROFILES = {
     # implements code: everything blocked except editing inside the project
@@ -396,9 +404,18 @@ def temp_exempt(absolute):
 SLUG_MARK = re.compile(r"SCOPE_FEATURE:\s*([A-Za-z0-9._-]+)")
 
 
-def executor_slug(payload):
+TASK_MARK = re.compile(r"SCOPE_TASK:\s*([A-Za-z0-9._-]+/T\d+)")
+
+
+def executor_task(payload):
+    """Same as executor_slug, for the `SCOPE_TASK: <slug>/T<n>` line of the dispatch prompt. None = no task mark (feature scope applies)."""
+    return executor_slug(payload, TASK_MARK)
+
+
+def executor_slug(payload, mark=None):
     """Which feature does this executor serve? Best effort: reads the subagent transcript (if the hook brings agent_id) and
     looks for the `SCOPE_FEATURE: <slug>` line of the dispatch prompt. None = could not tell (falls back to the union of the scopes)."""
+    mark = mark or SLUG_MARK
     try:
         agent_id = payload.get("agent_id")
         transcript = payload.get("agent_transcript_path")
@@ -408,7 +425,7 @@ def executor_slug(payload):
         if not transcript or not os.path.isfile(transcript):
             return None
         with open(transcript, encoding="utf-8", errors="replace") as handle:
-            match = SLUG_MARK.search(handle.read(40000))
+            match = mark.search(handle.read(40000))
         return match.group(1) if match else None
     except Exception:
         return None
@@ -424,12 +441,17 @@ def read_scope_file(specs_dir):
         return {}
 
 
-def load_scope(specs_dir, slug=None):
-    """Reads .specs/project/loop/json/SCOPE.json: {"roots": [...], "features": {"slug": ["folder/or/file", ...]}} written by the orchestrator.
+def load_scope(specs_dir, slug=None, task=None):
+    """Reads .specs/project/loop/json/SCOPE.json: {"roots": [...], "features": {"slug": ["folder/or/file", ...]}, "tasks": {"slug/T1": [...]}} written by the orchestrator.
     An entry is absolute (a path in any worktree) or relative (to the primary root, the folder holding `.specs/`).
-    With a known `slug` present in the file, only that feature's paths; otherwise the union of all in-flight features."""
-    features = read_scope_file(specs_dir).get("features") or {}
+    With a known `task` present in the "tasks" map, only that task's paths; else with a known `slug` present in the file, only that
+    feature's paths; otherwise the union of all in-flight features."""
+    data = read_scope_file(specs_dir)
+    features = data.get("features") or {}
     try:
+        tasks = data.get("tasks") or {}
+        if task and isinstance(tasks, dict) and task in tasks:
+            return list(tasks[task])
         if slug and slug in features:
             return list(features[slug])
         paths = []
@@ -762,7 +784,7 @@ def check_specs_only(target, profile_rules, specs_dir, cwd=None):
     return [("specs-only", "spec and map agents write only inside .specs/ and docs/codebase/ (never code): %s" % relative[:100])]
 
 
-def check_scope(target, profile_rules, specs_dir, slug=None, cwd=None):
+def check_scope(target, profile_rules, specs_dir, slug=None, cwd=None, task=None):
     """Edits only inside the PATHS of the executor's feature (or, without identity, of the in-flight features) and only inside the repo."""
     hits = []
     if not specs_dir or not target:
@@ -777,7 +799,7 @@ def check_scope(target, profile_rules, specs_dir, slug=None, cwd=None):
         return hits
     if absolute.startswith(root + "/.regression/"):
         return hits
-    scope = load_scope(specs_dir, slug)
+    scope = load_scope(specs_dir, slug, task)
     if "path-scope" in profile_rules and scope:
         allowed = [norm(item if os.path.isabs(item) else os.path.join(root, item)) for item in scope]
         if not any(absolute == item or absolute.startswith(item.rstrip("/") + "/") for item in allowed):
@@ -847,7 +869,7 @@ def confined_write_targets(statement):
     return found
 
 
-def check_shell_target(target, cwd, profile_rules, specs_dir, slug):
+def check_shell_target(target, cwd, profile_rules, specs_dir, slug, task=None):
     """A shell write is confined like Write/Edit: inside the feature PATHS (path-scope), inside the project's worktrees (repo-only),
     inside .specs/ and docs/codebase/ (specs-only). Exempt: temp folders, /dev/*, build output folders (bin, obj, node_modules,
     .pytest_cache...) inside a worktree. A target built from a variable ($env:X, %X%, $(...)) cannot be resolved here and is not judged."""
@@ -865,7 +887,7 @@ def check_shell_target(target, cwd, profile_rules, specs_dir, slug):
         if BUILD_OUTPUT_DIRS & {fold(part) for part in relative.split("/")[:-1]}:
             return []
     hits = list(check_specs_only(absolute, profile_rules, specs_dir))
-    hits.extend(check_scope(absolute, profile_rules, specs_dir, slug))
+    hits.extend(check_scope(absolute, profile_rules, specs_dir, slug, None, task))
     return hits
 
 
@@ -919,6 +941,8 @@ def check_bash(command, profile_rules, permissions):
     start_cwd = running_cwd
     # 1) text of the whole command: catches a push hidden in python -c, $(...), quotes
     if PUSH_RE.search(command):
+        if "headless-push" in profile_rules:
+            hits.append(("headless-push", HEADLESS_MSG))
         if "git-push" in profile_rules:
             hits.append(("git-push", "git push: only on the user's explicit request (at the end of the flow, delivery is done by `harness.py deliver`)"))
         if PUSH_PROTECTED_RE.search(command):
@@ -948,6 +972,8 @@ def check_bash(command, profile_rules, permissions):
                 hits.append(("git-add-all", "git add . / -A: add files by name"))
             if sub == "commit" and "git-add-all" in profile_rules and re.search(r"\s-a[m\s]|--all", segment):
                 hits.append(("git-add-all", "git commit -a: add files by name"))
+        if "headless-gh" in profile_rules and re.match(r"^gh(\.exe)?\b", segment):
+            hits.append(("headless-gh", HEADLESS_MSG))
         if re.match(r"^gh\s+(pr|release|repo|gist|workflow)\b", segment) and "pr-release" in profile_rules:
             if not re.match(r"^gh\s+(pr|repo)\s+(view|list|diff|status|checks)\b", segment):
                 hits.append(("pr-release", "gh pr/release/gist: leaves the machine; the end-of-flow PR is made by `harness.py deliver`"))
@@ -980,7 +1006,7 @@ def check_bash(command, profile_rules, permissions):
         for statement in split_statements(command):
             statement = statement.strip()
             for target in confined_write_targets(statement):
-                hits.extend(check_shell_target(target, statement_cwd, profile_rules, specs_dir, permissions.get("_slug")))
+                hits.extend(check_shell_target(target, statement_cwd, profile_rules, specs_dir, permissions.get("_slug"), permissions.get("_task")))
             cd_move = CD_RE.match(statement)
             if cd_move:
                 statement_cwd = resolve_dir(cd_move.group(1), statement_cwd)
@@ -1215,7 +1241,7 @@ def check_tool(tool_name, tool_input, profile_rules, permissions):
         if tool_name in ("Write", "Edit", "NotebookEdit"):
             hits.extend(check_specs_only(target, profile_rules, permissions.get("_specs_dir"), permissions.get("_cwd")))
         if tool_name in ("Write", "Edit"):
-            hits.extend(check_scope(target, profile_rules, permissions.get("_specs_dir"), permissions.get("_slug"), permissions.get("_cwd")))
+            hits.extend(check_scope(target, profile_rules, permissions.get("_specs_dir"), permissions.get("_slug"), permissions.get("_cwd"), permissions.get("_task")))
         for pattern in permissions.get("deny_path_regex", []):
             if project_pattern_matches(pattern, target):
                 hits.append(("project-deny", "path forbidden by the project: %s" % pattern))
@@ -1258,8 +1284,12 @@ def main():
     if profile == "auto":
         profile = profile_for_agent(payload)
         if not profile:
-            return 0
-    profile_rules = PROFILES.get(profile, PROFILES["executor"])
+            if not is_headless():
+                return 0
+            profile = "orchestrator"
+    profile_rules = list(PROFILES.get(profile, PROFILES["executor"]))
+    if is_headless():
+        profile_rules += [rule for rule in HEADLESS_RULES if rule not in profile_rules]
     specs_dir = find_specs_dir(payload.get("cwd"))
     try:
         permissions = load_permissions(specs_dir)
@@ -1267,6 +1297,7 @@ def main():
         permissions["_cwd"] = payload.get("cwd")
         if specs_dir and "path-scope" in profile_rules:
             permissions["_slug"] = executor_slug(payload)
+            permissions["_task"] = executor_task(payload)
             if payload.get("tool_name") in ("Write", "Edit") and load_scope(specs_dir):
                 # trace to check in the real rehearsal: resolved identity and the fields the hook actually receives
                 log(specs_dir, profile, "scope-trace", "info", "slug=%s fields=%s" % (permissions["_slug"], ",".join(sorted(payload.keys()))))

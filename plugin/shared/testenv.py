@@ -5,7 +5,9 @@ LAYERS (the first one that defines a key wins; a real environment variable beats
   1. a real environment variable
   2. <project>/.specs/project/.env.test       this project's own test values (gitignored)
   3. ~/.loop-harness/.env                     your machine (every project)
-  4. <this folder>/.env                       the shared settings next to this script (fallback)
+  4. <this folder>/.env                       the plugin's shared settings next to this script
+  5. ~/.claude/skills/_shared/.env            the user-level shared settings (LOOP_USER_SHARED_DIR or config.json
+                                              `user_shared_dir` in the data dir override the folder; LOOP_DATA_DIR moves 3)
 
 TEST USERS are `;`-separated lists, aligned by position (write `\\;` for a literal `;` inside a value):
   TEST_USER_EMAILS=first@company.com;second@company.com
@@ -25,6 +27,7 @@ USAGE
 Code that needs a value imports this module:  import testenv; testenv.load_layers(project)[0]["TEST_USER_1_EMAIL"]
 """
 import argparse
+import json
 import os
 import re
 import shutil
@@ -38,6 +41,8 @@ import envload  # noqa: E402  (parse only)
 PROJECT_ENV_RELATIVE = os.path.join(".specs", "project", ".env.test")
 ENVIRONMENT_DOC_RELATIVE = os.path.join(".specs", "project", "TEST-ENVIRONMENT.md")
 USER_DATA_DIR = os.path.join(os.path.expanduser("~"), ".loop-harness")
+SHARED_DIR_VARIABLE = "LOOP_USER_SHARED_DIR"
+DEFAULT_SHARED_PARTS = (".claude", "skills", "_shared")
 LIST_SEPARATOR = ";"
 ESCAPED_SEPARATOR = "\\;"
 USER_FIELDS = (("EMAILS", "EMAIL"), ("PASSWORDS", "PASSWORD"), ("ROLES", "ROLE"))
@@ -56,12 +61,40 @@ def split_values(text):
 
 def layer_files(project=None):
     """(label, path) of the files to read, highest priority first."""
+    data_dir = os.environ.get("LOOP_DATA_DIR") or USER_DATA_DIR
     files = []
     if project:
         files.append(("project .env.test", os.path.join(project, PROJECT_ENV_RELATIVE)))
-    files.append(("user ~/.loop-harness/.env", os.path.join(os.environ.get("LOOP_DATA_DIR") or USER_DATA_DIR, ".env")))
-    files.append(("shared .env", os.path.join(HERE, ".env")))
-    return files
+    files.append(("user ~/.loop-harness/.env", os.path.join(data_dir, ".env")))
+    files.append(("plugin shared/.env", os.path.join(HERE, ".env")))
+    files.append(("user shared ~/.claude/skills/_shared/.env", os.path.join(user_shared_dir(data_dir), ".env")))
+    return drop_repeated_paths(files)
+
+
+def user_shared_dir(data_dir):
+    """LOOP_USER_SHARED_DIR, then `user_shared_dir` of <data dir>/config.json, then ~/.claude/skills/_shared (as the app does)."""
+    explicit = os.environ.get(SHARED_DIR_VARIABLE)
+    if explicit:
+        return explicit
+    try:
+        with open(os.path.join(data_dir, "config.json"), encoding="utf-8-sig") as handle:
+            configured = json.load(handle).get("user_shared_dir", "")
+    except (OSError, ValueError, AttributeError):
+        configured = ""
+    if isinstance(configured, str) and configured.strip():
+        return configured
+    return os.path.join(os.path.expanduser("~"), *DEFAULT_SHARED_PARTS)
+
+
+def drop_repeated_paths(files):
+    """The same file under two labels is read once, under the higher-priority label."""
+    seen, unique = set(), []
+    for label, path in files:
+        key = os.path.normcase(os.path.abspath(path))
+        if key not in seen:
+            seen.add(key)
+            unique.append((label, path))
+    return unique
 
 
 def read_file(path):
@@ -92,7 +125,8 @@ def load_layers(project=None):
     values, sources = {}, {}
     for label, path in reversed(layer_files(project)):  # lowest priority first, so higher ones overwrite
         for key, value in read_file(path).items():
-            values[key], sources[key] = value, label
+            if value:  # a blank value never hides a lower layer (same as the app)
+                values[key], sources[key] = value, label
     for key, value in os.environ.items():
         if key in values or key.startswith(("TEST_", "LOOP_")):
             values[key], sources[key] = value, "environment"
