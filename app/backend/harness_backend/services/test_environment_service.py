@@ -1,9 +1,9 @@
 """Test environment tab: which `$NAME` the project's TEST-ENVIRONMENT.md needs, where each one is defined (never its value), saving
-values (project `.env.test` or the user-level shared `.env`), and the project's access choices (Grafana read, shared fallback).
+values (project `.env.test` or the user-level shared `.env`), and the computed `access` card (credential layers + MCP read servers).
 
 Layers, same order as the skills' `testenv.py`: real environment variable > project `.specs/project/.env.test` > `~/.loop-harness/.env` >
-plugin `shared/.env` > user-level shared `~/.claude/skills/_shared/.env`. The last two (shared) count only when the project accepted them
-(`.specs/project/ACCESS.json` `shared_fallback: true`); a name that only a shared file defines is reported as `shared-blocked`.
+plugin `shared/.env` > user-level shared `~/.claude/skills/_shared/.env`. Every layer is always read (no toggle); a name that only a
+shared file defines has the source `shared`. MCP access is computed from `~/.claude.json` (`mcp_access`), read tools only.
 
 Secrets rule: values are written, never read back into a response, a log line, a file the AI reads or an error message.
 """
@@ -16,8 +16,8 @@ from ..domain.project_errors import InvalidRequestError, UnknownCredentialNameEr
 from ..repositories.specs_file_repository import ENGINE_DIR  # noqa: F401  (puts the engine folder on sys.path)
 from .planning_gates import list_fill_in_lines
 
-import access_settings  # noqa: E402
 import credential_check  # noqa: E402
+import mcp_access  # noqa: E402
 
 TARGET_PROJECT = "project"
 TARGET_SHARED = "shared"
@@ -31,7 +31,6 @@ MAX_VALUES_PER_REQUEST = 100
 class ITestEnvironmentService(Protocol):
     def get_test_environment(self, context) -> dict: ...
     def save_values(self, context, values, target) -> dict: ...
-    def save_access(self, context, body) -> dict: ...
     def write_credential_names_file(self, context) -> str: ...
 
 
@@ -43,6 +42,7 @@ class TestEnvironmentService:
         self.specs_structure_service = specs_structure_service
         self.log = log
         self.write_lock = threading.Lock()
+        self.after_change = None  # fn(context), set by the projects module: capabilities block + readiness check after new values
 
     # ------------------------------------------------ read
     def describe_names(self, context):
@@ -61,9 +61,25 @@ class TestEnvironmentService:
         rows, resolution, text = self.describe_names(context)
         fill_in = list_fill_in_lines(text)
         ready = not fill_in and all(row["source"] in SOURCES_THAT_COUNT for row in rows)
+        try:
+            self.test_environment_repository.migrate_legacy_access(context.work_dir)  # legacy ACCESS.json keys are dropped
+        except OSError:
+            pass
         return {"ok": True, "ready": ready, "names": rows, "fill_in": fill_in,
-                "access": self.test_environment_repository.read_access(context.work_dir),
+                "access": self.describe_access(resolution, rows),
                 "shared_paths": resolution.shared_files_found()}
+
+    @staticmethod
+    def describe_access(resolution, rows):
+        """The Access card: `credential_layers` [{name: project|machine|shared, label, path, exists, names: [names of the document each
+        layer defines, with their source resolved by the highest layer]}] and `mcp` [{server, tools, configured}]. Never a value."""
+        document_names = [row["name"] for row in rows]
+        layers = resolution.layer_report(document_names)
+        winner = {row["name"]: row["source"] for row in rows}
+        for layer in layers:
+            layer["names"] = [{"name": name, "source": winner.get(name, "missing"), "winning": winner.get(name) == layer["name"]}
+                              for name in layer["names"]]
+        return {"credential_layers": layers, "mcp": mcp_access.describe_servers()}
 
     # ------------------------------------------------ values
     def save_values(self, context, values, target):
@@ -85,26 +101,9 @@ class TestEnvironmentService:
                 self.test_environment_repository.write_shared_values(values)
         saved = list(values)
         self.log.info("test_environment_values_saved", project=context.project.id, target=target, names=saved)  # names only
+        if self.after_change is not None:
+            self.after_change(context)
         return {"ok": True, "saved": saved}
-
-    # ------------------------------------------------ access
-    def save_access(self, context, body):
-        if not isinstance(body, dict):
-            raise InvalidRequestError("the body must be an object")
-        access = self.test_environment_repository.read_access(context.work_dir)
-        changed = False
-        for key in access_settings.ACCESS_KEYS:
-            if key in body:
-                if not isinstance(body[key], bool):
-                    raise InvalidRequestError("%s must be true or false" % key)
-                access[key], changed = body[key], True
-        if not changed:
-            raise InvalidRequestError("send grafana_read and/or shared_fallback")
-        with self.write_lock:
-            access = self.test_environment_repository.write_access(context.work_dir, access)
-            self.specs_structure_service.ensure_env_files_in_gitignore(context.repo_path)  # ACCESS.json is a local choice, not versioned
-        self.log.info("test_environment_access_saved", project=context.project.id, **access)
-        return {"ok": True, "access": access}
 
     # ------------------------------------------------ planning AI
     def write_credential_names_file(self, context):

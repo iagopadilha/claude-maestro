@@ -1,8 +1,8 @@
-"""RepoRegistry: the repos of ONE project (`<primary repo>/.specs/project/REPOS.json`) and the `multi` flag.
+"""RepoRegistry: the repos of ONE project (`<primary repo>/.specs/project/REPOS.json`), each with a role (edit | reference).
 
 The file is shared with the engine (`engine/project_repos.py` reads it and owns the writer). Nothing here changes a folder
 on disk: adding or removing a repo only edits the list. No file = one primary repo (single-repo project, no migration).
-Turning `multi` off keeps the listed repos in the file (checking it again restores them) while the engine sees only the primary.
+`multi` is derived (more than one repo); the engine sees every listed repo. The planning chat fills the list (planning_repos_service).
 """
 import json
 import os
@@ -10,6 +10,7 @@ import sys
 from typing import Protocol
 
 from ..domain.project import RepoRef
+from ..repositories.loop_file_repository import loop_state
 from ..domain.project_errors import (LOOP_RUNNING_CODE, InvalidRepoError, InvalidRequestError, LoopRunningError,
                                      RepoConflictError, RepoNotFoundError)
 
@@ -19,6 +20,7 @@ if ENGINE_DIR not in sys.path:
 import detect_setup  # noqa: E402
 import project_repos  # noqa: E402
 import repo_catalog  # noqa: E402
+from .planning_repos_service import ensure_can_switch_to_reference, load_last_rejections  # noqa: E402
 from detect_setup import HEAVY_FOLDER_NAMES, IGNORED_FILES_ARGUMENTS, suggest_copy_files  # noqa: E402
 
 DETACHED_HEAD_CODE = "detached_head"
@@ -28,6 +30,7 @@ SUGGESTED_FILE_PARTS = (".specs", "project", "REPOS-SUGGESTED.json")
 SUGGESTED_LIMIT = 10
 SUGGESTED_TEXT_LIMIT = 400
 SETUP_LIMIT = 200
+REASON_LIMIT = 400
 
 
 def normalize_path(path):
@@ -40,10 +43,11 @@ def to_relative_posix(path):
 
 class IRepoRegistryService(Protocol):
     def list_repos(self, context) -> dict: ...
-    def add_repo(self, context, path, copy, setup=None) -> dict: ...
+    def add_repo(self, context, path, copy, setup=None, role=None, reason=None) -> dict: ...
+    def update_repo(self, context, name, role=None, reason=None) -> dict: ...
     def set_setup(self, context, name, setup) -> dict: ...
     def read_suggested_repos(self, context) -> list: ...
-    def set_multi(self, context, multi) -> dict: ...
+    def set_role(self, context, name, role) -> dict: ...
     def confirm_scope(self, context) -> dict: ...
     def remove_repo(self, context, name) -> dict: ...
     def set_copy_list(self, context, name, copy) -> dict: ...
@@ -56,13 +60,32 @@ class RepoRegistryService:
         self.git_client = git_client
         self.loop_status_service = loop_status_service
         self.log = log
+        self.after_change = None  # fn(context), set by the composition: capabilities block + readiness check after a repo change
+
+    def notify_changed(self, context):
+        if self.after_change is not None:
+            self.after_change(context)
 
     # ------------------------------------------------ read
     def list_repos(self, context):
+        """`multi` is derived (more than one repo). Each repo carries `role`, `reason` and `changed_by_feature` (a ROADMAP feature names it
+        in `paths=`; the primary counts whenever any feature has a path). `rejected` = suggestions of the planning chat that were refused."""
         multi, stored = self.read_stored(context)
-        effective = stored if multi else stored[:1]
-        return {"ok": True, "multi": multi, "repos": [self.describe_repo(repo) for repo in effective],
-                "suggested": self.read_suggested_repos(context), "defined": project_repos.is_scope_defined(context.repo_path)}
+        changed = self.read_changed_repo_names(context, stored)
+        return {"ok": True, "multi": multi, "repos": [self.describe_repo(repo, changed) for repo in stored],
+                "suggested": self.read_suggested_repos(context), "defined": project_repos.is_scope_defined(context.repo_path),
+                "rejected": load_last_rejections(context)}
+
+    def read_changed_repo_names(self, context, stored):
+        """Names of the repos some ROADMAP feature changes (`paths=<repo>:...`); empty without a readable ROADMAP."""
+        for folder in dict.fromkeys((context.specs_dir, os.path.join(context.repo_path, ".specs"))):
+            try:
+                with open(os.path.join(folder, "project", "ROADMAP.md"), encoding="utf-8", errors="replace") as handle:
+                    features, _ = loop_state.parse_roadmap(handle.read())
+            except OSError:
+                continue
+            return project_repos.repos_changed_by_roadmap(project_repos.primary_of(stored).name, features)
+        return set()
 
     def resolve(self, context, name):
         """The listed repo called `name` (the stored list, so a repo of an unchecked project can still be reached by name)."""
@@ -73,29 +96,62 @@ class RepoRegistryService:
         return found
 
     def list_effective_repos(self, context):
-        """What the engine sees: `project_repos.load_repos` (primary first; one entry unless `multi`)."""
+        """What the engine sees: `project_repos.load_repos` (primary first, every listed repo with its role)."""
         return project_repos.load_repos(context.repo_path)
 
     # ------------------------------------------------ write
-    def add_repo(self, context, path, copy=None, setup=None):
+    def add_repo(self, context, path, copy=None, setup=None, role=None, reason=None):
+        """Adds a repository (the chat or the Workspace dialog). `role` defaults to `edit`; `reason` = one sentence: why it is in the project."""
+        if role is not None and role not in project_repos.ROLES:
+            raise InvalidRequestError("role must be edit or reference")
         multi, stored = self.read_stored(context)
         folder = self.validate_candidate_folder(path)
         if any(normalize_path(repo.path) == normalize_path(folder) for repo in stored):
             raise InvalidRepoError("this folder is already listed", code=ALREADY_LISTED_CODE)
         copy_list = self.validate_copy_list(copy or [])
         name = project_repos.unique_name(project_repos.short_name_of(folder), {repo.name for repo in stored})
-        added = RepoRef(name=name, path=folder, primary=False, copy=copy_list, setup=self.validate_setup(setup), copy_configured=copy is not None)
+        added = RepoRef(name=name, path=folder, primary=False, copy=copy_list, setup=self.validate_setup(setup), copy_configured=copy is not None,
+                        role=role or project_repos.ROLE_EDIT, reason=self.validate_reason(reason))
         project_repos.save_repos(context.repo_path, True, stored + [added], scope_defined=True)
         self.log.info("repo_added", project=context.project.id, repo=name)
-        return {"ok": True, "repo": self.describe_repo(added), "multi": True}
+        self.notify_changed(context)
+        return {"ok": True, "repo": self.describe_repo(added), "repos": self.list_repos(context)["repos"], "multi": True}
 
-    def set_multi(self, context, multi):
-        if not isinstance(multi, bool):
-            raise InvalidRequestError("multi must be true or false")
+    def set_role(self, context, name, role):
+        """`PATCH repos/<name>` {"role"}: `edit` or `reference`. The primary is always edit; `edit` -> `reference` is refused while a loop
+        worktree exists for the repo ("close the loop first"). Persists and returns the listing."""
+        if role not in project_repos.ROLES:
+            raise InvalidRequestError("role must be edit or reference")
+        multi, stored = self.read_stored(context)
+        target = project_repos.find_repo(stored, name)
+        if target is None:
+            raise RepoNotFoundError("repo not found: %s" % name)
+        if target.primary and role != project_repos.ROLE_EDIT:
+            raise RepoConflictError("the primary repo of the project is always edit", code=PRIMARY_CODE)
         self.ensure_loop_not_running(context)
-        _, stored = self.read_stored(context)
-        project_repos.save_repos(context.repo_path, multi, stored)
-        self.log.info("repo_multi_changed", project=context.project.id, multi=multi)
+        if target.role == project_repos.ROLE_EDIT and role == project_repos.ROLE_REFERENCE:
+            ensure_can_switch_to_reference(target)
+        target.role = role
+        project_repos.save_repos(context.repo_path, multi, stored, scope_defined=True)
+        self.log.info("repo_role_changed", project=context.project.id, repo=name, role=role)
+        self.notify_changed(context)
+        return self.list_repos(context)
+
+    def update_repo(self, context, name, role=None, reason=None):
+        """`PATCH repos/<name>` {role?, reason?}: the role (same rules as `set_role`) and/or the reason (one sentence, empty = none)."""
+        if role is None and reason is None:
+            raise InvalidRequestError("give role and/or reason")
+        if role is not None:
+            self.set_role(context, name, role)
+        if reason is not None:
+            multi, stored = self.read_stored(context)
+            target = project_repos.find_repo(stored, name)
+            if target is None:
+                raise RepoNotFoundError("repo not found: %s" % name)
+            target.reason = self.validate_reason(reason)
+            project_repos.save_repos(context.repo_path, multi, stored, scope_defined=True)
+            self.log.info("repo_reason_changed", project=context.project.id, repo=name)
+            self.notify_changed(context)
         return self.list_repos(context)
 
     def remove_repo(self, context, name):
@@ -108,6 +164,7 @@ class RepoRegistryService:
         self.ensure_loop_not_running(context)
         project_repos.save_repos(context.repo_path, multi, [repo for repo in stored if repo.name != name], scope_defined=True)
         self.log.info("repo_removed", project=context.project.id, repo=name)
+        self.notify_changed(context)
         return {"ok": True, "removed": name, "note": "no folder or worktree was deleted"}
 
     def confirm_scope(self, context):
@@ -115,7 +172,8 @@ class RepoRegistryService:
         self.ensure_loop_not_running(context)
         multi, stored = self.read_stored(context)
         project_repos.save_repos(context.repo_path, multi, stored, scope_defined=True)
-        self.log.info("repo_scope_confirmed", project=context.project.id, repos=len(stored if multi else stored[:1]))
+        self.log.info("repo_scope_confirmed", project=context.project.id, repos=len(stored))
+        self.notify_changed(context)
         return self.list_repos(context)
 
     def set_copy_list(self, context, name, copy):
@@ -186,32 +244,18 @@ class RepoRegistryService:
 
     # ------------------------------------------------ support
     def read_stored(self, context):
-        """(multi, every repo in the file, primary FIRST). No file = (False, [the primary])."""
-        data = project_repos.read_repos_file(context.repo_path)
-        primary_key = normalize_path(context.repo_path)
-        stored, taken = [], set()
-        for item in data["repos"]:
-            path = str(item["path"])
-            name = project_repos.unique_name(str(item.get("name") or project_repos.short_name_of(path)), taken)
-            taken.add(name)
-            copy = [str(entry) for entry in item.get("copy") or [] if isinstance(entry, str)]
-            stored.append(RepoRef(name=name, path=path, primary=normalize_path(path) == primary_key,
-                                  worktree_path=str(item.get("worktree_path") or ""), copy=copy, setup=str(item.get("setup") or "").strip(),
-                                  copy_configured=isinstance(item.get("copy"), list)))
-        if not any(repo.primary for repo in stored):
-            primary = project_repos.single_repo(context.repo_path)[0]
-            primary.name = project_repos.unique_name(primary.name, taken)
-            stored.insert(0, primary)
-        stored.sort(key=lambda repo: not repo.primary)
-        return bool(data["multi"]), stored
+        """(multi, every repo in the file, primary FIRST). No file = (False, [the primary]). `multi` = more than one repo."""
+        repos = project_repos.load_repos(context.repo_path)
+        return len(repos) > 1, repos
 
-    def describe_repo(self, repo):
+    def describe_repo(self, repo, changed_names=None):
         exists = os.path.isdir(repo.path)
         is_git = exists and self.git_client.is_git_repo(repo.path)
         branch = (self.git_client.get_current_branch(repo.path) or None) if is_git else None
         return {"name": repo.name, "path": repo.path, "primary": repo.primary, "branch": branch if exists else None,
                 "worktree_path": repo.loop_worktree_path(), "copy": list(repo.copy), "setup": repo.setup or None, "exists": exists, "is_git": is_git,
-                "detected_setup": detect_setup.detect_setup(repo.path), "setup_configured": bool(repo.setup), "copy_configured": repo.copy_configured}
+                "detected_setup": detect_setup.detect_setup(repo.path), "setup_configured": bool(repo.setup), "copy_configured": repo.copy_configured,
+                "role": repo.role, "reason": repo.reason or None, "changed_by_feature": bool(changed_names is not None and repo.name in changed_names)}
 
     def validate_candidate_folder(self, path):
         if not isinstance(path, str) or not path.strip():
@@ -224,6 +268,17 @@ class RepoRegistryService:
         if not self.git_client.get_current_branch(folder):
             raise InvalidRepoError("the repo has no current branch (detached HEAD): check out a branch first", code=DETACHED_HEAD_CODE)
         return folder
+
+    @staticmethod
+    def validate_reason(reason):
+        if reason is None:
+            return ""
+        if not isinstance(reason, str):
+            raise InvalidRepoError("reason must be text")
+        cleaned = " ".join(reason.split())
+        if len(cleaned) > REASON_LIMIT:
+            raise InvalidRepoError("reason is limited to %d characters" % REASON_LIMIT)
+        return cleaned
 
     @staticmethod
     def validate_setup(setup):

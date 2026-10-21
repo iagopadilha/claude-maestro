@@ -1,5 +1,5 @@
 """Files behind the Test environment tab: `.specs/project/TEST-ENVIRONMENT.md` (names only), `.specs/project/.env.test` (the
-project's test VALUES), the user-level shared `.env` and `.specs/project/ACCESS.json`. Values only ever flow INTO a file here;
+project's test VALUES) and the user-level shared `.env`. Values only ever flow INTO a file here;
 nothing in this class returns one, and no error message carries one. `.env.test` and the shared file are written only through
 this class (never by the planning AI).
 
@@ -117,9 +117,6 @@ class TestEnvironmentRepository:
             raise
 
     @staticmethod
-    def read_access(work_dir):
-        return access_settings.read_access(work_dir)
-
-    @staticmethod
-    def write_access(work_dir, access):
-        return access_settings.write_access(work_dir, access)
+    def migrate_legacy_access(work_dir):
+        """Drops the legacy keys of `.specs/project/ACCESS.json` (access is computed now). True when it changed the file."""
+        return access_settings.migrate_access_file(work_dir)

@@ -6,7 +6,8 @@ import os
 import time
 import unittest
 
-from harness_backend.services.loop_control_service import convert_body_to_loop_flags
+from harness_backend.domain.roadmap_settings import parse_loop_settings
+from harness_backend.services.loop_control_service import convert_settings_to_loop_flags
 from tests.api.support_commands import CHECK_READY, FAKE_RUN_LOOP_CHECKABLE, PROJECT_ID, CommandsTestCase, wait_for_process_to_end
 
 
@@ -117,31 +118,29 @@ class LoopControlTests(CommandsTestCase):
             time.sleep(0.1)
         self.fail("the fake run_loop did not write %s" % name)
 
-    def test_check_and_start_refuse_invalid_values_with_400(self):
+    def test_check_and_start_refuse_invalid_run_choices_with_400_and_ignore_other_keys(self):
         self.prepare_fake()
-        invalid = [{"wave": 0}, {"wave": 9}, {"wave": "2"}, {"wave": True}, {"wave": 1.5}, {"e2e": "yes"}, {"push": 1},
-                   {"budget": -1}, {"budget": "5"}, {"max_cost": True}, {"timeout": 0}, {"timeout": 601}, {"timeout": 1.5},
-                   {"branch": "a..b"}, {"branch": "-x"}, {"branch": "a b"}, {"branch": "a;rm"}, {"branch": "x" * 81}, {"branch": 3},
-                   {"setup": "x" * 201}, {"setup": 7}, {"continue_on_blocked": "true"}, {"pause_on_blocked": 0},
-                   {"answer": "hi"}, {"repo": "C:/other"}, {"wave": 2, "unknown": 1}]
         for path in ("/api/loop/check", "/api/loop/start"):
-            for body in invalid:
+            for body in ({"push": 1}, {"push": "yes"}, {"remove_worktree_on_finish": "no"}, {"remove_worktree_on_finish": 0}):
                 status, data = self.fixture.call(path, "POST", body)
                 self.assertEqual(status, 400, "%s %s" % (path, body))
                 self.assertFalse(data["ok"])
         self.assertFalse(os.path.exists(os.path.join(self.fixture.tmp, "check_argv.json")), "validation fails before running anything")
         self.assertFalse(os.path.exists(os.path.join(self.fixture.tmp, "start_record.json")))
+        # card-era keys are decided in the ROADMAP now: ignored, not refused
+        self.assertEqual(self.fixture.call("/api/loop/check", "POST", {"wave": 0, "budget": -1, "branch": "a..b", "unknown": 1, "repo": "C:/other"})[0], 200)
+        self.assertEqual(self.read_record("check_argv.json"), [self.fixture.repo, "--check", "--wave", "3"])
 
-    def test_valid_flags_become_argv_without_a_shell(self):
-        flags, error = convert_body_to_loop_flags({"wave": 8, "e2e": True, "push": False, "setup": "npm ci && rm -rf /", "budget": 5, "max_cost": 0,
-                                                   "timeout": 600, "branch": "loop/a.b_c-1", "continue_on_blocked": True, "pause_on_blocked": True})
-        self.assertIsNone(error)
-        self.assertEqual(flags, ["--wave", "8", "--e2e", "--no-push", "--continue-on-blocked", "--pause-on-blocked", "--budget", "5",
-                                 "--max-cost", "0", "--timeout", "600", "--branch", "loop/a.b_c-1", "--setup", "npm ci && rm -rf /"])
-        self.assertEqual(convert_body_to_loop_flags({}), ([], None))
-        self.assertEqual(convert_body_to_loop_flags({"setup": "--x", "branch": "", "push": True, "e2e": False})[0], ["--setup=--x"])
-        self.assertIsNotNone(convert_body_to_loop_flags({"budget": float("nan")})[1])
-        self.assertIsNotNone(convert_body_to_loop_flags({"max_cost": float("inf")})[1])
+    def test_valid_settings_become_argv_without_a_shell(self):
+        text = ("**E2E:** yes\n**Dispatch:** 8\n**Max spend per turn:** 5\n**Max spend for the loop:** 0\n**Max minutes per turn:** 600\n"
+                "**Branch:** loop/a.b_c-1\n**Setup:** npm ci && rm -rf /\n**When a feature gets stuck:** continue\n")
+        settings = parse_loop_settings(text)["settings"]
+        self.assertEqual(convert_settings_to_loop_flags(settings, 8, False),
+                         ["--wave", "8", "--e2e", "--no-push", "--continue-on-blocked", "--max-cost", "0", "--timeout", "600",
+                          "--branch", "loop/a.b_c-1", "--setup", "npm ci && rm -rf /"])
+        defaults = parse_loop_settings("")["settings"]
+        self.assertEqual(convert_settings_to_loop_flags(defaults, 1, True), [])
+        self.assertEqual(convert_settings_to_loop_flags(parse_loop_settings("**Setup:** --x")["settings"], 1, True), ["--setup=--x"])
 
     def test_check_parses_problems_warnings_and_command(self):
         self.prepare_fake("[check] WARNING: no remote\n[check] PROBLEM: dirty tree\n[check] PROBLEM: no git identity\nloose line\n")
@@ -153,14 +152,14 @@ class LoopControlTests(CommandsTestCase):
 
     def test_ready_check_returns_the_command_and_passes_the_flags_to_run_loop(self):
         self.prepare_fake()
-        status, data = self.fixture.call("/api/loop/check", "POST", {"wave": 2, "push": False, "setup": "npm ci"})
+        status, data = self.fixture.call("/api/loop/check", "POST", {"push": False})
         self.assertEqual(status, 200)
         self.assertTrue(data["ready"])
         self.assertEqual(data["problems"], [])
         self.assertEqual(data["warnings"], ["no remote"])
         self.assertEqual(data["command"], 'python "run_loop.py" "repo" --wave 2')
         argv = self.read_record("check_argv.json")
-        self.assertEqual(argv, [self.fixture.repo, "--check", "--wave", "2", "--no-push", "--setup", "npm ci"])
+        self.assertEqual(argv, [self.fixture.repo, "--check", "--wave", "3", "--no-push"])
         self.assertFalse(os.path.exists(self.fixture.at("LOOP.lock")))
 
     def write_roadmap(self, text):
@@ -171,22 +170,22 @@ class LoopControlTests(CommandsTestCase):
         self.assertEqual(status, 200)
         return self.read_record("check_argv.json")
 
-    def test_e2e_comes_from_the_roadmap_when_the_body_does_not_send_it(self):
+    def test_e2e_comes_from_the_roadmap(self):
         self.prepare_fake()
         self.write_roadmap("# Roadmap\n\n**Goal:** x\n\n**E2E:** yes\n")
-        self.assertEqual(self.check_argv_for({"wave": 2}), [self.fixture.repo, "--check", "--wave", "2", "--e2e"])
+        self.assertEqual(self.check_argv_for({}), [self.fixture.repo, "--check", "--wave", "3", "--e2e"])
 
     def test_e2e_no_or_absent_in_the_roadmap_adds_no_flag(self):
         self.prepare_fake()
         self.write_roadmap("# Roadmap\n\n**Goal:** x\n\n**E2E:** no\n")
-        self.assertEqual(self.check_argv_for({}), [self.fixture.repo, "--check"])
+        self.assertEqual(self.check_argv_for({}), [self.fixture.repo, "--check", "--wave", "3"])
 
-    def test_e2e_in_the_body_wins_over_the_roadmap(self):
+    def test_e2e_in_the_body_is_ignored(self):
         self.prepare_fake()
         self.write_roadmap("**E2E:** yes\n")
-        self.assertEqual(self.check_argv_for({"e2e": False}), [self.fixture.repo, "--check"])
+        self.assertEqual(self.check_argv_for({"e2e": False}), [self.fixture.repo, "--check", "--wave", "3", "--e2e"])
         self.write_roadmap("**E2E:** no\n")
-        self.assertEqual(self.check_argv_for({"e2e": True}), [self.fixture.repo, "--check", "--e2e"])
+        self.assertEqual(self.check_argv_for({"e2e": True}), [self.fixture.repo, "--check", "--wave", "3"])
 
     def test_ready_check_with_the_command_on_the_same_line(self):
         self.prepare_fake("[check] READY. Command: python run_loop.py repo\n")
@@ -202,15 +201,16 @@ class LoopControlTests(CommandsTestCase):
 
     def test_start_launches_detached_with_the_project_url_and_without_answer(self):
         self.prepare_fake()
-        status, data = self.fixture.call("/api/loop/start", "POST", {"wave": 2, "e2e": True, "push": False, "budget": 5, "max_cost": 30,
-                                                                    "timeout": 60, "branch": "loop/x", "setup": "npm ci", "continue_on_blocked": True})
+        self.write_roadmap("**E2E:** yes\n**Dispatch:** 2\n**Max spend per turn:** 5\n**Max spend for the loop:** 30\n**Max minutes per turn:** 45\n"
+                           "**Branch:** loop/x\n**Setup:** npm ci\n**When a feature gets stuck:** continue\n")
+        status, data = self.fixture.call("/api/loop/start", "POST", {"push": False})
         self.assertEqual(status, 200)
         self.assertGreater(data["pid"], 0)
         record = self.read_record("start_record.json")
         self.assertEqual(record["monitor_url"], self.fixture.project_url)
         self.assertTrue(record["monitor_url"].endswith("/p/%s/" % PROJECT_ID))
-        self.assertEqual(record["argv"], [self.fixture.repo, "--wave", "2", "--e2e", "--no-push", "--continue-on-blocked", "--budget", "5",
-                                         "--max-cost", "30", "--timeout", "60", "--branch", "loop/x", "--setup", "npm ci"])
+        self.assertEqual(record["argv"], [self.fixture.repo, "--wave", "2", "--e2e", "--no-push", "--continue-on-blocked", "--max-cost", "30",
+                                         "--timeout", "45", "--branch", "loop/x", "--setup", "npm ci", "--orchestrator-model", "opus"])
         self.assertNotIn("--answer", record["argv"])
         self.assertNotIn("--check", record["argv"])
         self.assertTrue(os.path.exists(self.fixture.at("monitor-relaunch.log")))
@@ -218,8 +218,7 @@ class LoopControlTests(CommandsTestCase):
 
     def test_start_ignores_the_body_repo_and_uses_the_project_one(self):
         self.prepare_fake()
-        self.assertEqual(self.fixture.call("/api/loop/start", "POST", {"repo": self.fixture.tmp})[0], 400)
-        status, data = self.fixture.call("/api/loop/start", "POST", {})
+        status, data = self.fixture.call("/api/loop/start", "POST", {"repo": self.fixture.tmp})
         self.assertEqual(status, 200)
         self.assertEqual(self.read_record("start_record.json")["argv"][0], self.fixture.repo)
         wait_for_process_to_end(data["pid"])

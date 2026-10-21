@@ -1,6 +1,6 @@
 """Guard events of a project for the panel: the latest blocks of the plugin's PreToolUse hook and how many per rule.
 
-Source: `<work>/.specs/project/loop/internal/guard.log`, one JSON line per decision (`{t, profile, rule, decision, detail}`)
+Source: `<work>/.specs/project/loop/internal/guard.log`, one JSON line per decision (`{t, turn, profile, rule, decision, detail, attempt}`)
 written by `plugin/skills/orchestrator/hooks/guard.py`. Only `blocked` decisions count (info and allowed-by-user lines are
 left out). The raw file never leaves through the API: each field is clipped and the detail goes through credential redaction.
 """

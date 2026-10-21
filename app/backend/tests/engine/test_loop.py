@@ -228,7 +228,7 @@ class TestFullFlow(LoopCase):
         project = self.make(ROAD_BASIC, dict(SCEN_BASIC, denials=[denial]))
         self.done(project.run(), 0)
         validate = project.validate_text()
-        self.assertIn("- [general] permission denied on turn 1", validate)
+        self.assertIn("- [general] turn=1 level=important permission denied (", validate)
         self.assertIn("build_evidence.py", validate)
         self.assertIn("tolerated_denials", project.meta())
 
@@ -302,16 +302,16 @@ class TestEscalation(LoopCase):
         road = "## Stage 1\n- [x] status=pending\n- [y] status=pending\n"
         scen = {"features": {"x": {"paths": "apps/x", "exec": "fail"}, "y": {"paths": "apps/y"}}}
         project = self.make(road, scen)
-        self.done(project.run("--pause-on-blocked", "--no-auto-answer"), 10)  # x fails twice, enters quarantine and the loop PAUSES (y has not run yet)
+        self.done(project.run("--wave", "1", "--pause-on-blocked", "--no-auto-answer"), 10)  # x fails twice, enters quarantine and the loop PAUSES (y has not run yet)
         self.assertEqual(project.roadmap()["x"]["status"], "blocked")
-        self.assertEqual(project.roadmap()["y"]["status"], "approved")
+        self.assertEqual(project.roadmap()["y"]["status"], "pending")  # --wave 1 = one lane: y has not even had its spec yet
         loop = project.loop_json()
         self.assertEqual(loop["status"], "awaiting_user")
         self.assertIn("Quarantine after 2 failures: x", loop["reason"])
         self.assertEqual(loop["options"], ["try the feature again", "skip the feature and carry on with the others"])
         notice = project.notice()
-        self.assertIn("waiting for your decision", notice)
-        self.assertIn("Open the panel to continue", notice)
+        self.assertIn("Aguardando sua decisão", notice)
+        self.assertIn("acesse o painel de controle", notice)
         self.done(project.run("--pause-on-blocked", "--answer", "skip x and carry on"), 0)  # the user decides: carry on with y
         self.assertEqual(project.roadmap()["y"]["status"], "verified")
         self.assertEqual(project.roadmap()["x"]["status"], "blocked")
@@ -370,7 +370,7 @@ class TestScriptGuards(LoopCase):
 
     def test_verified_without_a_commit_is_refused(self):
         road = "## Stage 1\n- [a] status=pending\n- [b] status=pending\n"
-        scen = {"features": {"a": {"paths": "apps/a"}, "b": {"paths": "apps/b"}}, "cheat": {"turn": 2, "type": "no_commit"}}
+        scen = {"features": {"a": {"paths": "apps/a"}, "b": {"paths": "apps/b"}}, "cheat": {"turn": 3, "type": "no_commit"}}  # --wave 1: turn 1 specs a, turn 2 builds a, turn 3 specs b (which the fake then marks verified without a commit)
         project = self.make(road, scen)
         self.done(project.run("--wave", "1"), 20)
         self.assertIn("verified requires the feature's commit", project.meta()["reason"])
@@ -384,7 +384,7 @@ class TestScriptGuards(LoopCase):
         road = "## Stage 1\n- [a] status=pending\n- [b] status=pending\n- [c] status=pending\n"
         scen = {"features": {s: {"paths": "apps/" + s} for s in "abc"}, "cost": 4.0}
         project = self.make(road, scen)
-        self.done(project.run("--max-cost", "10"), 20)
+        self.done(project.run("--wave", "1", "--max-cost", "10"), 10)  # a cap hit is a resumable pause (was an error)
         self.assertIn("cost cap", project.meta()["reason"])
 
     def test_dirty_tree_outside_specs_stops(self):
@@ -404,7 +404,7 @@ class TestScriptGuards(LoopCase):
     def test_pause_file_stops_before_the_next_turn(self):
         project = self.make(ROAD_BASIC, SCEN_BASIC)
         self.done(project.run("--dry-run"), 0)
-        self.done(project.run("--wave", "1", "--max-cost", "0.15"), 20)  # stops after 2 turns on the cost cap, worktree kept
+        self.done(project.run("--wave", "1", "--max-cost", "0.15"), 10)  # pauses after 2 turns on the cost cap, worktree kept
         pause = loop_file(project.work, "internal", "PAUSE")
         os.makedirs(os.path.dirname(pause), exist_ok=True)
         open(pause, "w").close()
@@ -443,8 +443,9 @@ class TestHumanInTheLoop(LoopCase):
         project = self.make("## Stage 1\n- [a] status=pending\n", {"features": {"a": {"paths": "apps/a", "ask": True}}})
         self.done(project.run("--no-auto-answer"), 10)
         notice = project.notice()
-        self.assertIn("1) a | 2) b", notice)
-        self.assertIn("Open the panel to continue", notice)
+        self.assertIn("Opção 1: a", notice)
+        self.assertIn("Opção 2: b", notice)
+        self.assertIn("acesse o painel de controle", notice)
 
     def test_answer_without_a_pending_question_is_refused(self):
         project = self.make(ROAD_BASIC, SCEN_BASIC)
@@ -475,7 +476,7 @@ class TestPreFlight(LoopCase):
         self.assertIn("[check] READY. Command:", result.stdout)
         command = result.stdout.split("[check] READY. Command:", 1)[1].strip().splitlines()[0]
         self.assertIn('"%s" loop "%s"' % (os.path.join(engine_env.APP_ROOT_DIR, "harness.py"), project.repo), command)
-        self.assertIn("--wave 1", command)
+        self.assertIn("--wave 3", command)
         self.assertFalse(os.path.exists(project.work), "--check creates nothing")
 
     def test_check_warns_about_dotnet_project_and_missing_gitignore(self):
@@ -529,15 +530,15 @@ class TestAlwaysNotify(LoopCase):
     def test_success_error_and_question_generate_a_notice(self):
         ok = self.make(ROAD_BASIC, SCEN_BASIC)
         self.done(ok.run(), 0)
-        self.assertIn("done", ok.notice())
+        self.assertIn("concluída", ok.notice())
         err = self.make(ROAD_BASIC, {"idle": True})
         self.done(err.run(), 20)
-        self.assertIn("stopped with an error", err.notice())
+        self.assertIn("interrompida com erro", err.notice())
         ask = self.make("## Stage 1\n- [a] status=pending\n", {"features": {"a": {"paths": "apps/a", "ask": True}}})
         self.done(ask.run("--no-auto-answer"), 10)
         text = ask.notice()
-        self.assertIn("waiting for your decision", text)
-        self.assertIn("Open the panel to continue", text)
+        self.assertIn("Aguardando sua decisão", text)
+        self.assertIn("acesse o painel de controle", text)
 
     def test_preflight_requires_the_mandatory_channels(self):
         project = self.make(ROAD_BASIC, SCEN_BASIC)
@@ -1221,7 +1222,7 @@ class TestAutomaticAnswerInTheLoop(LoopCase):
         project = self.make(self.ROAD, self.SCEN)
         self.done(project.run(), 0)
         validate = project.validate_text()
-        self.assertIn("- [a] question answered automatically on turn 1:", validate)
+        self.assertIn("- [a] turn=1 level=important question answered automatically:", validate)
         self.assertIn("| chose: option 1 (first option that does not abandon the feature): a | revert: --answer with another option", validate)
         self.assertIn("[automatic answer from the loop: option 1, first option that does not abandon the feature]", project.answers_text())
         self.assertEqual(project.meta()["auto_answers"], [{"turn": 1, "feature": "a", "option": 1}])
@@ -1273,7 +1274,7 @@ class TestGateTiebreak(unittest.TestCase):
         self.assertEqual(state["status"], "awaiting_user")
         self.assertEqual(state["options"], ["approve the spec and run it, remaining findings become notes for the executor", "finish without the feature"])
         validate = open(loop_state.state_file(tmp, "VALIDATE.md"), encoding="utf-8").read()
-        self.assertIn("- [c] gate tiebreak on turn 4: spec approved without a new gate after several rejections | chose: run with the remaining findings as notes; build and regression decide | revert: --answer asking to redo the gate", validate)
+        self.assertIn("- [c] turn=4 level=important gate tiebreak: spec approved without a new gate after several rejections | chose: run with the remaining findings as notes; build and regression decide | revert: --answer asking to redo the gate", validate)
         self.assertEqual(meta["gate_tiebreaks"], [{"turn": 4, "features": ["c"]}])
 
     def test_only_once_per_feature(self):

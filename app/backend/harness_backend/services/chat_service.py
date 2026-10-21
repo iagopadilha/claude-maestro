@@ -33,7 +33,14 @@ ROLE_USER = "user"
 ROLE_AI = "ai"
 SCOPE_TYPE_AGENT = "agent"
 SCOPE_TYPE_GENERAL = "general"
-SCOPE_TYPES = (SCOPE_TYPE_AGENT, SCOPE_TYPE_GENERAL)
+SCOPE_TYPE_ERROR = "error"
+SCOPE_TYPE_QUARANTINE = "quarantine"
+SCOPE_TYPE_PLAN = "plan"
+SCOPE_TYPES = (SCOPE_TYPE_AGENT, SCOPE_TYPE_GENERAL, SCOPE_TYPE_ERROR, SCOPE_TYPE_QUARANTINE, SCOPE_TYPE_PLAN)
+PLAN_SCOPE_PREFIX = ("This chat only answers questions about the project plan: the roadmap, the specs, designs and tasks, the codebase maps "
+                     "(docs/codebase), the AI decisions and the loop progress. If the question is about something else, say you can only "
+                     "answer about those and stop. Read the files with Read, Grep and Glob; never claim to have changed anything.")
+ERROR_ID_LIMIT = 200
 ORCHESTRATOR_AGENT_ID = "orch"
 ORCHESTRATOR_ROLE = "orchestrator"
 JOB_STATE_OK = "ok"
@@ -57,9 +64,19 @@ def busy_jobs_error():
 
 
 def validate_chat_scope(scope):
-    """Normalized scope {"type","agent_id","turn"} or None when invalid."""
+    """Normalized scope {"type","agent_id","turn"} or None when invalid. `error` adds `error_id` and `quarantine` adds `feature`."""
     if not isinstance(scope, dict) or scope.get("type") not in SCOPE_TYPES:
         return None
+    if scope["type"] == SCOPE_TYPE_ERROR:
+        error_id = scope.get("error_id")
+        valid = isinstance(error_id, str) and 0 < len(error_id) <= ERROR_ID_LIMIT and error_id.isprintable()
+        return {"type": SCOPE_TYPE_ERROR, "agent_id": None, "turn": None, "error_id": error_id} if valid else None
+    if scope["type"] == SCOPE_TYPE_QUARANTINE:
+        feature = scope.get("feature")
+        valid = isinstance(feature, str) and FEATURE_SLUG_PATTERN.fullmatch(feature)
+        return {"type": SCOPE_TYPE_QUARANTINE, "agent_id": None, "turn": None, "feature": feature} if valid else None
+    if scope["type"] == SCOPE_TYPE_PLAN:
+        return {"type": SCOPE_TYPE_PLAN, "agent_id": None, "turn": None}
     agent_id, turn = scope.get("agent_id"), scope.get("turn")
     if agent_id is not None and not (isinstance(agent_id, str) and AGENT_ID_PATTERN.fullmatch(agent_id)):
         return None
@@ -85,6 +102,7 @@ class ChatService:
         self.claude_client = claude_client
         self.timeout_seconds = CHAT_TIMEOUT_SECONDS
         self.send_lock = threading.Lock()
+        self.scope_context_provider = None  # object with build_error_context(context, error_id) and build_quarantine_context(context, slug); set by the composition
 
     def is_busy(self):
         """IBusyProvider: a chat (or router) reply in progress keeps the app on."""
@@ -93,13 +111,20 @@ class ChatService:
     # ------------------------------------------------ context
     @staticmethod
     def describe_feature_dir(work_dir, slug):
-        return "%s (read with Read: spec.md and the other files)" % os.path.join(work_dir, ".specs", "features", slug)
+        return "%s (read with Read: spec.md and the other files)" % loop_state.feature_dir(work_dir, slug)
 
     @staticmethod
     def build_general_context(work_dir):
         paths = [os.path.join(work_dir, ".specs", "project", "ROADMAP.md"), loop_state.state_file(work_dir, "STATE.md"),
                  loop_state.state_file(work_dir, "VALIDATE.md"), loop_state.state_file(work_dir, "LOOP.json")]
         return "General loop context. Read what you need with Read:\n" + "\n".join("- " + path for path in paths)
+
+    @staticmethod
+    def build_plan_context(work_dir):
+        """Context of the `plan` scope: the limiting prefix plus where the plan files live (the work folder = the worktree when it exists)."""
+        folders = [os.path.join(work_dir, ".specs", "project"), os.path.join(work_dir, ".specs", "features"),
+                   os.path.join(work_dir, "docs", "codebase")]
+        return PLAN_SCOPE_PREFIX + "\nPlan files, read what you need with Read/Glob:\n" + "\n".join("- " + path for path in folders)
 
     def build_agent_context(self, work_dir, agent_id):
         """(session_id for resume+fork or None, context text) of the `agent` scope."""
@@ -135,6 +160,14 @@ class ChatService:
             parts.append("Feature files: " + self.describe_feature_dir(work_dir, summary["feature"]))
         return None, redact_secrets("\n\n".join(parts))
 
+    def build_scope_context(self, context, scope):
+        """Server-built context of an `error` or `quarantine` scope; None when the item does not exist (or no provider is wired)."""
+        if self.scope_context_provider is None:
+            return None
+        if scope["type"] == SCOPE_TYPE_ERROR:
+            return self.scope_context_provider.build_error_context(context, scope["error_id"])
+        return self.scope_context_provider.build_quarantine_context(context, scope["feature"])
+
     # ------------------------------------------------ send
     def send_question(self, context, body):
         text = body.get("text")
@@ -160,7 +193,13 @@ class ChatService:
                 scope = validate_chat_scope(body.get("scope") or {"type": SCOPE_TYPE_GENERAL})
                 if scope is None:
                     return 400, {"ok": False, "error": "invalid scope"}
-                if scope["type"] == SCOPE_TYPE_AGENT and scope["agent_id"]:
+                if scope["type"] in (SCOPE_TYPE_ERROR, SCOPE_TYPE_QUARANTINE):
+                    session, context_text = None, self.build_scope_context(context, scope)
+                    if context_text is None:
+                        return 404, {"ok": False, "error": "%s not found" % ("error" if scope["type"] == SCOPE_TYPE_ERROR else "quarantined feature")}
+                elif scope["type"] == SCOPE_TYPE_PLAN:
+                    session, context_text = None, self.build_plan_context(work_dir)
+                elif scope["type"] == SCOPE_TYPE_AGENT and scope["agent_id"]:
                     session, context_text = self.build_agent_context(work_dir, scope["agent_id"])
                 else:
                     session, context_text = None, self.build_general_context(work_dir)

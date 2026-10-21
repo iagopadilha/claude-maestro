@@ -18,11 +18,16 @@ from ..repositories.loop_command_file_repository import RELAUNCH_LOG_FILE_NAME
 from ..repositories.specs_file_repository import loop_state
 from .claude_job_service import JOB_TYPE_WORKSPACE_CREATE, now_iso
 from .loop_control_service import LAUNCH_MARKER_PREFIX
+from .loop_worktree_service import get_context_integration_branch
 
 ENGINE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "engine"))
 if ENGINE_DIR not in sys.path:
     sys.path.insert(0, ENGINE_DIR)
+import context_files  # noqa: E402
 import project_repos  # noqa: E402
+import setup_files  # noqa: E402
+import subprojects  # noqa: E402
+from .planning_repos_service import load_last_rejections  # noqa: E402
 
 BUSY_CODE = "busy"
 UNKNOWN_REPO_CODE = "unknown_repo"
@@ -35,6 +40,15 @@ STATE_READY = "ready"
 STATE_LOOP_RUNNING = "loop_running"
 STATE_DIRTY = "dirty"
 STATE_MISSING = "missing"
+STATE_READ_ONLY = "read_only"  # a reference repository: read by the agents, never given a worktree
+USER_FOLDER_REFUSED_CODE = "user_folder_refused"
+NOT_LOOP_BRANCH_CODE = "not_loop_branch"
+LOOP_BRANCH_PREFIX = "loop/"
+PROTECTED_BRANCHES = ("main", "master")
+USER_FOLDER_REFUSAL = "this route only saves a loop worktree: for your own folder use Commit setup files and push in Workspace"
+SETUP_NOT_SET_UP, SETUP_SET_UP, SETUP_MAP_MISSING, SETUP_MAPPING = "not_set_up", "set_up", "map_missing", "mapping"
+MAP_JOB_TYPE = "map"
+PLAN_FOLDER_PARTS = (".specs", "project")
 EXPLANATION = ("The loop works in a separate folder (a git worktree) on a new loop/<date> branch, so your folder and branch are "
                "never touched. Nothing is pushed until you deliver.")
 UNCOMMITTED_NOTE = "Your folder has uncommitted changes. The worktree is born from the last commit and does not carry them."
@@ -151,6 +165,7 @@ class WorkspaceService:
         self.claude_job_service = claude_job_service
         self.worktree_adapter = worktree_adapter
         self.log = log
+        self.subprojects_service = None  # attached by the multi-repo module: the setup state of each repository (None = not asked)
 
     # ------------------------------------------------ read
     def get_workspace(self, context):
@@ -161,13 +176,18 @@ class WorkspaceService:
         if not meta:  # the work dir is still the primary repo while no loop ran: the bare worktree holds the recorded branch and base
             meta = self.loop_file_repository.read_meta(context.project.loop_worktree_path())
         cli_setup = self.read_saved_setup(context)  # the CLI --setup applies to the primary when REPOS.json has none for it
-        repos = [self.describe_repo(context, repo, meta, loop_running, stored_setup.get(repo.name) or (cli_setup if repo.primary else None))
+        changed = self.repo_registry_service.read_changed_repo_names(context, stored)
+        repos = [self.describe_repo(context, repo, meta, loop_running, stored_setup.get(repo.name) or (cli_setup if repo.primary else None),
+                                    changed)
                  for repo in project_repos.load_repos(context.repo_path)]
         job = self.find_running_create_job(context) or self.read_loop_start_job(context)
         return {"ok": True, "multi": multi, "explanation": EXPLANATION, "repos": repos, "job": job,
-                "defined": project_repos.is_scope_defined(context.repo_path)}
+                "integration_branch": get_context_integration_branch(context), "plan_folder": os.path.join(context.work_dir, *PLAN_FOLDER_PARTS),
+                "defined": project_repos.is_scope_defined(context.repo_path) or any(repo["worktree_exists"] for repo in repos),
+                "rejected": load_last_rejections(context)}  # refused suggestions of the planning chat [{path, reason}]
+        # ("defined": a loop that already has a worktree keeps the scope it has)
 
-    def describe_repo(self, context, repo, meta, loop_running, setup):
+    def describe_repo(self, context, repo, meta, loop_running, setup, changed_names=None):
         folder, worktree = repo.path, repo.loop_worktree_path()
         folder_exists, worktree_exists = os.path.isdir(folder), os.path.isdir(worktree)
         recorded = (meta.get("repos") or {}).get(repo.name) if isinstance(meta.get("repos"), dict) else None
@@ -176,21 +196,107 @@ class WorkspaceService:
         recorded = recorded if isinstance(recorded, dict) else {}
         branch = (self.git_client.get_current_branch(worktree) or recorded.get("branch") or None) if worktree_exists else None
         base = recorded.get("base") if worktree_exists and recorded.get("base") else (self.git_client.get_current_branch(folder) or None) if folder_exists else None
-        notes, dirty = [], False
+        notes, dirty, uncommitted_context = [], False, []
+        read_only = repo.role == project_repos.ROLE_REFERENCE
         if not folder_exists:
             state = STATE_MISSING
             notes.append(MISSING_NOTE)
+        elif read_only:  # no worktree, nothing carried, nothing to commit for the loop: read only
+            state = STATE_READ_ONLY
         elif not worktree_exists:
             state = STATE_NOT_CREATED
             dirty = self.has_changes_outside_specs(folder)
+            uncommitted_context = self.describe_uncommitted_context(context, repo)
             if dirty:
                 notes.append(UNCOMMITTED_NOTE)
         else:
             dirty = self.has_changes_outside_specs(worktree)
             state = STATE_LOOP_RUNNING if loop_running else (STATE_DIRTY if dirty else STATE_READY)
-        return {"name": repo.name, "primary": repo.primary, "folder": folder, "worktree": worktree, "worktree_exists": worktree_exists,
-                "branch": branch, "base": base, "state": state, "dirty": dirty, "copy": list(repo.copy), "setup": setup or None,
-                "notes": notes}
+        description = {"name": repo.name, "path": folder, "primary": repo.primary, "folder": folder, "worktree": worktree, "worktree_exists": worktree_exists,
+                       "branch": branch, "base": base, "state": state, "dirty": dirty, "uncommitted_context": uncommitted_context, "copy": list(repo.copy),
+                       "setup_command": setup or None, "notes": notes, "role": repo.role, "reason": repo.reason or None,
+                       "changed_by_feature": bool(changed_names is not None and repo.name in changed_names), "read_only": read_only}
+        description.update(self.describe_branches(folder, get_context_integration_branch(context)) if folder_exists else self.empty_branches())
+        description["setup"] = self.describe_setup_state(context, repo) if folder_exists else {"state": SETUP_NOT_SET_UP, "monorepo": False}
+        changes = self.classify_user_folder(context, repo) if folder_exists and not read_only else {"setup_files": [], "other_changes": []}
+        description.update(changes)
+        return description
+
+    @staticmethod
+    def empty_branches():
+        return {"current_branch": None, "base_branch": None, "base_sha": None, "upstream": None}
+
+    def describe_branches(self, folder, integration):
+        """Where the loop worktree of this repository would start (spec BR-01): the base branch (`integration`) when it exists locally, else the
+        current branch. `upstream` = the remote branch the current branch tracks (None without one)."""
+        current = self.git_client.get_current_branch(folder) or None
+        code, _, _ = self.git_client.run_git(folder, "rev-parse", "--verify", "--quiet", "refs/heads/%s" % integration)
+        base = integration if code == 0 else current
+        base_sha = None
+        if base:
+            code, output, _ = self.git_client.run_git(folder, "rev-parse", "--short", "refs/heads/%s" % base)
+            base_sha = output if code == 0 and output else None
+        upstream = None
+        if current:
+            code, output, _ = self.git_client.run_git(folder, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "%s@{upstream}" % current)
+            upstream = output if code == 0 and output else None
+        return {"current_branch": current, "base_branch": base, "base_sha": base_sha, "upstream": upstream}
+
+    def classify_user_folder(self, context, repo):
+        """{"setup_files", "other_changes"} of the user's folder (the setup files the app generated vs every other changed file)."""
+        if os.path.isdir(repo.loop_worktree_path()):
+            return {"setup_files": [], "other_changes": []}  # the loop works there: the user's folder is not carried again
+        entry = subprojects.load(context.repo_path, repo.name)["entry"]
+        setup_paths = [item["path"] for item in setup_files.list_setup_files(repo.path, entry)]
+        return {"setup_files": setup_paths, "other_changes": setup_files.list_other_changes(repo.path, setup_paths)}
+
+    def describe_setup_state(self, context, repo):
+        """{"state": not_set_up | set_up | map_missing | mapping, "monorepo": bool}: the installer's progress of ONE repository. A reference
+        repository needs no Conformance (its map is optional: a missing one is `map_missing`, never a block). A confirmed monorepo is judged
+        per non-skipped subproject."""
+        service = self.subprojects_service
+        if service is None:
+            return {"state": SETUP_NOT_SET_UP, "monorepo": False}
+        try:
+            key, folder = service.resolve_target(context, None if repo.primary else repo.name)
+            entry = service.subprojects_file_repository.read_repo_entry(context.work_dir, key)
+            entry = entry if isinstance(entry, dict) else None
+            monorepo = bool(entry and entry.get("monorepo") is True)
+            if self.is_mapping_now(context, repo, key):
+                return {"state": SETUP_MAPPING, "monorepo": monorepo}
+            needs_conformance = repo.role != project_repos.ROLE_REFERENCE
+            if monorepo:
+                if entry.get("confirmed") is not True:
+                    return {"state": SETUP_NOT_SET_UP, "monorepo": True}
+                rows = [row for row in service.build_description(key, folder, entry)["projects"] if not row["skip"]]
+                if needs_conformance and any("conformance" in row["missing"] for row in rows):
+                    return {"state": SETUP_NOT_SET_UP, "monorepo": True}
+                missing_map = any("map" in row["missing"] for row in rows)
+            else:
+                if needs_conformance and not service.specs_structure_service.get_conformance(folder):
+                    return {"state": SETUP_NOT_SET_UP, "monorepo": False}
+                from .project_progress_service import ProjectProgressService
+                has_code = ProjectProgressService.repo_has_code(folder)
+                missing_map = has_code and not ProjectProgressService.read_map_facts(folder, folder)["map_files"]
+            return {"state": SETUP_MAP_MISSING if missing_map else SETUP_SET_UP, "monorepo": monorepo}
+        except Exception as failure:  # the dialog must open even when one repository cannot be read
+            self.log.warn("workspace_setup_state_failed", repo=repo.name, type=type(failure).__name__, message=str(failure)[:200])
+            return {"state": SETUP_NOT_SET_UP, "monorepo": False}
+
+    def is_mapping_now(self, context, repo, key):
+        job = self.claude_job_service.get_running_job(repo.path)
+        if job and job.get("type") == MAP_JOB_TYPE:
+            return True
+        reader = self.subprojects_service.map_queue_reader
+        queue = reader(context, None if repo.primary else repo.name) if reader else None
+        return bool(isinstance(queue, dict) and queue.get("state") == "running")
+
+    @staticmethod
+    def describe_uncommitted_context(context, repo):
+        """Agent-context files (maps, CLAUDE.md, SYSTEM.md) that are in the user's folder but not committed: the worktree is born from the
+        last commit and would not carry them. Only asked while the worktree is not created. Read-only; [] when git fails or nothing is pending."""
+        entry = subprojects.load(context.repo_path, repo.name)["entry"]  # every repo's list is stored in the primary's SUBPROJECTS.json
+        return context_files.uncommitted_context(repo.path, entry)
 
     def has_changes_outside_specs(self, worktree):
         """Uncommitted work (of a worktree or of the user folder) that is not plan state (`.specs/` changes every turn and does not count)."""
@@ -259,8 +365,8 @@ class WorkspaceService:
 
     # ------------------------------------------------ save the user's folder (commit + push on its current branch)
     def commit_and_push(self, context, repo_name, message=None, push=True):
-        """`git add -A`, commit and push in the USER's folder of a repo that has no worktree yet, so the worktree (born from the last
-        commit) carries the work. Current branch only; a worktree that already exists is never touched (its state is the loop's)."""
+        """`git add -A`, commit and push in the LOOP WORKTREE of a repo (its `loop/*` branch). The user's own folder is refused (409
+        `user_folder_refused`: it is saved with Commit setup files and push) and so is `main`/`master`: nothing of the user's is ever committed here."""
         if not isinstance(push, bool):
             raise InvalidRepoError("push must be true or false")
         repo = self.repo_registry_service.resolve(context, repo_name)
@@ -268,13 +374,19 @@ class WorkspaceService:
             raise RepoConflictError("a loop is running in this project: stop it first", code=BUSY_CODE)
         if not os.path.isdir(repo.path):
             raise InvalidRepoError("the repo folder does not exist: %s" % repo.path)
-        if os.path.isdir(repo.loop_worktree_path()):
-            raise RepoConflictError("the worktree of %s already exists: the loop works there, your folder is not copied again" % repo.name,
-                                    code=WORKTREE_EXISTS_CODE)
+        worktree = repo.loop_worktree_path()
+        if not os.path.isdir(worktree):
+            raise RepoConflictError(USER_FOLDER_REFUSAL, code=USER_FOLDER_REFUSED_CODE)
+        branch = self.git_client.get_current_branch(worktree)
+        if branch.lower() in PROTECTED_BRANCHES:
+            raise RepoConflictError("`%s` is a protected branch: the app never commits or pushes there" % branch, code=NOT_LOOP_BRANCH_CODE)
+        if not branch.startswith(LOOP_BRANCH_PREFIX):
+            raise RepoConflictError("%s: the worktree is not on a %s branch (it is on `%s`)" % (USER_FOLDER_REFUSAL, LOOP_BRANCH_PREFIX + "*", branch or "detached HEAD"),
+                                    code=NOT_LOOP_BRANCH_CODE)
         text = (message or "").strip() if isinstance(message, str) or message is None else None
         if text is None or len(text) > COMMIT_MESSAGE_LIMIT or "\n" in text:
             raise InvalidRepoError("the commit message must be one line of up to %d characters" % COMMIT_MESSAGE_LIMIT)
-        outcome = self.git_client.commit_all_and_push(repo.path, text or DEFAULT_COMMIT_MESSAGE, push)
+        outcome = self.git_client.commit_all_and_push(worktree, text or DEFAULT_COMMIT_MESSAGE, push)
         self.log.info("workspace_commit_push", project=context.project.id, repo=repo.name, ok=outcome["ok"], committed=outcome["committed"],
                       pushed=outcome["pushed"])
         if not outcome["ok"]:
@@ -317,8 +429,8 @@ class WorkspaceService:
         """The repos to create: the named ones, or (empty/absent) every repo whose worktree folder does not exist yet."""
         if repo_names is not None and (not isinstance(repo_names, list) or not all(isinstance(name, str) for name in repo_names)):
             raise InvalidRepoError("repos must be a list of repo names")
-        if not repo_names:
-            return [repo for repo in repos if not os.path.isdir(repo.loop_worktree_path())]
+        if not repo_names:  # a reference repository never gets a worktree
+            return [repo for repo in repos if repo.role != project_repos.ROLE_REFERENCE and not os.path.isdir(repo.loop_worktree_path())]
         by_name = {repo.name: repo for repo in repos}
         unknown = [name for name in repo_names if name not in by_name]
         if unknown:

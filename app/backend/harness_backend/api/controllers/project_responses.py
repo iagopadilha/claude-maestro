@@ -6,12 +6,14 @@ from ...domain.project_errors import (FileEditRefusedError, FileVersionConflictE
                                       PLANNING_PREREQUISITES_CODE, PlanningGatesError, PlanningRequiredError,
                                       ProjectAlreadyExistsError, RoadmapSessionMissingError, SpecFileNotFoundError,
                                       InvalidRepoError, RepoConflictError, RepoNotFoundError)
+from ...services.subprojects_service import SubprojectsNotConfirmedError
 from ..router import Response
 
 PROJECT_NOT_FOUND_MESSAGE = "project not found"
 STATUS_BY_ERROR = (
     (FileVersionConflictError, 409),
     (InvalidPathError, 400),
+    (SubprojectsNotConfirmedError, 422),
     (InvalidRequestError, 400),
     (PathOutsideSpecsError, 400),
     (FileEditRefusedError, 400),

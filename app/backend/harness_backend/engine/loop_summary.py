@@ -14,7 +14,8 @@ Reads (everything optional, whatever is missing becomes "not reported"):
   .specs/project/loop/internal/turns/NNN.json  output of each `claude -p` turn (cost, duration)
   git log <base>..<branch>            loop commits
 
-Output: <out>/loop-summary-<project>-<YYYY-MM-DD>.md (default: `loop-summary/` in the current working directory).
+Output: <out>/loop-summary-<project>-<YYYY-MM-DD>.md (default: the app's output folder, `output_dir` in config.json,
+~/Downloads when unset; never the repo or the current directory).
 """
 import datetime
 import glob
@@ -26,6 +27,15 @@ import sys
 
 LINE = re.compile(r"^- \[([^\]]+)\]\s+(.*)$")
 SECTIONS = ["Delivered", "User decisions", "Lessons", "Unverified", "Blocked", "For the next stage"]
+
+
+def default_output_dir():
+    """The app's output folder; ~/Downloads when the app package cannot be loaded (the script copied alone somewhere)."""
+    try:
+        import app_paths
+        return app_paths.default_output_dir()
+    except Exception:
+        return os.path.join(os.path.expanduser("~"), "Downloads")
 
 
 def read(path):
@@ -143,6 +153,8 @@ def main():
     add("- Loop branch: `%s`%s" % (branch or "not reported", (" (base `%s`)" % base) if base else ""))
     add("- Work folder: `%s`" % root)
     add("- Turns run: %s | total cost: US$ %.2f | time in turns: %.0f min" % (turns or meta.get("turns", "?"), cost, duration / 60000))
+    cost_cap = float(meta.get("max_cost_usd") or 0) or float(opt("--max-cost", 0) or 0)
+    add("- Spend: US$ %.2f of the US$ %s cap | turns: %s" % (float(meta.get("cost_usd", cost) or 0), ("%.2f" % cost_cap) if cost_cap else "no", turns or meta.get("turns", "?")))
     add("- Stop reason: **%s**%s" % (meta.get("stopped") or loop.get("status") or "not reported", (" - " + (meta.get("reason") or loop.get("reason"))) if (meta.get("reason") or loop.get("reason")) else ""))
     add("- Branch push: %s" % meta.get("push", "not done"))
     if meta.get("pr"):
@@ -232,7 +244,7 @@ def main():
         add("")
         add(str(loop["next"]))
 
-    dest = opt("--out", os.path.join(os.getcwd(), "loop-summary"))
+    dest = opt("--out", "") or default_output_dir()
     os.makedirs(dest, exist_ok=True)
     target = os.path.join(dest, "loop-summary-%s-%s.md" % (project, datetime.date.today().isoformat()))
     with open(target, "w", encoding="utf-8", newline="\n") as handle:

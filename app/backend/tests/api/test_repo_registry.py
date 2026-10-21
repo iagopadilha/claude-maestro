@@ -141,17 +141,57 @@ class TestRepoRegistry(MultiRepoTestCase):
             self.registry.set_copy_list(self.context, "api", "x")
 
     # ------------------------------------------------ multi / remove
-    def test_unchecking_multi_hides_the_siblings_but_keeps_them_in_the_file(self):
+    def test_multi_is_derived_and_every_repo_is_effective(self):
+        api = self.make_repo("api")
+        self.assertFalse(self.registry.list_repos(self.context)["multi"])
+        self.registry.add_repo(self.context, api, [])
+        listing = self.registry.list_repos(self.context)
+        self.assertTrue(listing["multi"])
+        self.assertEqual([repo.name for repo in self.registry.list_effective_repos(self.context)], ["primary", "api"])
+        self.registry.remove_repo(self.context, "api")
+        self.assertFalse(self.registry.list_repos(self.context)["multi"])
+
+    def test_old_file_without_role_lists_every_repo_as_edit_and_saved_file_has_role(self):
+        api = self.make_repo("api")
+        write_file(os.path.join(self.primary, ".specs", "project", "REPOS.json"),
+                   json.dumps({"multi": False, "repos": [{"name": "primary", "path": self.primary, "primary": True}, {"name": "api", "path": api}]}))
+        listing = self.registry.list_repos(self.context)
+        self.assertEqual([(repo["name"], repo["role"]) for repo in listing["repos"]], [("primary", "edit"), ("api", "edit")])
+        self.registry.confirm_scope(self.context)
+        self.assertEqual([item["role"] for item in self.repos_file()["repos"]], ["edit", "edit"])
+
+    def test_set_role_persists_and_the_primary_stays_edit(self):
         api = self.make_repo("api")
         self.registry.add_repo(self.context, api, [])
-        listing = self.registry.set_multi(self.context, False)
-        self.assertFalse(listing["multi"])
-        self.assertEqual([repo["name"] for repo in listing["repos"]], ["primary"])
-        self.assertEqual([item["name"] for item in self.repos_file()["repos"]], ["primary", "api"])
-        self.assertEqual([repo.name for repo in self.registry.list_effective_repos(self.context)], ["primary"])
-        self.assertEqual([repo["name"] for repo in self.registry.set_multi(self.context, True)["repos"]], ["primary", "api"])
+        listing = self.registry.set_role(self.context, "api", "reference")
+        self.assertEqual([repo["role"] for repo in listing["repos"]], ["edit", "reference"])
+        self.assertEqual([item["role"] for item in self.repos_file()["repos"]], ["edit", "reference"])
+        self.assertEqual(self.registry.set_role(self.context, "api", "edit")["repos"][1]["role"], "edit")
+        with self.assertRaises(RepoConflictError):
+            self.registry.set_role(self.context, "primary", "reference")
         with self.assertRaises(InvalidRequestError):
-            self.registry.set_multi(self.context, "yes")
+            self.registry.set_role(self.context, "api", "write")
+        with self.assertRaises(RepoNotFoundError):
+            self.registry.set_role(self.context, "ghost", "edit")
+
+    def test_set_role_to_reference_is_refused_when_the_repo_has_a_loop_worktree(self):
+        api = self.make_repo("api")
+        self.registry.add_repo(self.context, api, [])
+        os.makedirs(api + "-worktree-loop")
+        with self.assertRaises(RepoConflictError) as failure:
+            self.registry.set_role(self.context, "api", "reference")
+        self.assertEqual(failure.exception.code, "close_loop_first")
+        self.assertEqual(self.repos_file()["repos"][1]["role"], "edit")
+
+    def test_listing_marks_repos_changed_by_a_roadmap_feature(self):
+        api = self.make_repo("api")
+        web = self.make_repo("web")
+        self.registry.add_repo(self.context, api, [])
+        self.registry.add_repo(self.context, web, [])
+        write_file(os.path.join(self.primary, ".specs", "project", "ROADMAP.md"),
+                   "## Stage 1" + chr(10) + "- [orders] status=pending scope=small kind=both paths=api:src/orders,src/main" + chr(10))
+        repos = {repo["name"]: repo for repo in self.registry.list_repos(self.context)["repos"]}
+        self.assertEqual({name: repo["changed_by_feature"] for name, repo in repos.items()}, {"primary": True, "api": True, "web": False})
 
     def test_remove_repo_only_edits_the_list(self):
         api = self.make_repo("api")
@@ -168,14 +208,14 @@ class TestRepoRegistry(MultiRepoTestCase):
             self.registry.remove_repo(self.context, "primary")
         self.assertEqual(failure.exception.code, repo_registry_service.PRIMARY_CODE)
 
-    def test_multi_and_remove_are_refused_while_the_loop_runs(self):
+    def test_role_and_remove_are_refused_while_the_loop_runs(self):
         api = self.make_repo("api")
         self.registry.add_repo(self.context, api, [])
         self.write_live_loop_lock(self.primary)
         with self.assertRaises(LoopRunningError):
             self.registry.remove_repo(self.context, "api")
         with self.assertRaises(LoopRunningError):
-            self.registry.set_multi(self.context, False)
+            self.registry.set_role(self.context, "api", "reference")
         self.assertEqual([item["name"] for item in self.repos_file()["repos"]], ["primary", "api"])
 
     # ------------------------------------------------ suggested repos (planning)

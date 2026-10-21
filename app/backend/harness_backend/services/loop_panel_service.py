@@ -5,8 +5,12 @@ import time
 
 from ..repositories.loop_file_repository import graph_view, loop_state
 from ..repositories.loop_read_formatting import now_iso, to_number, to_text_list
+from ..domain.project_errors import InvalidPathError, SpecFileNotFoundError
+from ..repositories.specs_file_repository import compute_bytes_version, run_hints  # noqa: F401  (also puts the engine folder on sys.path)
+import subprojects as subprojects_engine  # noqa: E402
+from .decisions_service import DecisionsService  # noqa: E402
 
-DEFAULT_LIMITS = {"max_cost": 30.0, "max_stall": 10, "timeout": 60}
+DEFAULT_LIMITS = {"max_cost": 50.0, "max_stall": 10, "timeout": 60}
 LIMIT_FLAGS = {"--max-cost": ("max_cost", float), "--max-stall": ("max_stall", int), "--timeout": ("timeout", int)}
 QUARANTINE_OPTIONS = ["try again", "skip and continue"]
 KNOWN_ACTIONS = ("deliver", "summary", "push", "clean_worktrees")
@@ -26,6 +30,10 @@ ANSWER_STATE_AUTOMATIC = "automatic"
 ANSWER_TEXT_LIMIT = 600
 ANSWERS_LIMIT = 50
 VALIDATE_LINE_PREFIX = "- "
+CODEBASE_MAP_FOLDER = ("docs", "codebase")
+CODEBASE_MAP_EXTENSIONS = (".md", ".json")
+ROOT_GROUP_FOLDER = "."
+ROOT_GROUP_LABEL = "Project"
 
 
 def read_command_limits(loop_command):
@@ -45,6 +53,12 @@ def read_command_limits(loop_command):
         except ValueError:
             pass
     return limits
+
+
+def effective_cost_cap(meta, command_limits):
+    """The cost cap in force: `meta.max_cost_usd` (raised in the panel) wins, else the loop command's --max-cost, else the default."""
+    raised = to_number(meta.get("max_cost_usd"))
+    return raised if raised else command_limits["max_cost"]
 
 
 def build_limit(key, label, value, maximum, unit):
@@ -95,7 +109,7 @@ def parse_answers(text):
 
 class LoopPanelService:
     def __init__(self, loop_status_service, loop_file_repository, roadmap_view_service, turn_service, agent_history_service, activity_monitor,
-                 guard_event_service, planning_requirement_service):
+                 guard_event_service, planning_requirement_service, decisions_service=None):
         self.loop_status_service = loop_status_service
         self.loop_file_repository = loop_file_repository
         self.roadmap_view_service = roadmap_view_service
@@ -104,6 +118,7 @@ class LoopPanelService:
         self.activity_monitor = activity_monitor
         self.guard_event_service = guard_event_service
         self.planning_requirement_service = planning_requirement_service
+        self.decisions_service = decisions_service or DecisionsService()
 
     def build_state(self, context, project_url):
         work_dir = context.work_dir
@@ -121,14 +136,16 @@ class LoopPanelService:
             "branch": meta.get("branch"),
             "project_ref": {"id": context.project.id, "name": context.project.name, "repo_path": context.project.repo_path},
             "loop": self.build_loop_block(work_dir, summary, turn),
-            "meta": {"turns": meta.get("turns"), "cost_usd": meta.get("cost_usd"), "branch": meta.get("branch"), "pr": meta.get("pr"),
+            "meta": {"turns": meta.get("turns"), "cost_usd": meta.get("cost_usd"),
+                     "max_cost_usd": effective_cost_cap(meta, read_command_limits(self.loop_file_repository.read_loop_command(work_dir))), "branch": meta.get("branch"), "pr": meta.get("pr"),
                      "pr_status": meta.get("pr_status")},
             "limits": self.build_limits(work_dir, meta, running, numbers), "stages": stages, "features": features, "counts": counts,
             "graph": graph, "agents": self.agent_history_service.build_state_agents(work_dir, summary, features, numbers),
             "validate": [line.strip() for line in self.loop_file_repository.read_state_file(work_dir, "VALIDATE.md").splitlines()
                          if line.strip().startswith(VALIDATE_LINE_PREFIX)],
+            "decisions_summary": self.decisions_service.open_counts(context),
             "recent_actions": self.list_recent_actions(work_dir),
-            "roadmap_approval": self.loop_file_repository.read_roadmap_approval(work_dir),
+            "roadmap_approval": self.loop_file_repository.read_roadmap_approval(work_dir, context.repo_path),
             "planning_required": self.planning_requirement_service.is_planning_required(context),
             "answers": parse_answers(self.loop_file_repository.read_state_file(work_dir, "ANSWERS.md")),
             "turns": self.turn_service.list_turns(work_dir, turn if running else None),
@@ -153,7 +170,7 @@ class LoopPanelService:
     def build_limits(self, work_dir, meta, running, numbers):
         limits = read_command_limits(self.loop_file_repository.read_loop_command(work_dir))
         cost = to_number(meta.get("cost_usd")) or 0
-        result = [build_limit("cost", "cost", cost, limits["max_cost"], COST_UNIT),
+        result = [build_limit("cost", "cost", cost, effective_cost_cap(meta, limits), COST_UNIT),
                   build_limit("turns_without_progress", "without progress", self.turn_service.count_turns_without_progress(work_dir),
                               limits["max_stall"], "")]
         if running:
@@ -185,3 +202,50 @@ class LoopPanelService:
         features, _ = loop_state.parse_roadmap(roadmap_text)
         return {"dependencies_mermaid": graph_view.mermaid(features), "states_mermaid": loop_state.graph(roadmap_text),
                 "text": graph_view.ascii_graph(features)}
+
+    # ------------------------------------------------ codebase maps (read only)
+    @staticmethod
+    def list_map_files(work_dir, folder):
+        """Files of one `docs/codebase` folder (relative to the work folder, "/" separators), sorted; [] when the folder is missing."""
+        parts = [] if folder == ROOT_GROUP_FOLDER else folder.split("/")
+        map_folder = os.path.join(work_dir, *parts, *CODEBASE_MAP_FOLDER)
+        files = []
+        for current, folders, names in os.walk(map_folder):
+            folders.sort()
+            for name in sorted(names):
+                if name.lower().endswith(CODEBASE_MAP_EXTENSIONS):
+                    relative = os.path.relpath(os.path.join(current, name), work_dir).replace(os.sep, "/")
+                    files.append({"path": relative, "name": name})
+        return files
+
+    def build_codebase_tree(self, context):
+        """`GET codebase/tree`: `{groups:[{folder, label, files:[{path, name}]}]}` for the root map and the map of each non-skipped subproject
+        of the stored list (monorepo). Groups without files are left out; nothing is written."""
+        work_dir = context.work_dir
+        entry = subprojects_engine.load(work_dir)["entry"]
+        candidates = [(ROOT_GROUP_FOLDER, ROOT_GROUP_LABEL)]
+        candidates += [(project["path"].replace("\\", "/").strip("/"), project.get("name") or project["path"])
+                       for project in subprojects_engine.entry_projects(entry) if not project.get("skip")]
+        groups = []
+        for folder, label in candidates:
+            files = self.list_map_files(work_dir, folder)
+            if files:
+                groups.append({"folder": folder, "label": label, "files": files})
+        return {"groups": groups}
+
+    def read_codebase_file(self, context, path):
+        """`GET codebase/file?path=`: read-only content of ONE file listed by `build_codebase_tree` (same shape as `specs/file`, never editable).
+        A path with `..`, a drive or a leading slash = InvalidPathError (400); a path the tree does not list = SpecFileNotFoundError (404)."""
+        text = str(path or "").replace("\\", "/")
+        if not text.strip() or text.startswith("/") or re.match(r"^[A-Za-z]:", text) or ".." in text.split("/"):
+            raise InvalidPathError("invalid path")
+        allowed = {item["path"] for group in self.build_codebase_tree(context)["groups"] for item in group["files"]}
+        if text not in allowed:
+            raise SpecFileNotFoundError("file not found in the codebase maps: %s" % text)
+        try:
+            with open(os.path.join(context.work_dir, *text.split("/")), "rb") as handle:
+                content = handle.read()
+        except OSError:
+            raise SpecFileNotFoundError("file not found in the codebase maps: %s" % text)
+        return {"path": text, "text": content.decode("utf-8", "replace"), "version": compute_bytes_version(content), "editable": False,
+                "not_editable_reason": "read-only view"}

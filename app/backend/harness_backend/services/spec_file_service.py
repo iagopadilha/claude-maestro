@@ -91,8 +91,9 @@ class SpecFileService:
         features = []
         for slug, fields in roadmap_features.items():
             features.append({"slug": slug, "status": fields.get("status"), "stage": fields.get("stage", ""), "in_roadmap": True,
-                             "files": files_by_feature.get(slug, [])})
-        for slug in sorted(set(files_by_feature) - set(roadmap_features)):
+                             "files": files_by_feature.get(loop_state.feature_folder_name(slug)) or files_by_feature.get(slug, [])})  # the folder is the slug with ':' as '-'
+        claimed = {loop_state.feature_folder_name(slug) for slug in roadmap_features} | set(roadmap_features)
+        for slug in sorted(set(files_by_feature) - claimed):
             features.append({"slug": slug, "status": None, "stage": "", "in_roadmap": False, "files": files_by_feature[slug]})
         return features
 

@@ -4,10 +4,13 @@ Never pushes on its own nor touches a protected branch: the loop's push and PR b
 `commit_all_and_push`, run on the user's click for the user's own folder and current branch.
 """
 import os
+import shutil
+import time
 from typing import Protocol
 
 GIT_BINARY_NAME = "git"
 GIT_TIMEOUT_SECONDS = 30
+WORKTREE_REMOVE_TIMEOUT_SECONDS = 300  # a worktree with node_modules/bin/obj takes far longer than a status call to delete
 INTEGRATION_BRANCH_VARIABLE = "LOOP_INTEGRATION_BRANCH"
 DEFAULT_INTEGRATION_BRANCH = "developer"
 OTHER_COMPARISON_BASES = ("main", "master")
@@ -17,6 +20,33 @@ BRANCH_REF_PREFIX = "refs/heads/"
 DEFAULT_GIT_USER_NAME = "loop-harness"
 DEFAULT_GIT_USER_EMAIL = "loop-harness@localhost"
 NO_REPLY_EMAIL_DOMAIN = "users.noreply.github.com"
+RENAME_STATUSES = ("R", "C")
+UNTRACKED_STATUS = "?"
+ADDED_STATUS = "A"
+NUL_SEPARATOR = chr(0)
+LEFTOVER_FOLDER_RETRIES = 5
+LEFTOVER_FOLDER_RETRY_SECONDS = 0.4
+
+
+def same_path(first, second):
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+
+
+def remove_emptied_folder(folder):
+    """Deletes what `git worktree remove` left of an unregistered worktree (the folder, plus any untracked rest), retrying a few
+    times because Windows releases file handles late. Never follows a link. True when the folder is gone."""
+    for attempt in range(LEFTOVER_FOLDER_RETRIES):
+        if not os.path.lexists(folder):
+            return True
+        is_junction = getattr(os.path, "isjunction", lambda _: False)
+        try:
+            if os.path.islink(folder) or is_junction(folder):
+                os.unlink(folder)  # a link pointing elsewhere: drop the link, never what it points to
+            else:
+                shutil.rmtree(folder)
+        except OSError:
+            time.sleep(LEFTOVER_FOLDER_RETRY_SECONDS * (attempt + 1))
+    return not os.path.lexists(folder)
 
 
 def default_comparison_bases():
@@ -32,6 +62,9 @@ class IGitClient(Protocol):
     def list_worktrees(self, folder) -> list: ...
     def count_unpushed_commits(self, folder, bases=None): ...
     def has_uncommitted_changes(self, folder, include_untracked=True) -> bool: ...
+    def remove_worktree_and_branch(self, main_repo, worktree_path, branch) -> dict: ...
+    def list_status_entries(self, folder): ...
+    def discard_path_changes(self, folder, entry) -> tuple: ...
     def commit_all_and_push(self, folder, message, push=True) -> dict: ...
     def init_repo_with_initial_commit(self, folder, message, user="") -> tuple: ...
 
@@ -104,6 +137,68 @@ class GitClient:
         code, output, _ = self.run_git(folder, *args)
         return code == 0 and bool(output)
 
+    def remove_worktree_and_branch(self, main_repo, worktree_path, branch):
+        """`git worktree remove --force <path>`, `git worktree prune`, then `git branch -D <branch>` (when `branch` is not empty), all run from
+        the MAIN repo. No merge, no commit, no push: what was in the worktree and not pushed is lost. The caller decides WHAT may be removed.
+        Returns {"worktree_removed", "branch_deleted", "folder_left", "error"}. "Removed" = git no longer registers the worktree (on
+        Windows `worktree remove` can empty the folder and still fail to delete the folder itself while a program holds it open): the
+        branch is deleted then too, and an emptied folder that is left is deleted with retries (`folder_left` when it is still there)."""
+        result = {"worktree_removed": False, "branch_deleted": False, "folder_left": False, "error": ""}
+        code, _, error = self.process_runner.run_and_wait(
+            [self.git_binary, "-C", main_repo, "worktree", "remove", "--force", worktree_path], main_repo, WORKTREE_REMOVE_TIMEOUT_SECONDS)
+        self.run_git(main_repo, "worktree", "prune")
+        still_registered = any(same_path(item["path"], worktree_path) for item in self.list_worktrees(main_repo))
+        if still_registered:
+            result["error"] = "git worktree remove failed: %s" % ((error or "").strip().splitlines()[-1] if (error or "").strip() else code)
+            return result
+        result["worktree_removed"] = True
+        result["folder_left"] = not remove_emptied_folder(worktree_path)
+        if branch:
+            code, _, error = self.run_git(main_repo, "branch", "-D", branch)
+            result["branch_deleted"] = code == 0
+            if code != 0:
+                result["error"] = "git branch -D failed: %s" % (error.splitlines()[-1] if error else code)
+        if result["folder_left"] and not result["error"]:
+            result["error"] = "the worktree is gone but its folder is still there (a program keeps it open): close it and delete %s by hand" % worktree_path
+        return result
+
+    def list_status_entries(self, folder):
+        """[{"index", "worktree", "path"}] of `git status --porcelain -z -uall` (every untracked file listed on its own, paths with `/`).
+        The output is NOT stripped (the first column of a line is a blank for an unstaged change). None when git fails."""
+        code, output, _ = self.process_runner.run_and_wait([self.git_binary, "-c", "core.quotepath=false", "-C", folder, "status",
+                                                            "--porcelain", "-z", "-uall"], folder, GIT_TIMEOUT_SECONDS)
+        if code != 0:
+            return None
+        entries, tokens, position = [], (output or "").split(NUL_SEPARATOR), 0
+        while position < len(tokens):
+            token = tokens[position]
+            position += 1
+            if len(token) < 4:
+                continue
+            index_status, worktree_status = token[0], token[1]
+            if index_status in RENAME_STATUSES or worktree_status in RENAME_STATUSES:
+                position += 1  # a rename/copy entry carries the original path as the next token
+            entries.append({"index": index_status, "worktree": worktree_status, "path": token[3:]})
+        return entries
+
+    def discard_path_changes(self, folder, entry):
+        """Throws away the changes of ONE entry of `list_status_entries`: an untracked file is deleted, a file added to the index is removed
+        from index and disk, anything else goes back to HEAD (index and working tree). Returns (ok, error). The path must stay inside `folder`."""
+        root = os.path.realpath(folder)
+        target = os.path.realpath(os.path.join(root, entry["path"]))
+        if os.path.commonpath([root, target]) != root or target == root:
+            return False, "path outside the work folder"
+        if entry["index"] == UNTRACKED_STATUS:
+            try:
+                os.remove(target)
+                return True, ""
+            except OSError as failure:
+                return False, str(failure)
+        arguments = ["rm", "-f", "--", entry["path"]] if entry["index"] == ADDED_STATUS else [
+            "restore", "--source=HEAD", "--staged", "--worktree", "--", entry["path"]]
+        code, _, error = self.run_git(folder, *arguments)
+        return code == 0, error
+
     def get_config(self, folder, key):
         code, output, _ = self.run_git(folder, "config", key)
         return output if code == 0 else ""
@@ -120,6 +215,9 @@ class GitClient:
             result["error"] = "the folder has no current branch (detached HEAD): check out a branch first"
             return result
         result["branch"] = branch
+        if branch.lower() in ("main", "master"):
+            result["error"] = "`%s` is a protected branch: nothing is committed or pushed there" % branch
+            return result
         code, _, error = self.run_git(folder, "add", "-A")
         if code != 0:
             result["error"] = "git add failed: %s" % (error or code)

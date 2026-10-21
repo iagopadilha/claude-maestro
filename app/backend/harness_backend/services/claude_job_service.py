@@ -25,6 +25,10 @@ ROADMAP_JOB_TYPES = (JOB_TYPE_ROADMAP, JOB_TYPE_ROADMAP_REFINE)
 JOB_STATE_RUNNING = "running"
 JOB_STATE_OK = "ok"
 JOB_STATE_ERROR = "error"
+JOB_MODEL_CEILING = "sonnet"  # model every map/validation job pins (RULES.md: no subagent above Sonnet), instead of the account default
+PREPARING_SNAPSHOT_PROGRESS = "preparing the safety snapshot"
+RECORD_READ_RETRIES = 5  # a job record that exists but cannot be read right now (being replaced) is read again
+RECORD_READ_RETRY_SECONDS = 0.02
 DEFAULT_JOB_TIMEOUT_SECONDS = 30 * 60
 JOB_REPLY_LIMIT = 20000
 JOB_ID_RANDOM_BYTES = 6  # bytes -> 12 hex characters
@@ -32,6 +36,7 @@ JOB_ID_PATTERN = re.compile(r"^j-[0-9a-f]{12}$")
 JOBS_DIR_NAME = "jobs"
 INTERRUPTED_JOB_MESSAGE = "interrupted: the app was shut down while the job was running"
 PUBLIC_JOB_FIELDS = ("id", "type", "state", "started_at", "finished_at", "cost_usd", "reply", "error")
+PROGRESS_JOB_FIELDS = ("progress",)  # only jobs with a preparation step (`before_start`) carry it
 TASK_JOB_FIELDS = ("steps", "result")  # only task jobs carry them
 
 
@@ -57,15 +62,23 @@ class ClaudeJobCommand:
 
     `timeout_seconds` (optional) replaces the service timeout for this job. `finalize(result) -> result` (optional) runs in
     the job thread after claude ends and before the job is recorded as finished (e.g. the planning file guard and thread).
-    `work_dir` (optional) is the folder claude runs in (the loop worktree); default = the repo path the job is registered under."""
+    `work_dir` (optional) is the folder claude runs in (the loop worktree); default = the repo path the job is registered under.
+    `before_start(update_progress)` (optional) runs in the job thread BEFORE claude (e.g. the safety snapshot of a map job): the
+    record says `progress: "preparing the safety snapshot"` meanwhile, `update_progress(text)` replaces that text, and an exception
+    ends the job as `error` with its message (claude never starts and `finalize` does not run).
+    `parallel_key` (optional, a normalized folder): the job may run next to other jobs of the SAME repository that also carry a
+    `parallel_key`, as long as the keys differ (the subproject maps of a monorepo). Without it the job is exclusive both ways."""
 
-    def __init__(self, argv, stdin_text="", resumed_session="", timeout_seconds=None, finalize=None, work_dir=None):
+    def __init__(self, argv, stdin_text="", resumed_session="", timeout_seconds=None, finalize=None, work_dir=None, before_start=None,
+                 parallel_key=None):
+        self.parallel_key = parallel_key
         self.argv = list(argv)
         self.stdin_text = stdin_text
         self.resumed_session = resumed_session
         self.timeout_seconds = timeout_seconds
         self.finalize = finalize
         self.work_dir = work_dir
+        self.before_start = before_start
 
 
 class ClaudeJobService:
@@ -76,6 +89,7 @@ class ClaudeJobService:
         self.timeout_seconds = timeout_seconds
         self.jobs_lock = threading.Lock()
         self.running_jobs = {}  # id -> repo path
+        self.parallel_keys = {}  # id -> parallel key, only for the jobs that may run next to others (see ClaudeJobCommand)
 
     # ------------------------------------------------ launch
     def start_job(self, repo_path, job_type, command):
@@ -84,10 +98,14 @@ class ClaudeJobService:
                   "started_at": now_iso(), "finished_at": None, "cost_usd": None, "reply": "", "error": "",
                   "dir": repo_path, "session_id": command.resumed_session,
                   "order": time.time_ns()}  # internal ordering tiebreak (several jobs in the same second); never leaves through the API
+        if command.before_start is not None:
+            record["progress"] = PREPARING_SNAPSHOT_PROGRESS
         with self.jobs_lock:
-            if self.find_running_id(repo_path):
+            if self.find_blocking_id(repo_path, command.parallel_key):
                 raise JobInProgressError("a claude job is already running in this project: wait for it to finish")
             self.running_jobs[record["id"]] = repo_path
+            if command.parallel_key:
+                self.parallel_keys[record["id"]] = command.parallel_key
         try:
             self.write_record(repo_path, record)
             threading.Thread(target=self.run_job, args=(record, command), daemon=True,
@@ -95,6 +113,7 @@ class ClaudeJobService:
         except Exception:
             with self.jobs_lock:
                 self.running_jobs.pop(record["id"], None)
+                self.parallel_keys.pop(record["id"], None)
             raise
         self.log.info("claude_job_started", job=record["id"], type=job_type, repo=repo_path)
         return self.to_public(record)
@@ -150,16 +169,43 @@ class ClaudeJobService:
 
     def run_job(self, record, command):
         timeout_seconds = min(command.timeout_seconds or self.timeout_seconds, self.timeout_seconds)
+        result = self.run_before_start(record, command)
+        if result is None:
+            try:
+                result = self.claude_client.run_prompt(command.argv, command.work_dir or record["dir"], command.stdin_text, timeout_seconds)
+            except Exception as failure:  # a job never takes the app down
+                result = {"ok": False, "reply": "", "cost_usd": None, "session_id": "", "error": "internal failure: %s" % type(failure).__name__}
+            if command.finalize is not None:
+                result = self.finalize_result(record, command, result)
+        self.record_finished(record, result)
+
+    def run_before_start(self, record, command):
+        """None when claude may start; otherwise the error result of the failed preparation."""
+        if command.before_start is None:
+            return None
         try:
-            result = self.claude_client.run_prompt(command.argv, command.work_dir or record["dir"], command.stdin_text, timeout_seconds)
-        except Exception as failure:  # a job never takes the app down
-            result = {"ok": False, "reply": "", "cost_usd": None, "session_id": "", "error": "internal failure: %s" % type(failure).__name__}
+            command.before_start(lambda text: self.update_progress(record, text))
+        except Exception as failure:  # the preparation failed: the job ends here with the reason visible in the record
+            message = str(failure)[:500] or type(failure).__name__
+            self.log.error("claude_job_before_start_failed", job=record["id"], type=type(failure).__name__, message=message[:200])
+            return {"ok": False, "reply": "", "cost_usd": None, "session_id": "", "error": message}
+        self.update_progress(record, "")
+        return None
+
+    def update_progress(self, record, text):
+        record["progress"] = str(text or "")
+        self.try_write_record(record)
+
+    def finalize_result(self, record, command, result):
         if command.finalize is not None:
             try:
                 result = command.finalize(result)
             except Exception as failure:  # the finalization never leaves the job running forever
                 self.log.error("claude_job_finalize_failed", job=record["id"], type=type(failure).__name__, message=str(failure)[:200])
                 result = dict(result, ok=False, error="internal failure while finishing the job: %s" % type(failure).__name__)
+        return result
+
+    def record_finished(self, record, result):
         record.update(state=JOB_STATE_OK if result.get("ok") else JOB_STATE_ERROR, finished_at=now_iso(),
                       cost_usd=result.get("cost_usd"), reply=str(result.get("reply") or "")[:JOB_REPLY_LIMIT],
                       error=str(result.get("error") or ""), session_id=result.get("session_id") or record.get("session_id") or "")
@@ -170,6 +216,7 @@ class ClaudeJobService:
         finally:
             with self.jobs_lock:
                 self.running_jobs.pop(record["id"], None)
+                self.parallel_keys.pop(record["id"], None)
         self.log.info("claude_job_finished", job=record["id"], type=record["type"], state=record["state"],
                       cost_usd=record["cost_usd"])
 
@@ -188,6 +235,13 @@ class ClaudeJobService:
 
     def get_running_job(self, repo_path):
         job_id = self.find_running_id(repo_path)
+        record = self.read_record_by_id(repo_path, job_id) if job_id else None
+        return self.to_public(record) if record else None
+
+    def get_blocking_job(self, repo_path, parallel_key):
+        """The running job of this repository that would stop a job with `parallel_key` from starting (None = it may start): any
+        job without a parallel key, and the one with the same key."""
+        job_id = self.find_blocking_id(repo_path, parallel_key)
         record = self.read_record_by_id(repo_path, job_id) if job_id else None
         return self.to_public(record) if record else None
 
@@ -211,6 +265,18 @@ class ClaudeJobService:
                 return job_id
         return ""
 
+    def find_blocking_id(self, repo_path, parallel_key=None):
+        """Id of a running job in `repo_path` that blocks a new job: without `parallel_key` any running job does; with one only the
+        jobs that have no key or the same key. Called under `jobs_lock` by `start_job`."""
+        target = os.path.normcase(os.path.abspath(repo_path))
+        for job_id, repo in list(self.running_jobs.items()):
+            if os.path.normcase(os.path.abspath(repo)) != target:
+                continue
+            running_key = self.parallel_keys.get(job_id)
+            if not parallel_key or not running_key or running_key == parallel_key:
+                return job_id
+        return ""
+
     def read_record_by_id(self, repo_path, job_id):
         if not isinstance(job_id, str) or not JOB_ID_PATTERN.match(job_id):
             return None
@@ -218,6 +284,11 @@ class ClaudeJobService:
 
     def read_corrected_record(self, path):
         record = self.specs_file_repository.read_json(path)
+        for _ in range(RECORD_READ_RETRIES):  # Windows: a read can fail while the job thread replaces the file (progress updates)
+            if record.get("id") or not os.path.exists(path):
+                break
+            time.sleep(RECORD_READ_RETRY_SECONDS)
+            record = self.specs_file_repository.read_json(path)
         if not record.get("id"):
             return None
         if record.get("state") == JOB_STATE_RUNNING and record["id"] not in self.running_jobs:
@@ -233,5 +304,5 @@ class ClaudeJobService:
 
     @staticmethod
     def to_public(record):
-        fields = PUBLIC_JOB_FIELDS + (TASK_JOB_FIELDS if "steps" in record else ())
+        fields = PUBLIC_JOB_FIELDS + (TASK_JOB_FIELDS if "steps" in record else ()) + (PROGRESS_JOB_FIELDS if "progress" in record else ())
         return {field: (list(record.get(field)) if field == "steps" else record.get(field)) for field in fields}

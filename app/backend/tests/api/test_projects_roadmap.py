@@ -157,14 +157,15 @@ class TestClaudeJobs(ProjectsTestCase):
         self.assertEqual(status, 202, body)
         self.assertEqual(self.wait_for_job(project_id, body["job"])["type"], "map")
         argv = self.read_claude_calls()[-1]["argv"]
-        self.assertEqual(argv[argv.index("-p") + 1], "/orchestrator map")
+        self.assertEqual(argv[argv.index("-p") + 1], "/orchestrator map --inventory .specs/project/loop/internal/inventory/_root.json")  # INV-06
         self.assertIn("--strict-mcp-config", argv, "mapping runs without MCP")
         hook_command = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         self.assertTrue(hook_command.endswith('guard.py" --profile spec'), "the map agents write only inside .specs/ and docs/codebase/ (PreToolUse hook)")
         self.assertTrue(os.path.isfile(os.path.join(repo, "docs", "codebase", "STACK.md")))
         self.assertFalse(os.path.exists(os.path.join(repo, ".specs", "codebase", "STACK.md")), "the map is no longer under .specs/")
         claude_md = read_file(os.path.join(repo, "CLAUDE.md"))
-        self.assertIn("<!-- CODEBASE:BEGIN -->", claude_md, "CLAUDE.md points at the new map")
+        self.assertIn("<!-- maestro:context -->", claude_md, "CLAUDE.md points at the new map (the context block lists it once)")
+        self.assertNotIn("<!-- CODEBASE:BEGIN -->", claude_md)
         self.assertIn("`docs/codebase/STACK.md`: languages, frameworks", claude_md)
         self.assertIn("the code wins", claude_md)
         index = read_file(os.path.join(repo, "docs", "codebase", "README.md"))
@@ -260,7 +261,7 @@ class TestClaudeJobs(ProjectsTestCase):
         self.assertEqual(status, 202, "mapping stays open")
         self.wait_for_job(project_id, body["job"])
         argv = self.read_claude_calls()[-1]["argv"]
-        self.assertEqual(argv[argv.index("-p") + 1], "/orchestrator map")
+        self.assertEqual(argv[argv.index("-p") + 1], "/orchestrator map --inventory .specs/project/loop/internal/inventory/_root.json")  # INV-06
 
     def test_interrupted_job_shows_as_error(self):
         repo = create_git_repo(os.path.join(self.projects_dir, "interrupted"))

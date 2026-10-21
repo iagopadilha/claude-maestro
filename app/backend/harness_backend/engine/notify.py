@@ -35,6 +35,7 @@ import html
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -51,15 +52,16 @@ IS_WIN = os.name == "nt"
 MAX_BODY = 6000
 MAX_SHORT = 950  # short channels (toast and similar) keep the text under ~1000 characters
 TITLES = {
-    "awaiting_user": "waiting for your decision",
-    "error": "stopped with an error",
-    "done": "done",
-    "test": "test notice",
-    "custom": "notice",
+    "awaiting_user": "Aguardando sua decisão",
+    "error": "Execução interrompida com erro",
+    "paused": "Execução pausada: limite de custo",
+    "done": "Execução concluída",
+    "test": "Teste de notificação",
+    "custom": "Aviso",
 }
 APP_HARNESS = os.path.abspath(os.path.join(HERE, "..", "..", "..", "harness.py"))
-CHAT_NOTE = ("If you are in a NORMAL CONVERSATION (Claude chat with /orchestrator): do NOT run the script. "
-             "Answer straight in the chat; the orchestrator operates normally and carries on.")
+CHAT_NOTE = ("Se você está numa CONVERSA NORMAL (chat do Claude com /orchestrator): NÃO rode o script. "
+             "Responda direto no chat; o orquestrador segue normalmente.")
 
 
 def clip(text, size):
@@ -85,7 +87,7 @@ def continue_in_panel():
 
 def needs_continue_block(ctx):
     """Panel mode: only a stop that waits for the user (a question or an error) says how to continue; a test or a finish does not."""
-    return ctx.get("event") in ("awaiting_user", "error")
+    return ctx.get("event") in ("awaiting_user", "error", "paused")
 
 
 def panel_instruction(ctx):
@@ -106,27 +108,109 @@ def command_set(ctx):
         return lines + ['%s --answer "WRITE YOUR MESSAGE HERE"' % base]
     if event == "test":
         return ['%s --answer "WRITE YOUR MESSAGE HERE"' % base]
-    if event == "error":
+    if event in ("error", "paused"):
         return [base]
     return []
 
 
 def subject_of(ctx):
     if ctx.get("event") == "custom":
-        return ctx.get("subject") or "[loop] notice"
-    return "[loop] %s: %s" % (ctx.get("project", "project"), TITLES.get(ctx.get("event", "custom"), ctx.get("event")))
+        return ctx.get("subject") or "[loop] aviso"
+    return "[Claude-Maestro] %s" % TITLES.get(ctx.get("event", "custom"), ctx.get("event"))
 
 
-def meta_line(ctx):
-    header = ["Project: %s" % ctx.get("project", "project")]
-    if ctx.get("branch"):
-        header.append("Branch: %s" % ctx["branch"])
+# ---------------------------------------------------------------- the notice, as data (portuguese, one structure for every channel)
+FEATURE_GROUPS = (("finalizadas", ("verified",)), ("com especificação aprovada", ("specced", "approved")), ("em execução", ("building",)),
+                  ("em especificação", ("speccing",)), ("pendentes", ("pending",)), ("bloqueadas", ("blocked",)))
+DIRTY_TREE = re.compile(r"dirty tree outside \.specs/ (?:in repo (\S+) )?before turn (\d+)[^:]*:\s*(.*?)(?:\.\s*In the panel use.*)?$", re.S)
+TURN_TIMEOUT = re.compile(r"turn (\d+) exceeded (\d+) min")
+COST_CAP = re.compile(r"total cost cap exceeded: US\$ ([\d.]+) > ([\d.]+)")  # old projects: the cap hit was an error
+COST_CAP_PAUSE = re.compile(r"cost cap reached: US\$ ([\d.]+) of ([\d.]+)")
+CRITICAL_DECISION = "critical decision: "
+PORCELAIN = re.compile(r"^\s*[A-Z?!]{1,2}\s+(.*)$")
+
+
+def loop_id(ctx):
+    return str(ctx.get("branch") or "").split("/", 1)[-1] or "-"
+
+
+def feature_counts(ctx):
+    """(closed, total, [(label, count)]) of the features by state; empty groups are left out."""
+    statuses = [status for _, status in ctx.get("features") or []]
+    groups = [(label, sum(1 for s in statuses if s in names)) for label, names in FEATURE_GROUPS]
+    return sum(1 for s in statuses if s == "verified"), len(statuses), [(label, n) for label, n in groups if n]
+
+
+def explain_reason(reason):
+    """(paragraph, bullets): the stop reason in plain portuguese; what is not recognised is shown as it came."""
+    text = str(reason or "").strip()
+    dirty = DIRTY_TREE.search(text)
+    if dirty:
+        files = [PORCELAIN.sub(r"\1", row.strip()) for row in dirty.group(3).split(";") if row.strip()]
+        where = " no repositório %s" % dirty.group(1) if dirty.group(1) else ""
+        return ("A execução parou no turno %s porque foram detectadas alterações não salvas (dirty tree) fora da pasta .specs/%s. Como esses arquivos "
+                "estão fora dos caminhos das features em andamento, o sistema não fez o reset automático. No painel, escolha commitar ou descartar." % (dirty.group(2), where),
+                ["Arquivos com alterações não commitadas:"] + files)
+    timeout = TURN_TIMEOUT.search(text)
+    if timeout:
+        return "O turno %s passou do limite de %s minutos e foi encerrado. Aumente o tempo do turno ou divida a feature." % (timeout.group(1), timeout.group(2)), []
+    reached = COST_CAP_PAUSE.search(text)
+    if reached:
+        return ("O loop foi pausado: o custo total (US$ %s) atingiu o limite de US$ %s. Nada foi perdido; aumente o limite no painel para continuar."
+                % (reached.group(1), reached.group(2)), [])
+    cap = COST_CAP.search(text)
+    if cap:
+        return "O custo total (US$ %s) passou do limite configurado (US$ %s). Aumente o limite se quiser continuar." % (cap.group(1), cap.group(2)), []
+    return clip(text, 1500), []
+
+
+def compose_notice(ctx):
+    """{title, session, progress, sections, how} for the event; the three formats only draw it."""
+    event = ctx.get("event", "custom")
+    closed, total, groups = feature_counts(ctx)
+    session = [("ID do loop", loop_id(ctx))]
     if ctx.get("turn"):
-        header.append("Turn %s" % ctx["turn"])
+        session.append(("Turno", str(ctx["turn"])))
     if ctx.get("cost") is not None:
-        header.append("Cost: US$ %.2f" % float(ctx["cost"]))
-    header.append("When: %s" % datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
-    return header
+        session.append(("Custo atual", "US$ %.2f" % float(ctx["cost"])))
+    session.append(("Quando", datetime.datetime.now().strftime("%d/%m/%Y %H:%M")))
+    if ctx.get("monitor_url") and not needs_continue_block(ctx):  # a stop that needs you carries the link in "Como continuar"
+        session.append(("Painel", ctx["monitor_url"]))
+    progress = ("Status das features (%d de %d concluídas)" % (closed, total), ["%d %s" % (n, label) for label, n in groups]) if total and event != "test" else None
+    notice = {"title": subject_of(ctx), "session": session, "sections": [], "how": None, "progress": progress}
+    sections = notice["sections"]
+    if event == "test":
+        sections.append(("Teste", "Este é um aviso de TESTE do loop. Nada precisa ser feito.", []))
+    elif event in ("error", "paused"):
+        paragraph, bullets = explain_reason(ctx.get("reason"))
+        sections.append(("Motivo da parada", paragraph, bullets))
+    elif event == "awaiting_user" and str(ctx.get("reason") or "").startswith(CRITICAL_DECISION):
+        options = [str(o) for o in ctx.get("options") or []]
+        sections.append(("Decisão crítica (critical decision) precisa da sua resposta", clip(ctx["reason"], 1500), ["Opção %d: %s" % (n, o) for n, o in enumerate(options[:6], 1)]))
+    elif event == "awaiting_user":
+        options = [str(o) for o in ctx.get("options") or []]
+        sections.append(("Decisão necessária", clip(ctx.get("reason") or "(sem texto: veja o resumo)", 1500), ["Opção %d: %s" % (n, o) for n, o in enumerate(options[:6], 1)]))
+    elif event == "done":
+        lines = []
+        if ctx.get("push"):
+            lines.append("Push da branch: " + clip(ctx["push"], 200))
+        if ctx.get("pr"):
+            lines.append("PR: " + clip(ctx["pr"], 300) + (" (%s)" % ctx["pr_status"] if ctx.get("pr_status") else ""))
+        sections.append(("Resultado", "Todas as features foram concluídas ou bloqueadas.", lines))
+        if ctx.get("validate"):
+            sections.append(("Para você validar (decidido sem parar você)", None, [clip(i, 200) for i in ctx["validate"][:8]]))
+        if ctx.get("commits"):
+            sections.append(("Commits", None, [clip(line, 120) for line in ctx["commits"][:8]]))
+    if ctx.get("to_check") and event in ("awaiting_user", "error", "paused"):
+        sections.append(("Conferir antes de responder", None, [clip(i, 200) for i in ctx["to_check"][:8]]))
+    if needs_continue_block(ctx):
+        notice["how"] = ("Para resolver, responder, retomar ou aprovar, acesse o painel de controle:" if ctx.get("monitor_url")
+                         else "Para continuar, acesse o painel de controle abrindo-o com o comando:")
+    return notice
+
+
+def panel_value(ctx):
+    return ctx.get("monitor_url") or 'python "%s" serve --project "%s"' % (APP_HARNESS, ctx.get("repo", "<repo>"))
 
 
 # ---------------------------------------------------------------- "full" format: plain text (file, console, webhook)
@@ -134,48 +218,31 @@ def build(ctx):
     event = ctx.get("event", "custom")
     subject = subject_of(ctx)
     if event == "custom":
-        return subject, clip("%s\n\nHOW TO CONTINUE\nOrigin: normal conversation. %s" % (ctx.get("extra_body") or "", CHAT_NOTE), MAX_BODY)
-    out = [" | ".join(meta_line(ctx))]
-    if ctx.get("monitor_url"):
-        out.append("Panel: " + ctx["monitor_url"])
-    if ctx.get("reason") and event != "awaiting_user":
-        out += ["", "REASON", clip(ctx["reason"], 1500)]
-    if ctx.get("features"):
-        out += ["", "DONE"] + ["- %s  %s" % (slug, status) for slug, status in ctx["features"][:15]]
-    if ctx.get("commits"):
-        out += ["", "COMMITS"] + ["- " + clip(line, 120) for line in ctx["commits"][:8]]
-    if event == "awaiting_user":
-        out += ["", "NEEDS YOU", clip(ctx.get("reason") or "(no text: see the summary)", 1500)]
-        if ctx.get("options"):
-            out.append("Options: " + numbered([str(o) for o in ctx["options"]]))
-    if ctx.get("to_check"):
-        out += ["", "TO CHECK"] + ["- " + clip(item, 200) for item in ctx["to_check"][:8]]
-    if ctx.get("next") and event == "done":
-        out += ["", "NEXT STEP", clip(ctx["next"], 400)]
-    if event == "done" and ctx.get("push"):
-        out += ["", "Branch push: " + clip(ctx["push"], 200)]
-    if ctx.get("pr"):
-        out += ["", "PR: " + clip(ctx["pr"], 300) + ("  (%s)" % ctx["pr_status"] if ctx.get("pr_status") else "")]
-    if ctx.get("validate") and event == "done":
-        out += ["", "FOR YOU TO VALIDATE (decided without stopping you)"] + ["- " + clip(item, 200) for item in ctx["validate"][:8]]
+        return subject, clip("%s\n\nCOMO CONTINUAR\nOrigem: conversa normal. %s" % (ctx.get("extra_body") or "", CHAT_NOTE), MAX_BODY)
+    n = compose_notice(ctx)
+    out = [subject, "", "Detalhes da sessão"] + ["- %s: %s" % pair for pair in n["session"]]
+    if n["progress"]:
+        out += ["", n["progress"][0]] + ["- " + line for line in n["progress"][1]]
+    for heading, paragraph, items in n["sections"]:
+        out += ["", heading]
+        if paragraph:
+            out.append(paragraph)
+        out += [i if i.endswith(":") else "- " + i for i in items]
+    if ctx.get("graph") and event != "test":
+        out += ["", "Andamento", clip(ctx["graph"], 1800)]
     commands = command_set(ctx)
     if continue_in_panel():
-        if needs_continue_block(ctx):
-            out += ["", "HOW TO CONTINUE", panel_instruction(ctx)]
+        if n["how"]:
+            out += ["", "Como continuar", n["how"], panel_value(ctx)]
     elif commands:
-        out += ["", "HOW TO CONTINUE",
-                "1) Loop via the script (the case of this notice): run one of the commands marked with >> on your PC. The first answers by option "
-                "NUMBER (change the 1); the second takes free text (change the text in quotes)."]
+        out += ["", "Como continuar",
+                "1) Loop pelo script: rode um dos comandos marcados com >> no seu PC. O primeiro responde pelo NÚMERO da opção; o segundo aceita texto livre."]
         out += [">> " + line for line in commands]
         out += ["", "2) " + CHAT_NOTE]
         if ctx.get("monitor_url"):
-            out += ["", "3) Answer in the panel: " + ctx["monitor_url"]]
-    if ctx.get("graph") and event != "test":
-        out += ["", "PROGRESS", clip(ctx["graph"], 1800)]
+            out += ["", "3) Responder no painel: " + ctx["monitor_url"]]
     if ctx.get("summary"):
-        out += ["", "Full summary: " + ctx["summary"]]
-    if event == "test":
-        out += ["", "This is a loop TEST notice. Nothing needs to be done."]
+        out += ["", "Resumo completo: " + ctx["summary"]]
     return subject, clip("\n".join(out), MAX_BODY)
 
 
@@ -191,114 +258,77 @@ def build_html(ctx):
         '<pre style="background:#0f172a;color:#e2e8f0;padding:12px 14px;border-radius:6px;font-family:Consolas,Menlo,monospace;'
         'font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-all;margin:6px 0 10px">%s</pre>' % e("\n".join(lines))
     )
-    out = ['<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1f2937;max-width:680px">',
-           '<h2 style="margin:0 0 4px;font-size:18px">%s</h2>' % e(subject),
-           '<p style="margin:0 0 12px;color:#6b7280">%s</p>' % e(" | ".join(meta_line(ctx)))]
-    monitor_link = '<a href="%s">%s</a>' % (e(ctx["monitor_url"]), e(ctx["monitor_url"])) if ctx.get("monitor_url") else ""
-    if monitor_link and event != "custom":
-        out.append('<p style="margin:0 0 10px"><b>Panel:</b> %s</p>' % monitor_link)
+    out = ['<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1f2937;max-width:680px">', '<h2 style="margin:0 0 8px;font-size:18px">%s</h2>' % e(subject)]
     if event == "custom":
         out.append('<div style="white-space:pre-wrap;line-height:1.45">%s</div>' % e(ctx.get("extra_body") or ""))
-        out += [heading("How to continue"), para("Origin: normal conversation. " + CHAT_NOTE), "</div>"]
+        out += [heading("Como continuar"), para("Origem: conversa normal. " + CHAT_NOTE), "</div>"]
         return subject, "".join(out)
-    if event == "test":
-        out.append(para("This is a loop TEST notice. Nothing needs to be done."))
-    if ctx.get("reason") and event not in ("awaiting_user", "test"):
-        out += [heading("Reason"), para(clip(ctx["reason"], 1500))]
-    if ctx.get("features"):
-        out += [heading("Done"), bullets(["%s: %s" % (slug, status) for slug, status in ctx["features"][:15]])]
-    if ctx.get("commits"):
-        out += [heading("Commits"), bullets([clip(line, 120) for line in ctx["commits"][:8]])]
-    if event == "awaiting_user":
-        out += [heading("Needs you"), para(clip(ctx.get("reason") or "(no text: see the summary)", 1500))]
-        if ctx.get("options"):
-            out.append(para("Options: " + numbered([str(o) for o in ctx["options"]])))
-    if ctx.get("to_check"):
-        out += [heading("To check"), bullets([clip(item, 200) for item in ctx["to_check"][:8]])]
-    if event == "done":
-        if ctx.get("next"):
-            out += [heading("Next step"), para(clip(ctx["next"], 400))]
-        if ctx.get("push"):
-            out.append(para("Branch push: " + clip(ctx["push"], 200)))
-        if ctx.get("validate"):
-            out += [heading("For you to validate (decided without stopping you)"), bullets([clip(item, 200) for item in ctx["validate"][:8]])]
-    if ctx.get("pr"):
-        out.append('<p style="margin:10px 0 8px"><b>PR:</b> <a href="%s">%s</a>%s</p>' % (
-            e(ctx["pr"]), e(clip(ctx["pr"], 300)), e(" (%s)" % ctx["pr_status"]) if ctx.get("pr_status") else ""))
+    n = compose_notice(ctx)
+    out += [heading("Detalhes da sessão"), bullets(["%s: %s" % pair for pair in n["session"]])]
+    if n["progress"]:
+        out += [heading(n["progress"][0]), bullets(n["progress"][1])]
+    for title, paragraph, items in n["sections"]:
+        out.append(heading(title))
+        if paragraph:
+            out.append(para(paragraph))
+        labels = [i for i in items if i.endswith(":")]
+        out += [para(i) for i in labels]
+        if len(labels) != len(items):
+            out.append(bullets([i for i in items if not i.endswith(":")]))
+    if ctx.get("graph") and event != "test":
+        out += [heading("Andamento"), '<pre style="background:#f3f4f6;padding:10px 12px;border-radius:6px;font-family:Consolas,Menlo,monospace;font-size:12.5px;line-height:1.45;white-space:pre-wrap">%s</pre>' % e(clip(ctx["graph"], 1800))]
     commands = command_set(ctx)
     if continue_in_panel():
-        if needs_continue_block(ctx):
-            out += [heading("How to continue"), para(panel_instruction(ctx))]
+        if n["how"]:
+            link = '<p style="margin:0 0 8px"><a href="%s">%s</a></p>' % (e(ctx["monitor_url"]), e(ctx["monitor_url"])) if ctx.get("monitor_url") else ""
+            out += [heading("Como continuar"), para(n["how"]), link or code([panel_value(ctx)])]
     elif commands:
-        out += [heading("How to continue"),
-                '<p style="margin:0 0 4px"><b>1) Loop via the script</b> (the case of this notice): run one of the commands on your PC. The first answers '
-                'by <b>option number</b> (change the 1); the second takes free text. The script records the answer and the loop carries on by itself.</p>', code(commands),
-                '<p style="margin:0 0 8px"><b>2) Normal conversation (Claude chat with /orchestrator):</b> do not run the script. '
-                'Answer straight in the chat; the orchestrator operates normally and carries on.</p>']
-        if monitor_link:
-            out.append('<p style="margin:0 0 8px"><b>3) Answer in the panel:</b> %s</p>' % monitor_link)
-        if ctx.get("worktree") and event == "awaiting_user":
-            out += [para("Want to talk before deciding? Open Claude inside the loop worktree:"),
-                    code(['cd "%s"' % ctx["worktree"], "claude", "/orchestrator"])]
-    if ctx.get("graph") and event != "test":
-        out += [heading("Progress"), '<pre style="background:#f3f4f6;padding:10px 12px;border-radius:6px;font-family:Consolas,Menlo,monospace;font-size:12.5px;line-height:1.45;white-space:pre-wrap">%s</pre>' % e(clip(ctx["graph"], 1800))]
+        out += [heading("Como continuar"),
+                '<p style="margin:0 0 4px"><b>1) Loop pelo script:</b> rode um dos comandos no seu PC. O primeiro responde pelo <b>número da opção</b>; o segundo aceita texto livre.</p>', code(commands),
+                '<p style="margin:0 0 8px"><b>2) Conversa normal (chat do Claude com /orchestrator):</b> não rode o script; responda direto no chat.</p>']
+        if ctx.get("monitor_url"):
+            out.append('<p style="margin:0 0 8px"><b>3) Responder no painel:</b> <a href="%s">%s</a></p>' % (e(ctx["monitor_url"]), e(ctx["monitor_url"])))
     if ctx.get("summary"):
-        out.append('<p style="margin:14px 0 0;color:#6b7280">Full summary: %s</p>' % e(ctx["summary"]))
+        out.append('<p style="margin:14px 0 0;color:#6b7280">Resumo completo: %s</p>' % e(ctx["summary"]))
     out.append("</div>")
     return subject, "".join(out)
 
 
-# ---------------------------------------------------------------- "short" format: size-limited channels
+# ---------------------------------------------------------------- "short" format: size-limited channels (WhatsApp, toast)
 def build_short(ctx):
-    """Short normal text + the command in a monospaced block (```). Up to ~950 characters."""
+    """Short text, WhatsApp style (*bold*), up to ~950 characters; the panel link always survives."""
     event = ctx.get("event", "custom")
     title = subject_of(ctx)
     if event == "custom":
-        body = "*%s*\n%s\n\n*HOW TO CONTINUE*\nOrigin: normal conversation. Answer straight in the Claude chat; no script." % (title, clip(ctx.get("extra_body"), 600))
+        body = "*%s*\n%s\n\n*COMO CONTINUAR*\nOrigem: conversa normal. Responda direto no chat do Claude; sem script." % (title, clip(ctx.get("extra_body"), 600))
         return title, clip(body, MAX_SHORT)
-    done = [f for f in (ctx.get("features") or []) if f[1] in ("verified", "blocked")]
-    total = len(ctx.get("features") or [])
-    meta = [x for x in (ctx.get("branch"), ("turn %s" % ctx["turn"]) if ctx.get("turn") else "",
-                        ("US$ %.2f" % float(ctx["cost"])) if ctx.get("cost") is not None else "") if x]
+    n = compose_notice(ctx)
+    closed, total, _ = feature_counts(ctx)
 
-    def compose(question_size, with_check):
-        lines = ["*%s*" % title]
-        if meta:
-            lines.append(" | ".join(meta))
-        if ctx.get("monitor_url"):
-            lines.append("Panel: " + ctx["monitor_url"])
-        if total:
-            lines.append("Progress: %d of %d features closed" % (len(done), total))
-        if with_check and ctx.get("graph_short") and event in ("awaiting_user", "error"):
-            lines.append(clip(ctx["graph_short"], 200))
-        if event == "awaiting_user":
-            lines += ["", "*Needs you:*", clip(ctx.get("reason") or "see the summary", question_size)]
-            if ctx.get("options"):
-                lines.append("Options: " + numbered([clip(o, max(question_size // 2, 40)) for o in ctx["options"]], 4))
-            if with_check and ctx.get("to_check"):
-                lines.append("To check: " + clip("; ".join(ctx["to_check"][:3]), 140))
-        elif event == "error":
-            lines += ["", "*Reason:*", clip(ctx.get("reason"), question_size)]
-        elif event == "done":
-            lines += ["", "All done."] + (["Push: " + clip(ctx["push"], 120)] if ctx.get("push") else [])
-            if ctx.get("pr"):
-                lines.append("PR: " + clip(ctx["pr"], 170))
-            if ctx.get("validate"):
-                lines.append("To validate: " + clip("; ".join(ctx["validate"][:3]), 150))
-        elif event == "test":
-            lines += ["", "Loop notification test. Nothing to do."]
+    def compose(size, with_extra):
+        lines = ["*%s*" % title, " | ".join("%s %s" % pair for pair in n["session"] if pair[0] != "Quando")]
+        if total and event != "test":
+            lines.append("Features: %d de %d concluídas" % (closed, total))
+        for heading, paragraph, items in n["sections"]:
+            lines += ["", "*%s:*" % heading]
+            if paragraph:
+                lines.append(clip(paragraph, size))
+            shown = items[: (4 if with_extra else 2)]
+            lines += [clip(i, max(size // 2, 40)) for i in shown]
+            if len(items) > len(shown):
+                lines.append("(+%d)" % (len(items) - len(shown)))
+        if with_extra and ctx.get("graph_short") and event in ("awaiting_user", "error"):
+            lines += ["", clip(ctx["graph_short"], 200)]
         if continue_in_panel():
-            if needs_continue_block(ctx):
-                lines += ["", "*HOW TO CONTINUE*", panel_instruction(ctx)]
+            if n["how"]:
+                lines += ["", "*Como continuar*", "Acesse o painel: " + panel_value(ctx)]
         elif event in ("awaiting_user", "error", "test"):
-            answer = ' --option 1' if (ctx.get("options") and event == "awaiting_user") else ' --answer "YOUR MESSAGE"'
-            command = command_base(ctx) + ('' if event == "error" else answer)
-            lines += ["", "*HOW TO CONTINUE*",
-                      "1) _Loop via the script_ (this notice): run on the PC" + (" (change the 1 to the option number):" if "--option" in command else ":"),
-                      "```\n" + command + "\n```",
-                      "2) _Normal conversation in the Claude chat_: answer straight in the chat, no script. /orchestrator carries on normally."]
+            answer = " --option 1" if (ctx.get("options") and event == "awaiting_user") else ' --answer "SUA MENSAGEM"'
+            command = command_base(ctx) + ("" if event == "error" else answer)
+            lines += ["", "*Como continuar*", "1) _Loop pelo script_ (rode no PC" + (", troque o 1 pelo número da opção):" if "--option" in command else "):"),
+                      "```\n" + command + "\n```", "2) _Conversa normal no chat do Claude_: responda direto no chat, sem script."]
             if ctx.get("monitor_url"):
-                lines.append("3) _Panel_: answer at " + ctx["monitor_url"])
+                lines.append("3) _Painel_: responda em " + ctx["monitor_url"])
         return "\n".join(lines)
 
     body = compose(260, True)

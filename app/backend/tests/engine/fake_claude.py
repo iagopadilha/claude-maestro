@@ -7,6 +7,9 @@ The behavior of each feature comes from a JSON pointed to by FAKE_SCENARIO:
 
   {"cost": 0.1,                         # US$ per turn (goes in total_cost_usd)
    "idle": false,                       # true = does nothing (tests "identical state")
+   "argv_log": "<file>",                # appends the argv (JSON line) of every call
+   "contracts": {"slug": "- [add] route GET /x — purpose (File.cs)"},  # contract.md the executor writes for that feature
+   "decision_lines": {"2": ["- [a] ..."]},  # lines appended to VALIDATE.md by that turn
    "output": "json",                    # json | noisy (warning line before the JSON, text after) | garbage (no JSON)
    "cheat": {"turn": 2, "type": "illegal|no_commit"},
    "features": {"slug": {"paths": "apps/a", "deps": "x,dir:y", "scope": "Small|Medium", "kind": "back",
@@ -69,9 +72,17 @@ def main():
     phase = option(tokens, "--phase")
     ready = [s for s in option(tokens, "--ready").split(",") if s]
     stuck = [s for s in option(tokens, "--stuck").split(",") if s]
+    lanes = [item.split(":", 1) for item in option(tokens, "--lanes").split(",") if ":" in item]  # [slug, step]
+    if phase == "lanes":  # lanes at different steps: this fake advances only the most advanced step of the turn (a real orchestrator advances every lane)
+        step = next(s for s in ("recover", "execute", "gate", "spec") if any(lane[1] == s for lane in lanes))
+        phase = {"spec": "specs"}.get(step, step)
+        ready = [slug for slug, lane_step in lanes if lane_step == step]
     e2e = "--e2e" in tokens
 
     scenario = json.loads(read(os.environ["FAKE_SCENARIO"]) or "{}")
+    if scenario.get("argv_log"):  # one JSON line per call: the whole argv (tests check --model and friends)
+        with open(scenario["argv_log"], "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(argv) + "\n")
     plan = scenario.get("features", {})
     state_path = os.path.join(SPECS, "fake_state.json")
     memory = json.loads(read(state_path) or "{}")
@@ -117,11 +128,14 @@ def main():
         for slug in ready:  # the wave writes everything first; verification and commit afterwards, one by one
             if plan.get(slug, {}).get("exec", "ok") == "ok":
                 folder = features[slug]["paths"].split(",")[0]
-                write(os.path.join(folder, slug + ".txt"), "feature %s turn %d\n" % (slug, turn))
+                write(os.path.join(folder, loop_state.feature_folder_name(slug) + ".txt"), "feature %s turn %d\n" % (slug, turn))
+                contract = (scenario.get("contracts") or {}).get(slug)  # {"<slug>": "<contract.md text>"}: the contract delta the executor writes
+                if contract:
+                    write(os.path.join(loop_state.feature_dir(os.getcwd(), slug), "contract.md"), contract)
         for slug in ready:
             if plan.get(slug, {}).get("exec", "ok") == "ok":
                 folder = features[slug]["paths"].split(",")[0]
-                git("add", os.path.join(folder, slug + ".txt").replace("\\", "/"))
+                git("add", os.path.join(folder, loop_state.feature_folder_name(slug) + ".txt").replace("\\", "/"))
                 git("commit", "-q", "-m", "feat(%s): implement" % slug)
                 roadmap = set_fields(roadmap, slug, status="verified")
                 done_slugs.append(slug)
@@ -161,6 +175,10 @@ def main():
     write(state_path, json.dumps(memory))
     if not scenario.get("idle"):
         write(os.path.join(SPECS, "STATE.md"), "turn %d phase %s done %s\n" % (turn, phase, ",".join(done_slugs)))
+    for line in (scenario.get("decision_lines") or {}).get(str(turn), []):  # {"<turn>": ["- [slug] turn=.. level=.. doubt | chose: .. | revert: .."]}
+        os.makedirs(os.path.join(SPECS, "loop"), exist_ok=True)
+        with open(os.path.join(SPECS, "loop", "VALIDATE.md"), "a", encoding="utf-8", newline="\n") as handle:
+            handle.write(line + "\n")
     if scenario.get("forget_loop_json") and "--resume" not in argv:
         print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "waiting for the verifier", "session_id": "sess-1",
                           "total_cost_usd": 0.1, "permission_denials": []}))

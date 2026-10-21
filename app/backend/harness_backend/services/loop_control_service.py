@@ -8,28 +8,40 @@ import datetime
 import math
 import os
 import re
+import subprocess
 import sys
 import threading
 from typing import Protocol
 
-from ..domain.roadmap_settings import parse_roadmap_e2e
+from ..domain.roadmap_settings import parse_loop_settings, read_roadmap_base_branch
 from ..infrastructure.claude_client import redact_secrets
 from ..infrastructure.process_runner import START_FAILURE_CODE, TIMEOUT_CODE
 from ..repositories.answers_repository import USER_INSTRUCTION_QUESTION, USER_NOTE_QUESTION
+from ..repositories.loop_command_file_repository import read_json_object, write_json_atomic
 from .dispatch_default import compute_default_dispatch
+from .loop_worktree_service import get_integration_branch
+
+ENGINE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "engine"))
+if ENGINE_DIR not in sys.path:
+    sys.path.insert(0, ENGINE_DIR)
+import context_files  # noqa: E402
+import loop_state  # noqa: E402
+import project_repos  # noqa: E402
+import subprojects  # noqa: E402
 
 LAUNCH_MARKER_PREFIX = "[loop-launch]"  # read by WorkspaceService to find the current launch in monitor-relaunch.log
 STATUS_RUNNING = "running"
 STATUS_AWAITING_USER = "awaiting_user"
 STATUSES_RESUMABLE_BY_INSTRUCTION = ("error", "stopped", "done")
-LOOP_BODY_FIELDS = ("wave", "e2e", "push", "setup", "budget", "max_cost", "timeout", "branch", "continue_on_blocked", "pause_on_blocked")
-MIN_WAVE, MAX_WAVE = 1, 8
-MIN_TURN_TIMEOUT_MINUTES, MAX_TURN_TIMEOUT_MINUTES = 1, 600
-BRANCH_PATTERN = re.compile(r"[A-Za-z0-9._/-]{1,80}")
-SETUP_LIMIT = 200
+LEFTOVER_CHOICES = ("commit", "discard")
+RUN_CHOICE_FIELDS = ("push", "remove_worktree_on_finish")  # the only keys of the start/check body; everything else is decided in the ROADMAP
+MIN_WAVE = 1
+ENGINE_DEFAULT_BUDGET_TURN, ENGINE_DEFAULT_MAX_COST, ENGINE_DEFAULT_TURN_MINUTES = 5.0, 50.0, 60  # run_loop.py defaults: not repeated in the argv
+AGENTS_MODEL = "sonnet"  # subagents keep `model: sonnet` in their frontmatter (MODEL-03)
+DELIVERY_PENDING_FILE_NAME = "delivery-pending.json"  # internal/ of the REPOSITORY: the choice made before the worktree exists
 REPOS_NOT_DEFINED_CODE = "repos_not_defined"
-REPOS_NOT_DEFINED_MESSAGE = ("Define the repositories first: describe the work and let the AI propose which repositories will be changed, or tick "
-                             "them by hand (Repositories, \"edit\"), then confirm. The loop creates their worktrees by itself when it starts.")
+REPOS_NOT_DEFINED_MESSAGE = ("Define the repositories first: tell the planning chat which repositories to change and which only to read, or "
+                             "choose them by hand (Repositories) and confirm. The loop creates the worktrees by itself when it starts.")
 CHECK_TIMEOUT_SECONDS = 60
 CHECK_MESSAGE_LIMIT = 500
 INSTRUCTION_ATTACHMENT_LIMIT = 2000
@@ -59,51 +71,50 @@ def is_finite_non_negative_number(value):
     return not (isinstance(value, float) and (math.isnan(value) or math.isinf(value))) and value >= 0
 
 
-def convert_body_to_loop_flags(body):
-    """Strict whitelist of the loop/check and loop/start body -> (flags, None) or (None, error). Never uses a shell."""
-    unknown = sorted(set(body) - set(LOOP_BODY_FIELDS))
-    if unknown:
-        return None, "unknown field: %s" % ", ".join(str(name) for name in unknown)
-    flags = []
-    if "wave" in body:
-        if not is_integer(body["wave"]) or not MIN_WAVE <= body["wave"] <= MAX_WAVE:
-            return None, "wave must be an integer from %d to %d" % (MIN_WAVE, MAX_WAVE)
-        flags += ["--wave", str(body["wave"])]
-    for name in ("e2e", "push", "continue_on_blocked", "pause_on_blocked"):
-        if name in body and not isinstance(body[name], bool):
+def format_amount(value):
+    """`5.0` -> "5", `7.5` -> "7.5" (the text the engine option receives)."""
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def read_run_choices(body):
+    """({"push": bool|None, "remove_worktree_on_finish": bool|None}, None) or (None, error). Other body keys are ignored."""
+    body = body if isinstance(body, dict) else {}
+    choices = {}
+    for name in RUN_CHOICE_FIELDS:
+        if name in body and body[name] is not None and not isinstance(body[name], bool):
             return None, "%s must be a boolean" % name
-    if body.get("e2e"):
+        choices[name] = body.get(name)
+    return choices, None
+
+
+def convert_settings_to_loop_flags(settings, wave, push, orchestrator_model=None, base_branch=""):
+    """run_loop.py options for the ROADMAP loop settings (`parse_loop_settings`). A value equal to the engine default is not repeated;
+    `base_branch` = the ROADMAP `Branch base` when the line is there and valid (else the engine falls back to the environment, then developer);
+    `orchestrator_model` None = no option (the check), "" = `--orchestrator-model ""` (no `--model` flag in the turns). Never a shell."""
+    flags = []
+    if wave > MIN_WAVE or settings["dispatch"] != "auto":  # an explicit `Dispatch: 1` must still be sent (the engine default is 3)
+        flags += ["--wave", str(wave)]
+    if settings["e2e"]:
         flags.append("--e2e")
-    if body.get("push") is False:
+    if not push:
         flags.append("--no-push")
-    if body.get("continue_on_blocked"):
+    if settings["when_stuck"] == "continue":
         flags.append("--continue-on-blocked")
-    if body.get("pause_on_blocked"):
-        flags.append("--pause-on-blocked")
-    for name, flag in (("budget", "--budget"), ("max_cost", "--max-cost")):
-        if name in body:
-            if not is_finite_non_negative_number(body[name]):
-                return None, "%s must be a number greater than or equal to 0" % name
-            flags += [flag, str(body[name])]
-    if "timeout" in body:
-        if not is_integer(body["timeout"]) or not MIN_TURN_TIMEOUT_MINUTES <= body["timeout"] <= MAX_TURN_TIMEOUT_MINUTES:
-            return None, "timeout must be an integer from %d to %d (minutes)" % (MIN_TURN_TIMEOUT_MINUTES, MAX_TURN_TIMEOUT_MINUTES)
-        flags += ["--timeout", str(body["timeout"])]
-    branch = body.get("branch", "")
-    if not isinstance(branch, str):
-        return None, "branch must be text"
-    if branch:
-        if not BRANCH_PATTERN.fullmatch(branch) or ".." in branch or branch.startswith("-"):
-            return None, "invalid branch: use only letters, digits, . _ / - (up to 80), without '..' and not starting with '-'"
-        flags += ["--branch", branch]
-    setup = body.get("setup", "")
-    if not isinstance(setup, str):
-        return None, "setup must be text"
-    if len(setup) > SETUP_LIMIT:
-        return None, "setup is longer than %d characters" % SETUP_LIMIT
-    if setup:
-        flags += ["--setup=" + setup] if setup.startswith("-") else ["--setup", setup]  # a single argument, never mistaken for a flag
-    return flags, None
+    if settings["budget_turn"] != ENGINE_DEFAULT_BUDGET_TURN:
+        flags += ["--budget", format_amount(settings["budget_turn"])]
+    if settings["budget_loop"] != ENGINE_DEFAULT_MAX_COST:
+        flags += ["--max-cost", format_amount(settings["budget_loop"])]
+    if settings["minutes_turn"] != ENGINE_DEFAULT_TURN_MINUTES:
+        flags += ["--timeout", str(settings["minutes_turn"])]
+    if settings["branch"]:
+        flags += ["--branch", settings["branch"]]
+    if base_branch:
+        flags += ["--base-branch", base_branch]
+    if settings["setup"]:
+        flags += ["--setup=" + settings["setup"]] if settings["setup"].startswith("-") else ["--setup", settings["setup"]]  # a single argument
+    if orchestrator_model is not None:
+        flags += ["--orchestrator-model", orchestrator_model]
+    return flags
 
 
 def parse_check_output(text):
@@ -133,8 +144,10 @@ def compose_instruction_text(text, feature, attachments):
 class ILoopControlService(Protocol):
     def check_preflight(self, context, body) -> tuple: ...
     def start_new_loop(self, context, body) -> tuple: ...
+    def get_loop_settings(self, context) -> tuple: ...
+    def raise_loop_limit(self, context, body) -> tuple: ...
     def answer_loop_question(self, context, body) -> tuple: ...
-    def resume_loop(self, context) -> tuple: ...
+    def resume_loop(self, context, body=None) -> tuple: ...
     def write_user_note(self, context, body) -> tuple: ...
     def request_loop_pause(self, context) -> tuple: ...
     def send_instruction_to_loop(self, context, body) -> tuple: ...
@@ -201,8 +214,8 @@ class LoopControlService:
         with open(log_path, "ab") as handle:
             handle.write(("%s %s %s\n" % (LAUNCH_MARKER_PREFIX, stamp, action)).encode("utf-8"))
 
-    def relaunch_loop_from_saved_command(self, context, action, answer=None):
-        """Detached run_loop.py with the argv of LOOP-CMD.json (+ `--answer <answer>`)."""
+    def relaunch_loop_from_saved_command(self, context, action, answer=None, extra_flags=None):
+        """Detached run_loop.py with the argv of LOOP-CMD.json (+ `--answer <answer>`, + extra flags such as `--leftovers commit`)."""
         with self.get_relaunch_lock(context.project.id):
             if self.is_loop_alive(context):
                 return 409, {"ok": False, "error": LOOP_ALREADY_RUNNING_ERROR}
@@ -210,7 +223,7 @@ class LoopControlService:
             argv = command.get("argv")
             if not isinstance(argv, list) or not argv or not all(isinstance(item, str) for item in argv):
                 return 409, {"ok": False, "error": MISSING_LOOP_COMMAND_ERROR}
-            argv = list(argv) + (["--answer", answer] if answer else [])
+            argv = list(argv) + (["--answer", answer] if answer else []) + list(extra_flags or [])
             folder = command.get("cwd") if isinstance(command.get("cwd"), str) and os.path.isdir(command.get("cwd")) else context.repo_path
             return self.spawn_detached_loop(context, action, argv, folder)
 
@@ -232,27 +245,27 @@ class LoopControlService:
 
     # ------------------------------------------------ commands
     def convert_body_with_roadmap_defaults(self, context, body):
-        """Flags of the body + the project-wide E2E decided in the approved ROADMAP (`**E2E:** yes`). An `e2e` sent explicitly in the
-        body (old clients) wins over the ROADMAP, both ways; without it the ROADMAP decides (absent = no)."""
+        """Flags of the ROADMAP loop settings + the run choices of the body (`push`); (flags, error)."""
         flags, _dispatch, error = self.resolve_flags_and_dispatch(context, body)
         return flags, error
 
+    def read_loop_settings(self, context):
+        """`parse_loop_settings` of the ROADMAP in the work folder (the worktree copy is the live one once a loop ran)."""
+        return parse_loop_settings(self.read_roadmap_text(context))
+
     def resolve_flags_and_dispatch(self, context, body):
-        """(flags, dispatch, error). Without `wave` in the body the dispatch is computed from the ROADMAP (auto); an explicit one wins."""
-        flags, error = convert_body_to_loop_flags(body)
+        """(flags, dispatch, error). Everything but `push` comes from the ROADMAP header; `Dispatch: auto` is computed, a number is explicit."""
+        choices, error = read_run_choices(body)
         if error:
             return None, None, error
-        roadmap = None
-        if "e2e" not in body:
-            roadmap = self.read_roadmap_text(context)
-            if parse_roadmap_e2e(roadmap):
-                flags.append("--e2e")
-        if "wave" in body:
-            return flags, {"wave": body["wave"], "auto": False, "reason": "chosen by you"}, None
-        dispatch = compute_default_dispatch(roadmap if roadmap is not None else self.read_roadmap_text(context))
-        if dispatch["wave"] > MIN_WAVE:
-            flags += ["--wave", str(dispatch["wave"])]
-        return flags, dispatch, None
+        settings = self.read_loop_settings(context)["settings"]
+        if settings["dispatch"] == "auto":
+            dispatch = compute_default_dispatch(self.read_roadmap_text(context))
+        else:
+            dispatch = {"wave": settings["dispatch"], "auto": False, "reason": "set in the ROADMAP"}
+        push = settings["push_pr"] if choices["push"] is None else choices["push"]
+        base_branch = read_roadmap_base_branch(self.read_roadmap_text(context))
+        return convert_settings_to_loop_flags(settings, dispatch["wave"], push, base_branch=base_branch), dispatch, None
 
     @staticmethod
     def read_roadmap_text(context):
@@ -268,7 +281,26 @@ class LoopControlService:
             return 400, {"ok": False, "error": error}
         self.log.info("loop_command_launched", project=context.project.id, action="loop_check", pid=None)
         status, result = self.run_loop_check(context, flags)
-        return status, (dict(result, dispatch=dispatch) if status == 200 else result)
+        if status != 200:
+            return status, result
+        result["warnings"] = list(result["warnings"]) + self.describe_settings_warnings(self.read_loop_settings(context))
+        return status, dict(result, dispatch=dispatch, repos=self.describe_uncommitted_context_by_repo(context))
+
+    @staticmethod
+    def describe_settings_warnings(loop_settings):
+        """One warning per invalid ROADMAP loop setting (the default is used); never a problem, the loop still starts."""
+        return ["ROADMAP setting \"%s: %s\" is invalid (%s)" % (item["name"], item["value"], item["message"]) for item in loop_settings["problems"]]
+
+    @staticmethod
+    def describe_uncommitted_context_by_repo(context):
+        """[{"name", "uncommitted_context"}] per repo, the same list as `GET workspace` (empty once the repo's worktree exists)."""
+        described = []
+        for repo in project_repos.load_repos(context.repo_path):
+            pending = []
+            if os.path.isdir(repo.path) and not os.path.isdir(repo.loop_worktree_path()):
+                pending = context_files.uncommitted_context(repo.path, subprojects.load(context.repo_path, repo.name)["entry"])
+            described.append({"name": repo.name, "uncommitted_context": pending})
+        return described
 
     def start_new_loop(self, context, body):
         """New loop (or a continuation, if the worktree exists): preflight first; `LOOP_MONITOR_URL` = this project's panel."""
@@ -287,9 +319,95 @@ class LoopControlService:
             if not checked["ready"]:
                 return 409, {"ok": False, "error": "preflight failed: the loop was not started", "problems": checked["problems"],
                              "warnings": checked["warnings"]}
-            argv = [sys.executable, self.config.engine_script_path("run_loop"), context.repo_path] + flags
+            self.record_delivery_choices(context, body)
+            argv = ([sys.executable, self.config.engine_script_path("run_loop"), context.repo_path] + flags
+                    + ["--orchestrator-model", self.config.orchestrator_model])  # "" = the engine sends no --model
             return self.spawn_detached_loop(context, "loop_start", argv, context.repo_path,
                                             {MONITOR_URL_VARIABLE: self.get_project_panel_url(context)})
+
+    # ------------------------------------------------ run choices (delivery), settings and spend cap
+    def pending_delivery_path(self, context):
+        return os.path.join(loop_state.internal_dir(context.repo_path), DELIVERY_PENDING_FILE_NAME)  # internal/, where run_loop.merge_pending_delivery reads it (loop_path would put a .json in json/)
+
+    def build_delivery_choices(self, context, body):
+        """{push_pr, remove_worktree_on_finish}: the two checkboxes of the Start dialog (push defaults to the ROADMAP `Push and PR`)."""
+        choices, _ = read_run_choices(body)
+        push = self.read_loop_settings(context)["settings"]["push_pr"] if choices["push"] is None else choices["push"]
+        remove = True if choices["remove_worktree_on_finish"] is None else choices["remove_worktree_on_finish"]
+        return {"push_pr": push, "remove_worktree_on_finish": remove}
+
+    def record_delivery_choices(self, context, body):
+        """START-06. Worktree already there (continuation): merged into its meta.json BEFORE the engine starts (it loads meta once and
+        saves its own copy afterwards, so a later write would be lost). No worktree yet: the engine creates meta.json itself, so the choice
+        waits in `internal/delivery-pending.json` of the repository and `read_delivery` falls back to it until the engine merges it."""
+        delivery = self.build_delivery_choices(context, body)
+        meta_path = loop_state.loop_path(context.project.loop_worktree_path(), "meta.json")
+        if os.path.isfile(meta_path):
+            meta = read_json_object(meta_path)
+            meta["delivery"] = delivery
+            write_json_atomic(meta_path, meta)
+            return
+        write_json_atomic(self.pending_delivery_path(context), delivery)
+
+    def read_delivery(self, context):
+        """The recorded delivery choices: worktree meta, else the pending file, else the defaults (push per ROADMAP, remove on Finish)."""
+        recorded = (self.loop_command_file_repository.read_meta(context.work_dir) or {}).get("delivery")
+        if not isinstance(recorded, dict):
+            recorded = read_json_object(self.pending_delivery_path(context))
+        defaults = self.build_delivery_choices(context, {})
+        return {name: recorded[name] if isinstance(recorded.get(name), bool) else defaults[name] for name in defaults}
+
+    def get_loop_settings(self, context):
+        """`GET loop/settings`: what the Start dialog shows, read-only (the values are decided in planning)."""
+        loop_settings = self.read_loop_settings(context)
+        worktree = context.project.loop_worktree_path()
+        worktree_created = os.path.isdir(worktree)
+        meta = self.loop_command_file_repository.read_meta(worktree) if worktree_created else {}
+        repos = self.describe_uncommitted_context_by_repo(context)
+        reattach_branch = None if worktree_created else self.find_reattach_branch(context)
+        return 200, {"settings": loop_settings["settings"], "problems": loop_settings["problems"], "missing": loop_settings["missing"], "defaults": loop_settings["defaults"],
+                     "integration_branch": get_integration_branch(self.read_roadmap_text(context)),
+                     "delivery": self.read_delivery(context),
+                     "workspace": {"repos": repos, "worktree_created": worktree_created, "branch": meta.get("branch") or "",
+                                   "reattach_branch": reattach_branch,
+                                   "uncommitted": any(item["uncommitted_context"] for item in repos)},
+                     "models": {"orchestrator": self.config.orchestrator_model, "agents": AGENTS_MODEL}}
+
+    @staticmethod
+    def find_reattach_branch(context):
+        """The branch the next start would re-attach to (same rule as run_loop.reattach_branch_of): the primary repo's branch recorded by the
+        last Close loop, still existing, and that run NOT finished by a wrap-up Finish. None when the next start creates a new loop branch."""
+        primary = project_repos.primary_of(project_repos.load_repos(context.repo_path))
+        recorded = (read_json_object(loop_state.loop_path(context.repo_path, "last-run.json")).get("repos") or {}).get(primary.name)
+        if not isinstance(recorded, dict) or recorded.get("finished") or not recorded.get("branch"):
+            return None
+        try:
+            found = subprocess.run(["git", "-C", primary.path, "rev-parse", "--verify", "--quiet", "refs/heads/" + recorded["branch"]],
+                                   capture_output=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return recorded["branch"] if found.returncode == 0 else None
+
+    def raise_loop_limit(self, context, body):
+        """`POST loop/raise-limit {max_cost_usd}`: the spend cap of THIS run goes up (meta `max_cost_usd`, which wins over `--max-cost`)
+        and the same loop resumes. Refused unless the new cap is above what was already spent (`cost_usd`, never reset)."""
+        value = (body or {}).get("max_cost_usd")
+        if not is_finite_non_negative_number(value) or value <= 0:
+            return 400, {"ok": False, "error": "max_cost_usd must be a number greater than 0"}
+        meta = self.loop_command_file_repository.read_meta(context.work_dir)
+        spent = meta.get("cost_usd") if is_finite_non_negative_number(meta.get("cost_usd")) else 0.0
+        if value <= spent:
+            return 400, {"ok": False, "error": "the new limit must be above the US$ %s already spent" % format_amount(round(spent, 4)),
+                         "cost_usd": spent}
+        if self.is_loop_alive(context):  # no status gate: a cap pause may still read as `no_loop` until loop_state knows `paused`
+            return 409, {"ok": False, "error": LOOP_ALREADY_RUNNING_ERROR}
+        meta["max_cost_usd"] = float(value)
+        write_json_atomic(loop_state.loop_path(context.work_dir, "meta.json"), meta)
+        code, data = self.resume_loop(context, None)
+        if code != 200:
+            return code, data
+        self.log.info("loop_command_launched", project=context.project.id, action="raise_limit", pid=data.get("pid"))
+        return 202, {"ok": True, "cost_usd": spent, "max_cost_usd": float(value)}
 
     def answer_loop_question(self, context, body):
         summary = self.loop_status_service.get_loop_summary(context)
@@ -308,10 +426,14 @@ class LoopControlService:
             return 400, {"ok": False, "error": "give a text or an option"}
         return self.relaunch_loop_from_saved_command(context, "answer", text.strip())
 
-    def resume_loop(self, context):
+    def resume_loop(self, context, body=None):
+        """Relaunch; `{"leftovers": "commit"|"discard"}` also settles the files an earlier turn left uncommitted (`--leftovers`)."""
         if self.loop_status_service.get_loop_summary(context)["running"]:
             return 409, {"ok": False, "error": "the loop is already running"}
-        return self.relaunch_loop_from_saved_command(context, "resume")
+        leftovers = (body or {}).get("leftovers")
+        if leftovers not in (None, "") + LEFTOVER_CHOICES:
+            return 400, {"ok": False, "error": "leftovers must be one of: %s" % ", ".join(LEFTOVER_CHOICES)}
+        return self.relaunch_loop_from_saved_command(context, "resume", extra_flags=["--leftovers", leftovers] if leftovers else None)
 
     def write_user_note(self, context, body):
         text = body.get("text")

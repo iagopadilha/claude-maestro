@@ -1,6 +1,6 @@
 """Test environment tab (`/p/<id>/api/test-environment*`): the credentials table (set or missing, never a value), saving values to
-the project `.env.test` or the user-level shared `.env`, the access choices (ACCESS.json), the names file the planning AI reads and the
-read-only Grafana opt-in of the planning reply. Hermetic: temporary data dir, fake user shared folder, fake ~/.claude.json, fake claude."""
+the project `.env.test` or the user-level shared `.env`, the computed `access` card (credential layers + MCP servers, no toggles), the
+names file the planning AI reads and the read-only Grafana access of the planning reply. Hermetic: temporary data dir, fake user shared folder, fake ~/.claude.json, fake claude."""
 import json
 import os
 import unittest
@@ -52,7 +52,7 @@ class TestCredentialsTable(TestEnvironmentTestCase):
         self.assertEqual(rows["QA_ADMIN_TOKEN"]["path_label"], "project .env.test")
         self.assertEqual((rows["QA_LOCAL_URL"]["source"], rows["QA_LOCAL_URL"]["set"], rows["QA_LOCAL_URL"]["secret"]), ("missing", False, False))
         self.assertFalse(body["ready"])
-        self.assertEqual(body["access"], {"grafana_read": False, "shared_fallback": False})
+        self.assertEqual(set(body["access"]), {"credential_layers", "mcp"})
         self.assertNotIn(SECRET, json.dumps(body))
 
     def test_fill_in_lines_keep_it_not_ready_even_with_every_name_set(self):
@@ -67,18 +67,44 @@ class TestCredentialsTable(TestEnvironmentTestCase):
         write_file(self.project_env_path, "QA_ADMIN_TOKEN=a1b2\nTEST_USER_EMAILS=a@x.com\nQA_ONLY_IN_COMMENT=x\nQA_LOCAL_URL=http://x\n")
         self.assertTrue(self.get_environment()["ready"])
 
-    def test_shared_names_are_blocked_until_the_project_accepts_the_fallback(self):
+    def test_a_name_only_in_the_shared_env_resolves_with_source_shared(self):
         write_file(self.shared_env_path, "QA_ADMIN_TOKEN=%s\nTEST_USER_EMAILS=generic@x.com\n" % SECRET)
         body = self.get_environment()
-        self.assertEqual(self.sources()["QA_ADMIN_TOKEN"], "shared-blocked")
-        self.assertEqual(self.sources()["TEST_USER_1_EMAIL"], "shared-blocked")
-        self.assertEqual(body["shared_paths"], ["~/.claude/skills/_shared/.env"])
-        self.assertFalse(body["ready"])
-        status, accepted = self.put("/access", {"shared_fallback": True})
-        self.assertEqual((status, accepted), (200, {"ok": True, "access": {"grafana_read": False, "shared_fallback": True}}))
         self.assertEqual(self.sources()["QA_ADMIN_TOKEN"], "shared")
-        self.assertEqual(self.get_environment()["names"][0]["path_label"], "~/.claude/skills/_shared/.env")
-        self.assertNotIn(SECRET, json.dumps(self.get_environment()))
+        self.assertEqual(self.sources()["TEST_USER_1_EMAIL"], "shared")
+        self.assertEqual(body["names"][0]["path_label"], "~/.claude/skills/_shared/.env")
+        self.assertEqual(body["shared_paths"], ["~/.claude/skills/_shared/.env"])
+        self.assertNotIn(SECRET, json.dumps(body))
+
+    def test_access_card_lists_the_credential_layers_with_the_winning_source_and_the_mcp_servers(self):
+        write_file(self.project_env_path, "QA_ADMIN_TOKEN=%s\n" % SECRET)
+        write_file(self.shared_env_path, "QA_ADMIN_TOKEN=other\nQA_LOCAL_URL=http://shared\n")
+        write_file(self.claude_config_path, json.dumps({"mcpServers": {
+            "mcp-mysql-dev": {"command": "mysql-mcp", "env": {"PASSWORD": GRAFANA_TOKEN}}, "zendesk": {"command": "zd"}}}))
+        access = self.get_environment()["access"]
+        layers = {layer["label"]: layer for layer in access["credential_layers"]}
+        self.assertEqual(layers["project .env.test"]["name"], "project")
+        self.assertTrue(layers["project .env.test"]["exists"])
+        self.assertEqual(layers["project .env.test"]["names"], [{"name": "QA_ADMIN_TOKEN", "source": "project", "winning": True}])
+        shared = layers["~/.claude/skills/_shared/.env"]
+        self.assertEqual(shared["name"], "shared")
+        self.assertEqual(shared["names"], [{"name": "QA_ADMIN_TOKEN", "source": "project", "winning": False},
+                                           {"name": "QA_LOCAL_URL", "source": "shared", "winning": True}])
+        self.assertEqual([layer["name"] for layer in access["credential_layers"]][:2], ["project", "machine"])
+        servers = {row["server"]: row for row in access["mcp"]}
+        self.assertEqual(sorted(servers), ["grafana", "mcp-mysql-dev", "mcp-mysql-prod"])
+        self.assertEqual((servers["mcp-mysql-dev"]["configured"], servers["mcp-mysql-prod"]["configured"], servers["grafana"]["configured"]),
+                         (True, False, False))
+        self.assertEqual(servers["mcp-mysql-dev"]["tools"], ["mcp__mcp-mysql-dev__mysql_query"])
+        self.assertNotIn(SECRET, json.dumps(access))
+        self.assertNotIn(GRAFANA_TOKEN, json.dumps(access))
+
+    def test_legacy_access_json_keys_are_dropped_and_ignored(self):
+        path = os.path.join(self.repo, ".specs", "project", "ACCESS.json")
+        write_file(path, json.dumps({"grafana_read": False, "shared_fallback": False}))
+        write_file(self.shared_env_path, "QA_ADMIN_TOKEN=%s\n" % SECRET)
+        self.assertEqual(self.sources()["QA_ADMIN_TOKEN"], "shared")
+        self.assertFalse(os.path.exists(path))
 
     def test_unknown_project_is_404(self):
         status, body = self.request("GET", "/p/nope/api/test-environment")
@@ -152,30 +178,14 @@ class TestSavingValues(TestEnvironmentTestCase):
 
 
 class TestAccess(TestEnvironmentTestCase):
-    def test_partial_updates_are_merged_and_persisted_in_access_json(self):
-        status, body = self.put("/access", {"grafana_read": True})
-        self.assertEqual((status, body), (200, {"ok": True, "access": {"grafana_read": True, "shared_fallback": False}}))
-        status, body = self.put("/access", {"shared_fallback": True})
-        self.assertEqual(body["access"], {"grafana_read": True, "shared_fallback": True})
-        self.assertEqual(json.loads(read_file(os.path.join(self.repo, ".specs", "project", "ACCESS.json"))),
-                         {"grafana_read": True, "shared_fallback": True})
-        self.assertEqual(self.get_environment()["access"], {"grafana_read": True, "shared_fallback": True})
-        status, body = self.put("/access", {"grafana_read": False})
-        self.assertEqual(body["access"], {"grafana_read": False, "shared_fallback": True})
-        self.assertIn(".specs/project/ACCESS.json", read_file(os.path.join(self.repo, ".gitignore")))
+    def test_the_access_route_is_gone(self):
+        status, _ = self.put("/access", {"grafana_read": True})
+        self.assertIn(status, (404, 405))
 
-    def test_bad_access_bodies(self):
-        for body in ({}, {"grafana_read": "yes"}, {"shared_fallback": 1}):
-            with self.subTest(body=body):
-                status, answer = self.put("/access", body)
-                self.assertEqual((status, answer["ok"]), (400, False))
-
-    def test_reset_specs_keeps_access_json(self):
-        self.put("/access", {"grafana_read": True, "shared_fallback": True})
+    def test_reset_specs_does_not_resurrect_access(self):
         status, body = self.request("POST", "/api/app/projects/%s/reset-specs" % self.project_id, {"confirm": os.path.basename(self.repo)})
         self.assertEqual(status, 200, body)
-        self.assertNotIn(".specs/project/ACCESS.json", body["moved"])
-        self.assertEqual(self.get_environment()["access"], {"grafana_read": True, "shared_fallback": True})
+        self.assertEqual(set(self.get_environment()["access"]), {"credential_layers", "mcp"})
 
 
 class TestPlanningSeesNamesOnly(TestEnvironmentTestCase):
@@ -198,7 +208,7 @@ class TestPlanningSeesNamesOnly(TestEnvironmentTestCase):
         for row in rows.values():
             self.assertEqual(set(row), {"name", "source", "set"})
         self.assertEqual((rows["QA_ADMIN_TOKEN"]["source"], rows["QA_ADMIN_TOKEN"]["set"]), ("project", True))
-        self.assertEqual((rows["QA_LOCAL_URL"]["source"], rows["QA_LOCAL_URL"]["set"]), ("shared-blocked", False))
+        self.assertEqual((rows["QA_LOCAL_URL"]["source"], rows["QA_LOCAL_URL"]["set"]), ("shared", True))
         stdin = self.read_claude_calls()[-1]["stdin"]
         self.assertIn("credential-names.json", stdin)
         self.assertIn("Never ask the user for a password", stdin)
@@ -209,37 +219,22 @@ class TestPlanningSeesNamesOnly(TestEnvironmentTestCase):
         self.assertFalse(any("credential-names" in path for path in PLANNING_EDITABLE_PATHS))
         self.assertIn(".specs/project/loop/internal", GUARD_IGNORED_PATHS)
 
-    def test_without_the_opt_in_the_planning_reply_has_no_grafana(self):
+    def test_with_a_grafana_definition_the_reply_gets_only_the_read_tools(self):
         self.write_grafana_definition()
-        self.send_and_wait(self.project_id, "plan it")
-        call = self.read_claude_calls()[-1]
-        argv = call["argv"]
-        self.assertEqual(argv[argv.index("--mcp-config") + 1], '{"mcpServers":{}}')
-        self.assertFalse(any(tool.startswith("mcp__") for tool in list_flag_values(argv, "--allowedTools")))
-        self.assertNotIn("Grafana", call["stdin"])
-
-    def test_with_the_opt_in_the_reply_gets_the_grafana_server_and_only_the_read_tools(self):
-        self.write_grafana_definition()
-        self.put("/access", {"grafana_read": True})
         self.send_and_wait(self.project_id, "plan it")
         call = self.read_claude_calls()[-1]
         argv = call["argv"]
         self.assertIn("--strict-mcp-config", argv)
         config_path = argv[argv.index("--mcp-config") + 1]
-        self.assertEqual(config_path, os.path.join(self.data_dir, ".secrets", "grafana-mcp.json"))
         self.assertEqual(list(json.loads(read_file(config_path))["mcpServers"]), ["grafana"])
         allowed = list_flag_values(argv, "--allowedTools")
         self.assertEqual([tool for tool in allowed if tool.startswith("mcp__")], READ_TOOLS)
-        self.assertEqual(allowed[:4], ["Read", "Grep", "Glob", "Skill"])
         denied = list_flag_values(argv, "--disallowedTools")
-        self.assertEqual(denied[:3], ["Bash", "NotebookEdit", "Agent"])
         self.assertIn("mcp__grafana__create_annotation", denied)
         self.assertIn("mcp__grafana__update_dashboard", denied)
         self.assertNotIn(GRAFANA_TOKEN, " ".join(argv) + call["stdin"])
-        self.assertIn("read-only lookups", call["stdin"])
 
-    def test_opt_in_without_a_server_definition_leaves_the_feature_off(self):
-        self.put("/access", {"grafana_read": True})
+    def test_without_a_server_definition_the_reply_has_no_mcp(self):
         self.send_and_wait(self.project_id, "plan it")
         argv = self.read_claude_calls()[-1]["argv"]
         self.assertEqual(argv[argv.index("--mcp-config") + 1], '{"mcpServers":{}}')

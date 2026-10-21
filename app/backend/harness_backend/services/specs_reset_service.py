@@ -5,7 +5,12 @@ Everything that is reset is MOVED to `<work>/.specs/.trash/<YYYYMMDD-HHMMSS>/` k
 from `templates/specs` and `features/` is recreated empty. Which paths move and which stay is declared in the two
 constants below (`RESET_MOVED_PATHS`, `RESET_KEPT_PATHS`) so the policy is easy to read and change.
 
-Safety: refused while a loop or a claude job runs in the project; only paths under `<work>/.specs/` are touched; a symbolic
+The specs that are reset are ALWAYS the primary checkout's (`context.repo_path`), even when a loop already ran and the work dir is the loop
+worktree: right after the reset, the loop worktree(s) of the project are DELETED too (folder + local `loop/*` branch, see
+`LoopWorktreeRemovalService`; no merge, no commit, no push, no backup), so the project goes back to planning on the primary's `.specs/`.
+A worktree that cannot be removed is reported in `worktree_failures` and never aborts the reset.
+
+Safety: refused while a loop or a claude job runs in the project; only paths under `<primary>/.specs/` are touched; a symbolic
 link (or junction) is never followed and never moved (it stays where it is); `.specs/.trash/` is git-ignored and the app never
 reads it as part of the plan or the loop (see `TRASH_RELATIVE_DIR` in specs_structure_service and FORBIDDEN_DIRS in
 spec_file_service). Layout: the current one (`project/loop/{json,internal}`); old flat layouts are migrated by the engine
@@ -71,10 +76,13 @@ def contains_files(folder):
 
 class ISpecsResetService(Protocol):
     def reset_specs(self, context, confirm) -> dict: ...
+    def preview_reset(self, context) -> dict: ...
 
 
 class SpecsResetService:
-    def __init__(self, specs_file_repository, specs_structure_service, project_progress_service, claude_job_service, log):
+    def __init__(self, specs_file_repository, specs_structure_service, project_progress_service, claude_job_service, log,
+                 loop_worktree_removal_service=None):
+        self.loop_worktree_removal_service = loop_worktree_removal_service
         self.specs_file_repository = specs_file_repository
         self.specs_structure_service = specs_structure_service
         self.project_progress_service = project_progress_service
@@ -83,27 +91,47 @@ class SpecsResetService:
         self.reset_lock = threading.Lock()
 
     def reset_specs(self, context, confirm):
-        """Moves the planning/loop state to the trash and recreates the templates. Returns {"ok", "moved", "trash", "kept"}.
-        `trash` is None when there was nothing to move (and nothing was created)."""
+        """Moves the planning/loop state of the primary checkout to the trash, recreates the templates, then deletes the loop worktrees.
+        Returns {"ok", "moved", "trash", "kept", "worktrees_removed", "worktree_failures"}. `trash` is None when there was nothing to move
+        (and nothing was created)."""
         self.ensure_confirmed(context, confirm)
         with self.reset_lock:
             self.ensure_can_reset(context)
-            work = context.work_dir
-            specs_dir = os.path.join(work, ".specs")
-            if not os.path.isdir(specs_dir):
-                return {"ok": True, "moved": [], "trash": None, "kept": self.list_kept(work)}
-            if is_link_or_junction(specs_dir):
-                raise PathOutsideSpecsError(".specs/ is a symbolic link (or junction): refusing to reset outside the project")
-            templates = self.build_templates(work, context.project.name)
-            sources = self.collect_sources(work, specs_dir, templates)
-            moved, trash_relative = [], None
-            if sources:
-                trash_dir = self.create_trash_dir(specs_dir)
-                trash_relative = to_posix(os.path.relpath(trash_dir, work))
-                moved = self.move_to_trash(work, specs_dir, trash_dir, sources)
-            self.recreate_state(work, templates)
-        self.log.info("specs_reset", project=context.project.id, moved=len(moved), trash=trash_relative)
-        return {"ok": True, "moved": moved, "trash": trash_relative, "kept": self.list_kept(work)}
+            work = context.repo_path  # the primary's plan, never the loop worktree's (that one is deleted below)
+            moved, trash_relative = self.reset_specs_folder(context, work)
+            worktrees = self.remove_loop_worktrees(context)
+        self.log.info("specs_reset", project=context.project.id, moved=len(moved), trash=trash_relative,
+                      worktrees_removed=len(worktrees["worktrees_removed"]), worktree_failures=len(worktrees["worktree_failures"]))
+        return dict({"ok": True, "moved": moved, "trash": trash_relative, "kept": self.list_kept(work)}, **worktrees)
+
+    def preview_reset(self, context):
+        """Read only, for the confirmation: the loop worktrees the reset would delete (path, branch, unpushed commits or None)
+        and the ones it would leave alone. `{"ok", "worktrees": [...], "skipped": [...]}`."""
+        if self.loop_worktree_removal_service is None:
+            return {"ok": True, "worktrees": [], "skipped": []}
+        return dict(self.loop_worktree_removal_service.preview_removable_worktrees(context), ok=True)
+
+    def reset_specs_folder(self, context, work):
+        """(moved, trash relative path) of the `.specs/` reset of `work`; ([], None) when there is no `.specs/` or nothing to move."""
+        specs_dir = os.path.join(work, ".specs")
+        if not os.path.isdir(specs_dir):
+            return [], None
+        if is_link_or_junction(specs_dir):
+            raise PathOutsideSpecsError(".specs/ is a symbolic link (or junction): refusing to reset outside the project")
+        templates = self.build_templates(work, context.project.name)
+        sources = self.collect_sources(work, specs_dir, templates)
+        moved, trash_relative = [], None
+        if sources:
+            trash_dir = self.create_trash_dir(specs_dir)
+            trash_relative = to_posix(os.path.relpath(trash_dir, work))
+            moved = self.move_to_trash(work, specs_dir, trash_dir, sources)
+        self.recreate_state(work, templates)
+        return moved, trash_relative
+
+    def remove_loop_worktrees(self, context):
+        if self.loop_worktree_removal_service is None:
+            return {"worktrees_removed": [], "worktree_failures": []}
+        return self.loop_worktree_removal_service.remove_loop_worktrees(context)
 
     # ------------------------------------------------ guards
     @staticmethod

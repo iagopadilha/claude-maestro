@@ -109,7 +109,7 @@ class ClaudeClient:
 
         Order: base, -p [prompt], --output-format json, --model, --max-budget-usd, --permission-mode, --allowedTools...,
         --disallowedTools..., --settings <hook json>, --strict-mcp-config --mcp-config {empty}, --resume <session> [--fork-session].
-        `hook_profile` (e.g. "planning", "spec") adds the guard.py PreToolUse hook with that profile through an inline `--settings`
+        `hook_profile` (e.g. "planning", "spec", "subprojects", "systemmap"; the name is passed through to guard.py as is) adds the guard.py PreToolUse hook with that profile through an inline `--settings`
         (nothing is written to the user's project). `mcp_config_path` (with `no_mcp`) replaces the empty config by that file, e.g. the
         read-only Grafana server of a project that opted in: still `--strict-mcp-config`, so no other MCP server joins it.
         """

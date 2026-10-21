@@ -24,12 +24,28 @@ Example (the ">" keeps these lines from being read as a stage/feature):
 Project-wide setting (one line under the Goal, outside any feature; absent = no):
 
   > **E2E:** yes|no   (yes = the loop ends with a flow-validation phase: verifier-flow runs every FLOWS.md flow against the real app;
-  >                    it needs a filled-in .specs/project/TEST-ENVIRONMENT.md. Decided here, in planning; not in the Start-a-loop card.)
+  >                    it needs a filled-in .specs/project/TEST-ENVIRONMENT.md. Decided here, in planning; not in the Start-a-loop dialog.)
+
+Loop settings (the lines below the Goal; the Start dialog only shows them and the loop reads them when it starts; a missing
+line = the default shown, an invalid value = the default and a warning in the planning status): Dispatch = features per turn (auto or
+1-8); Max spend per turn / for the loop in US$ (0 on the loop = no cap); Max minutes per turn; Branch = the loop branch name or
+automatic; Branch base = the branch new worktrees start from and the PR target (default developer; the loop falls back to the
+current branch with a warning when it does not exist locally); Setup = one command run once in the new worktree (for example npm ci); When a feature gets stuck = pause or continue;
+Push and PR = push the feature branch and open the PR at the end (yes/no).
 -->
 
 **Goal:** FILL_IN
 
 **E2E:** no
+**Dispatch:** auto
+**Max spend per turn:** 5
+**Max spend for the loop:** 50
+**Max minutes per turn:** 60
+**Branch:** automatic
+**Branch base:** developer
+**Setup:**
+**When a feature gets stuck:** pause
+**Push and PR:** yes
 
 ## Open questions
 

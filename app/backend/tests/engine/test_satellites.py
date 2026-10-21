@@ -351,10 +351,10 @@ class TestProgressGraph(TempRepo):
                "pr": "https://github.com/example-org/x/pull/7", "pr_status": "PR created", "features": [("api", "verified")], "script": "r.py", "repo": "r", "flags": ""}
         _, full = notify.build(ctx)
         _, html = notify.build_html(ctx)
-        self.assertIn("PROGRESS", full)
+        self.assertIn("Andamento", full)
         self.assertIn("[x] api", full)
         self.assertIn("pull/7", full)
-        self.assertIn("Progress", html)
+        self.assertIn("Andamento", html)
         self.assertIn("pull/7", html)
         ctx["event"] = "awaiting_user"
         ctx["reason"] = "decide"

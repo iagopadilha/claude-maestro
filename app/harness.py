@@ -9,7 +9,7 @@
       your data folder (everything lives in a temporary folder, or in <data-dir>/demo/). Ctrl+C stops it and removes the files.
   python harness.py loop <repo> [run_loop flags...]   runs the loop (engine/run_loop.py): --wave, --check, --answer, --option, --rewind...
   python harness.py check <repo> [flags...]           shortcut for `loop <repo> --check`
-  python harness.py state|notify|summary|deliver|rules|audit|graph|classify|scale [args...]   passed on to the engine scripts
+  python harness.py state|notify|summary|deliver|rules|audit|graph|classify|scale|inventory [args...]   passed on to the engine scripts
   python harness.py doctor [--json]                   diagnostics (the same as GET /api/app/info)
   python harness.py install [--data-dir D] [--skill-dir S]   writes ~/.loop-harness/config.json (app_root_dir and the skill
                                                       folder); this is how the skill finds the app. Does not touch ~/.claude.
@@ -30,7 +30,7 @@ for _folder in (BACKEND_DIR, ENGINE_DIR):
 
 FORWARDED_SCRIPTS = {"loop": "run_loop", "state": "loop_state", "notify": "notify", "summary": "loop_summary", "deliver": "delivery",
                      "rules": "rules", "audit": "audit_deps", "graph": "graph_view", "classify": "classify_structure",
-                     "scale": "scale"}
+                     "scale": "scale", "inventory": "code_inventory"}
 DATA_DIR_VARIABLE = "LOOP_DATA_DIR"
 DISABLED_VALUES = ("off", "0", "false", "no")
 EXIT_OK = 0

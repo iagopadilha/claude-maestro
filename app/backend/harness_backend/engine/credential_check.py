@@ -3,8 +3,7 @@ holds NAMES only; the values live in `.env` files git ignores. Pure functions pl
 
 Names are resolved in the SAME order as the skills' `testenv.py` (first wins): a real environment variable, `<project>/.specs/project/.env.test`,
 `~/.loop-harness/.env`, the plugin's `shared/.env`, the user-level shared `~/.claude/skills/_shared/.env`. The last two are the SHARED
-fallback (the user's generic DEV account): they count ONLY when the project accepted them (`.specs/project/ACCESS.json`
-`shared_fallback: true`); a name found only there without acceptance has the source `shared-blocked` and stops the run like a missing one.
+layers (the user's generic DEV account): they are ALWAYS read (no per-project acceptance); a name found only there has the source `shared`.
 Test users are `;`-separated lists (TEST_USER_EMAILS / TEST_USER_PASSWORDS / TEST_USER_ROLES) that also become TEST_USER_<n>_EMAIL /
 _PASSWORD / _ROLE. Nothing here returns or logs a value: callers get names, sources and labels.
 """
@@ -13,7 +12,6 @@ import re
 
 from app_paths import envload
 from harness_backend.config import app_config
-import access_settings
 
 PROJECT_ENV_RELATIVE = (".specs", "project", ".env.test")
 SHARED_DIR_VARIABLE = "LOOP_USER_SHARED_DIR"  # tests point the user-level shared folder at a temporary one
@@ -73,7 +71,7 @@ def user_shared_env_path():
 
 
 class Layer:
-    """One `.env` file of the stack. `shared` layers only count when the project accepted the shared fallback."""
+    """One `.env` file of the stack. `shared` layers are the user's generic account; they always count (lowest priority)."""
 
     def __init__(self, source, label, path, shared):
         self.source, self.label, self.path, self.shared = source, label, path, shared
@@ -136,21 +134,17 @@ def stack_values(layers, environment):
 
 
 class Resolution:
-    """Where every name comes from for one project. `lookup(name)` -> (source, label); never exposes a value."""
+    """Where every name comes from for one project. `lookup(name)` -> (source, label); never exposes a value.
+    Every layer counts (project > machine > shared); `accept_shared` is kept only for old callers and ignored."""
 
     def __init__(self, root, accept_shared=None):
         self.layers = file_layers(root)
-        self.accept_shared = access_settings.read_access(root)[access_settings.SHARED_FALLBACK_KEY] if accept_shared is None else bool(accept_shared)
         environment = real_environment(self.layers)
-        counted = [layer for layer in self.layers if self.accept_shared or not layer.shared]
-        self.values, self.origins = stack_values(counted, environment)
-        self.shared_values, self.shared_origins = stack_values([layer for layer in self.layers if layer.shared], {})
+        self.values, self.origins = stack_values(self.layers, environment)
 
     def lookup(self, name):
         if self.values.get(name) and self.origins.get(name):
             return self.origins[name]
-        if not self.accept_shared and self.shared_values.get(name):
-            return ("shared-blocked", self.shared_origins[name][1] if self.shared_origins.get(name) else "")
         return ("missing", "")
 
     def names_defined(self):
@@ -158,6 +152,14 @@ class Resolution:
 
     def shared_files_found(self):
         return [layer.label for layer in self.layers if layer.shared and layer.found]
+
+    def layer_report(self, names):
+        """[{name, path, exists, names: [...]}] per file layer, highest priority first: which of `names` each layer defines (never a value)."""
+        report = []
+        for layer in self.layers:
+            report.append({"name": layer.source, "label": layer.label, "path": layer.path, "exists": layer.found,
+                           "names": sorted(name for name in names if layer.values.get(name))})
+        return report
 
 
 def defined_names(root):
@@ -175,7 +177,8 @@ def mentioned_names(document_text):
 
 
 def names_by_source(root, document_text):
-    """{"missing": [...], "shared-blocked": [...]} of the names the document mentions (the ones that stop a run)."""
+    """{"missing": [...], "shared-blocked": []} of the names the document mentions (the ones that stop a run). `shared-blocked` is
+    always empty now: the shared layers are always read."""
     resolution = Resolution(root)
     stopped = {"missing": [], "shared-blocked": []}
     for name in mentioned_names(document_text):
@@ -186,7 +189,7 @@ def names_by_source(root, document_text):
 
 
 def undefined_names(root, document_text):
-    """Mentioned names with no value anywhere (a name only the not-accepted shared fallback defines is `blocked_names`)."""
+    """Mentioned names with no value anywhere."""
     return names_by_source(root, document_text)["missing"]
 
 
@@ -221,10 +224,6 @@ def credential_problems(root, document_text):
         problems.append("TEST-ENVIRONMENT.md mentions names no .env defines: %s. Action: add NAME=value for each one to "
                         ".specs/project/.env.test (this project) or ~/.loop-harness/.env (this machine), then run the check again"
                         % ", ".join("$" + name for name in required_missing[:MAX_REPORTED_NAMES]))
-    if stopped["shared-blocked"]:
-        problems.append("TEST-ENVIRONMENT.md uses names only the shared fallback account defines: %s (accept the shared fallback in the Test "
-                        "environment tab, or define it in .specs/project/.env.test)"
-                        % ", ".join("$" + name for name in stopped["shared-blocked"][:MAX_REPORTED_NAMES]))
     return problems
 
 

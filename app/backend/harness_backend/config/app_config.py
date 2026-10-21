@@ -13,6 +13,28 @@ DATA_DIR_VARIABLE = "LOOP_DATA_DIR"
 DEFAULT_DATA_DIR_NAME = ".loop-harness"
 DEFAULT_PORT_RANGE = (47800, 47899)
 DEFAULT_IDLE_HOURS = 2.0
+DEFAULT_INVENTORY_GIANT_LINES = 1500
+DEFAULT_INVENTORY_GIANT_KB = 200
+DEFAULT_MAX_PARALLEL_MAPS = 6  # subproject map jobs of a monorepo that run at the same time (config.json: max_parallel_maps)
+DEFAULT_ORCHESTRATOR_MODEL = "opus"  # the Claude Code alias of the latest Opus; "" in config.json = the account default (no --model)
+
+
+def read_positive_threshold(user_config, key, default, notes):
+    """A positive whole number from config.json, else `default` and a note (absent key = default, no note)."""
+    if key not in user_config:
+        return default
+    value = user_config[key]
+    usable = isinstance(value, (int, float)) and not isinstance(value, bool) and value == value and 0 < value < float("inf")
+    if not usable or int(value) <= 0:
+        notes.append("%s in config.json is not a positive number (%r): using %s" % (key, value, default))
+        return default
+    return int(value)
+
+
+def read_orchestrator_model(user_config):
+    """`orchestrator_model` of config.json: a model alias or id, "" = no `--model` flag; absent or not text = the default."""
+    value = user_config.get("orchestrator_model", DEFAULT_ORCHESTRATOR_MODEL)
+    return value.strip() if isinstance(value, str) else DEFAULT_ORCHESTRATOR_MODEL
 
 
 def get_user_data_dir():
@@ -45,6 +67,12 @@ class AppConfig:
     fixed_port: int = 0
     idle_hours: float = DEFAULT_IDLE_HOURS  # 0 = never shuts down on its own
     open_browser: bool = True
+    planning_readiness_enforced: bool = True  # the approval needs the cached `run_loop --check --planning` to be READY (gate `ready`)
+    inventory_giant_lines: int = DEFAULT_INVENTORY_GIANT_LINES  # code file above this many lines is "giant" (config.json: inventory_giant_lines)
+    inventory_giant_kb: int = DEFAULT_INVENTORY_GIANT_KB  # ... or above this many KB (config.json: inventory_giant_kb)
+    orchestrator_model: str = DEFAULT_ORCHESTRATOR_MODEL  # model of the loop's orchestrator turns (config.json: orchestrator_model); "" = no flag
+    max_parallel_maps: int = DEFAULT_MAX_PARALLEL_MAPS  # config.json: max_parallel_maps
+    inventory_threshold_note: str = ""  # why a configured threshold was ignored (empty = none)
     engine_script_overrides: dict = field(default_factory=dict)  # tests only: {"run_loop": path, "delivery": ..., "loop_summary": ...}
 
     def engine_script_path(self, name):
@@ -70,7 +98,11 @@ def load_app_config(**overrides):
     data_dir = overrides.pop("user_data_dir", "") or get_user_data_dir()
     user_config = read_user_config(data_dir)
     skill_dir = skill_locator.locate_orchestrator_skill_dir(user_config.get("orchestrator_skill_dir", ""))
+    threshold_notes = []
     values = {
+        "inventory_giant_lines": read_positive_threshold(user_config, "inventory_giant_lines", DEFAULT_INVENTORY_GIANT_LINES, threshold_notes),
+        "inventory_giant_kb": read_positive_threshold(user_config, "inventory_giant_kb", DEFAULT_INVENTORY_GIANT_KB, threshold_notes),
+        "max_parallel_maps": read_positive_threshold(user_config, "max_parallel_maps", DEFAULT_MAX_PARALLEL_MAPS, threshold_notes),
         "app_root_dir": APP_ROOT_DIR,
         "user_data_dir": data_dir,
         "orchestrator_skill_dir": skill_dir,
@@ -81,8 +113,10 @@ def load_app_config(**overrides):
         "claude_transcripts_dir": user_config.get("claude_transcripts_dir") or os.path.join(os.path.expanduser("~"), ".claude", "projects"),
         "output_dir": user_config.get("output_dir") or os.path.join(os.path.expanduser("~"), "Downloads"),
         "claude_binary": user_config.get("claude_binary", ""),
+        "orchestrator_model": read_orchestrator_model(user_config),
         "idle_hours": float(user_config.get("idle_hours", DEFAULT_IDLE_HOURS)),
     }
+    values["inventory_threshold_note"] = "; ".join(threshold_notes)
     for key, value in overrides.items():
         if value not in (None, "", {}):
             values[key] = value

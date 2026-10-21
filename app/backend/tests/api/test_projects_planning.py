@@ -11,7 +11,7 @@ from harness_backend.services.planning_gates import are_gates_ok, are_prerequisi
 from .support_projects import (FAKE_DELAY_VARIABLE, FAKE_FAIL_VARIABLE, JOB_WAIT_TIMEOUT_SECONDS, ProjectsTestCase, create_git_repo,
                                loop_file_path, read_file, write_file)
 
-GATE_IDS = ["git", "structure", "conformance", "map", "goal", "features", "fields", "open_questions", "flows", "test_environment"]
+GATE_IDS = ["git", "structure", "conformance", "map", "goal", "features", "fields", "open_questions", "flows", "test_environment", "ready"]
 FAKE_PLANNING_SESSION = "fake-planning-session-1"
 EXPECTED_EDIT_RULES = ["Edit(/.specs/project/PROJECT.md)", "Edit(/.specs/project/ROADMAP.md)", "Edit(/.specs/project/FLOWS.md)",
                        "Edit(/.specs/project/TEST-ENVIRONMENT.md)", "Edit(/.specs/project/RULES.md)", "Edit(/.specs/project/REPOS-SUGGESTED.json)"]
@@ -317,7 +317,8 @@ class TestPlanningGatesUnit(unittest.TestCase):
         facts = {"is_git": True, "structure": {"ok": True, "missing": []}, "conformance": "LEGACY", "map_files": [], "has_code": False,
                  "project_text": "# P\n\n**Vision:** x\n", "roadmap_exists": True, "features": {"a": {"status": "pending"}},
                  "roadmap_parse_errors": [], "roadmap_field_errors": [], "open_questions": [], "flows_exists": True,
-                 "flow_coverage": {"missing": [], "orphans": []}}
+                 "flow_coverage": {"missing": [], "orphans": []},
+                 "readiness": {"state": "ready", "at": "2026-10-20T10:00:00", "problems": [], "warnings": []}}
         facts.update(overrides)
         return facts
 
@@ -341,13 +342,13 @@ class TestPlanningGatesUnit(unittest.TestCase):
 
     def test_test_environment_is_visible_but_never_blocks_the_approval(self):
         problems = ["TEST-ENVIRONMENT.md mentions names no .env defines: ADMIN_TOKEN"]
-        gate = build_planning_gates(self.facts(environment_all_problems=problems, regression_required=True))[-1]
+        gate = build_planning_gates(self.facts(environment_all_problems=problems, regression_required=True))[-2]  # `ready` is last
         self.assertEqual(gate["id"], "test_environment")
         self.assertFalse(gate["ok"])
         self.assertTrue(gate["optional"], "an incomplete test environment never blocks Approve roadmap")
         self.assertIn("needed before the loop starts", gate["detail"])
         self.assertEqual(gate["items"], problems)
-        ready = build_planning_gates(self.facts())[-1]
+        ready = build_planning_gates(self.facts())[-2]
         self.assertTrue(ready["ok"] and ready["optional"])
 
     def test_map_gate_waits_for_the_running_map_job(self):
