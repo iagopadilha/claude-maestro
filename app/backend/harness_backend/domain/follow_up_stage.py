@@ -40,7 +40,8 @@ def list_follow_up_stages(roadmap_text):
         if current is not None and found and found.group(1) in features:
             fields = features[found.group(1)]
             current["features"].append({"slug": found.group(1), "status": fields.get("status"), "title": fields.get("title", ""),
-                                        "deps": fields.get("deps", ""), "paths": fields.get("paths", "")})
+                                        "deps": fields.get("deps", ""), "paths": fields.get("paths", ""),
+                                        "scope": fields.get("scope", ""), "kind": fields.get("kind", "")})
             current["lines"][found.group(1)] = line
     return stages
 

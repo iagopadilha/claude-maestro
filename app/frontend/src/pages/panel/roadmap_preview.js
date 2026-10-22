@@ -78,7 +78,7 @@ function RoadmapGraph({ data }) {
       <button type="button" class="btn btn-sm btn-ghost" title="zoom in (Ctrl + scroll)" aria-label="zoom in" onClick=${() => rmCtl.zoom && rmCtl.zoom(1.2)}>+</button>
       <button type="button" class="btn btn-sm btn-ghost" title="fits and centers the graph" onClick=${() => rmCtl.fit && rmCtl.fit()}>Center</button>
     </div>
-    <div class="dep-graph plan-rm-box" style="flex:none;height:420px">
+    <div class="dep-graph plan-rm-box" style="flex:none;height:420px;position:relative;inset:auto">
       <${FeatureGraph} features=${fs} stages=${stages} selected=${cur ? cur.id : null} onSelect=${(id) => setSel((c) => (c === id ? null : id))} view=${rmView} ctl=${rmCtl} />
     </div>
     ${cur ? html`<${FeatureCard} f=${cur} onClose=${() => setSel(null)} />` : null}
@@ -110,13 +110,13 @@ export function BranchAndParallelInfo({ info, explain }) {
   </div>`;
 }
 
-function LoopSettingsBlock() {
+function LoopSettingsBlock({ version }) {
   const [info, setInfo] = useState(null);
-  useEffect(() => {
+  useEffect(() => {  // refetched whenever the roadmap payload changes (a new Branch base line shows without a reload)
     let alive = true;
     requestBranchAndParallel().then((v) => alive && setInfo(v)).catch(() => {});
     return () => { alive = false; };
-  }, []);
+  }, [version]);
   return html`<${BranchAndParallelInfo} info=${info} explain=${true} />`;
 }
 
@@ -130,5 +130,5 @@ export function RoadmapPreview({ rm }) {
       <ul>${errors.map((e, i) => html`<li key=${i}>${String(e)}</li>`)}</ul></div>`;
   }
   if (!list(data.features).length) return null;
-  return html`<${RoadmapGraph} data=${data} /><${LoopSettingsBlock} />`;
+  return html`<${RoadmapGraph} data=${data} /><${LoopSettingsBlock} version=${data} />`;
 }

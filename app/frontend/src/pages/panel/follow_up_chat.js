@@ -40,8 +40,9 @@ export function AddedStage({ stage }) {
   return html`<div class="wu-stage"><div class="pl-eyebrow">ADDED TO THE ROADMAP</div><div class="wu-stage-name">${txt(stage.name || stage.title || stage.stage)}</div>
     ${features.length ? html`<ul class="wu-stage-features">${features.map((feature, index) => {
       if (typeof feature === 'string') return html`<li key=${index} class="mono">${feature}</li>`;
-      const deps = list(feature.deps), paths = list(feature.paths);
-      return html`<li key=${index} class="wu-stage-feature"><div><span class="mono">${txt(feature.slug || feature.id)}</span>${feature.title ? html` <span>${feature.title}</span>` : null}${feature.status ? html` <span class="wu-stage-status">${feature.status}</span>` : null}</div>
+      const split = (v) => (Array.isArray(v) ? v : String(v || '').split(',')).map((x) => String(x).trim()).filter(Boolean);
+      const deps = split(feature.deps), paths = split(feature.paths);
+      return html`<li key=${index} class="wu-stage-feature"><div><span class="mono">${txt(feature.slug || feature.id)}</span>${feature.title ? html` <span>${feature.title}</span>` : null}${feature.status ? html` <span class="wu-stage-status">${feature.status}</span>` : null}${feature.scope || feature.kind ? html` <span class="wu-stage-status">${[feature.scope, feature.kind].filter(Boolean).join(' · ')}</span>` : null}</div>
         ${deps.length ? html`<div class="wu-stage-meta">${'depends on: '}<span class="mono">${deps.join(', ')}</span></div>` : null}
         ${paths.length ? html`<div class="wu-stage-meta">${'paths: '}<span class="mono">${paths.join(', ')}</span></div>` : null}</li>`;
     })}</ul>` : null}</div>`;
