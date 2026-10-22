@@ -107,7 +107,7 @@ def integration_branch():
 # ---- push: text of the whole command (catches `python -c "...git push..."`, `$(git push)`, quotes), besides the segment
 PROTECTED_NAMES = {"developer", "develop", "main", "master", "release", "production", "dev", integration_branch()}
 _PROT = "|".join(re.escape(name) for name in sorted(PROTECTED_NAMES, key=len, reverse=True))
-PUSH_CMD = r"(?:\bgit(?:\.exe)?(?:\s+-[-\w]+(?:[= ]\S+)?)*\s+push\b|['\"]git(?:\.exe)?['\"]\s*,\s*['\"]push['\"])"
+PUSH_CMD = r"(?:\bgit(?:\.exe)?['\"]?(?:\s+-[-\w]+(?:[= ]\S+)?)*\s+push\b|['\"]git(?:\.exe)?['\"]\s*,\s*['\"]push['\"])"
 PUSH_RE = re.compile(PUSH_CMD, re.I)
 PUSH_PROTECTED_RE = re.compile(PUSH_CMD + r"[^\n]*?(?<![\w.-])(?:" + _PROT + r")(?![\w.-])", re.I)
 PUSH_FORCE_RE = re.compile(PUSH_CMD + r"[^\n]*?(?:\s--force\b|\s--force-with-lease\b|\s-f\b|\s\+\S)", re.I)
@@ -328,7 +328,8 @@ def split_commands(command):
 
 
 def git_subcommand(segment):
-    match = re.match(r"^(?:\S*[\\/])?git(?:\.exe)?\s+(?:-[-\w]+(?:[= ]\S+)?\s+)*([a-z][\w-]*)", segment)
+    # also `"git" push`, `'git' commit` and `& "C:\Program Files\Git\bin\git.exe" push` (quoted executable, PowerShell call operator)
+    match = re.match(r"^(?:&\s*)?['\"]?(?:[^'\"\s]*[\\/]|[^'\"]*[\\/](?=git(?:\.exe)?['\"]))?git(?:\.exe)?['\"]?\s+(?:-[-\w]+(?:[= ]\S+)?\s+)*([a-z][\w-]*)", segment)
     return match.group(1) if match else None
 
 
@@ -417,6 +418,15 @@ def executor_task(payload):
     return executor_slug(payload, TASK_MARK)
 
 
+def long_path(path):
+    """Windows: a transcript under ~/.claude/projects/<long project name>/... easily passes MAX_PATH (260), and plain open() then
+    fails, so the executor identity was silently lost (seen in the real audit loop: 272 chars). The `\\\\?\\` prefix lifts the limit."""
+    if os.name != "nt" or path.startswith("\\\\?\\"):
+        return path
+    absolute = os.path.abspath(path)
+    return "\\\\?\\" + absolute if len(absolute) >= 248 else path
+
+
 def executor_slug(payload, mark=None):
     """Which feature does this executor serve? Best effort: reads the subagent transcript (if the hook brings agent_id) and
     looks for the `SCOPE_FEATURE: <slug>` line of the dispatch prompt. None = could not tell (falls back to the union of the scopes)."""
@@ -427,6 +437,7 @@ def executor_slug(payload, mark=None):
         if not transcript and agent_id and payload.get("transcript_path"):
             base = os.path.splitext(payload["transcript_path"])[0]
             transcript = os.path.join(base, "subagents", "agent-%s.jsonl" % agent_id)
+        transcript = long_path(transcript) if transcript else transcript
         if not transcript or not os.path.isfile(transcript):
             return None
         with open(transcript, encoding="utf-8", errors="replace") as handle:
