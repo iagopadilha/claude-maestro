@@ -275,7 +275,7 @@ class ActionTests(CommandsTestCase):
         self.assertEqual(argv[argv.index("--disallowedTools") + 1:argv.index("--strict-mcp-config")],
                          ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "NotebookEdit"])
         self.assertEqual(argv[argv.index("--strict-mcp-config") + 1:], ["--mcp-config", '{"mcpServers":{}}'])
-        self.assertEqual(argv[:3], ["-p", "--output-format", "json"])
+        self.assertEqual(argv[:4], ["-p", "--output-format", "stream-json", "--verbose"])
         self.assertNotIn("--resume", argv)
         self.assertFalse(any("SECRET-IN-THE-REQUEST" in item for item in argv))
         self.assertIn("SECRET-IN-THE-REQUEST", record["stdin"])

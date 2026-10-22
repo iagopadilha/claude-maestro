@@ -50,7 +50,7 @@ class TestBuildCommand(ClaudeClientCase):
         argv = self.client.build_command("sonnet", 1, ["Read", "Grep"], ["Bash"], no_mcp=True, resume_session="s-9",
                                          fork_session=True, prompt_argument="/orchestrator roadmap", permission_mode="acceptEdits")
         self.assertEqual(argv[:4], [sys.executable, self.binary, "-p", "/orchestrator roadmap"])
-        self.assertEqual(argv[argv.index("--output-format") + 1], "json")
+        self.assertEqual(argv[argv.index("--output-format") + 1:argv.index("--output-format") + 3], ["stream-json", "--verbose"])
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
         self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "1")
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "acceptEdits")
@@ -66,7 +66,7 @@ class TestBuildCommand(ClaudeClientCase):
 
     def test_without_optionals_adds_no_empty_flags(self):
         argv = self.client.build_command("", 0, no_mcp=False)
-        self.assertEqual(argv, [sys.executable, self.binary, "-p", "--output-format", "json"])
+        self.assertEqual(argv, [sys.executable, self.binary, "-p", "--output-format", "stream-json", "--verbose"])
 
     def test_fork_without_session_is_ignored(self):
         self.assertNotIn("--fork-session", self.client.build_command("sonnet", 1, fork_session=True))

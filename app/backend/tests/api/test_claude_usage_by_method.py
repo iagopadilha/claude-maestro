@@ -132,6 +132,66 @@ class CallLogTests(unittest.TestCase):
         self.assertEqual(len(self.service.list_calls([self.folder, self.folder])), 1)
 
 
+WINDOWS = {"five_hour": {"pct": 60.0, "reset_at": 1792702800, "reset_local": "2026-10-22T14:30:00"},
+           "seven_day": {"pct": 100.0, "reset_at": 1793000000, "reset_local": "2026-10-26T09:00:00"}}
+
+
+class TurnUsageFieldsTests(unittest.TestCase):
+    def test_turn_carries_its_windows_and_status_and_an_old_turn_has_none(self):
+        turn = build_turn_claude(dict(LOGIN_TURN, usage_windows=WINDOWS, limit_status="rejected"))
+        self.assertEqual((turn["usage_windows"]["seven_day"]["pct"], turn["limit_status"]), (100.0, "rejected"))
+        old = build_turn_claude(LOGIN_TURN)
+        self.assertEqual((old["usage_windows"], old["limit_status"]), ({}, ""))
+
+    def test_invalid_windows_are_dropped(self):
+        self.assertEqual(build_turn_claude({"usage_windows": {"five_hour": {"pct": None}, "x": "y"}})["usage_windows"], {})
+
+
+class UsageViewInStateTests(ReadTestCase):
+    def test_state_lists_usage_per_command_from_meta_and_unknown_without_data(self):
+        self.fixture.start()
+        self.fixture.write_json("turns/001.json", dict(CC_TURN, usage_windows=WINDOWS, limit_status="allowed", cc_account="claude2"))
+        self.fixture.write_json("meta.json", dict(claude="claude", turns=1, claude_usage={
+            "claude": {"windows": WINDOWS, "status": "allowed", "read_at": "2026-10-22T10:00:00"}}))
+        data = self.state()
+        view = {row["key"]: row for row in data["meta"]["claude_usage_view"]}
+        self.assertEqual([w["exhausted"] for w in view["claude"]["windows"]], [False, True])
+        self.assertIn("cc:claude2", view)  # found only in the turn log
+        self.assertEqual(data["turns"][0]["usage_windows"]["five_hour"]["pct"], 60.0)
+
+    def test_state_without_any_usage_has_an_empty_view(self):
+        self.fixture.start()
+        self.fixture.write_json("meta.json", dict(claude="claude", turns=0))
+        self.assertEqual(self.state()["meta"]["claude_usage_view"], [])
+
+
+class DiagnosticsUsageTests(unittest.TestCase):
+    def test_command_rows_get_their_usage_and_a_project_free_run_is_unknown(self):
+        from harness_backend.services.app_diagnostics_service import AppDiagnosticsService
+        view = [{"key": "claude", "command": "claude", "windows": [{"key": "five_hour"}]},
+                {"key": "cc:a", "command": "cc", "windows": []}, {"key": "cc:b", "command": "cc", "windows": []}]
+        rows = AppDiagnosticsService.attach_usage([{"name": "claude"}, {"name": "C:/bin/cc.cmd"}, {"name": "other"}], view)
+        self.assertEqual([len(row["usage"]) for row in rows], [1, 2, 0])
+
+    def test_usage_is_read_from_the_project_files_only(self):
+        from harness_backend.services.app_diagnostics_service import AppDiagnosticsService
+        folder = tempfile.mkdtemp(prefix="usage-diag-")
+        self.addCleanup(shutil.rmtree, folder, True)
+        service = AppDiagnosticsService(type("Config", (), {"claude_binary": "claude", "claude_fallback_binaries": ["cc"]})(), None, None)
+        ClaudeCallLogRepository().append_call(folder, {"at": "2026-10-22T10:00:00", "claude": "cc", "cc_account": "a", "usage_windows": WINDOWS,
+                                                       "limit_status": "allowed"})
+        service.claude_call_log_repository = ClaudeCallLogRepository()
+        from harness_backend.services import app_diagnostics_service as module
+        original = module.build_shared_claude_account_service
+        module.build_shared_claude_account_service = lambda config: ClaudeAccountService(
+            lambda: [{"name": "claude", "role": "main"}, {"name": "cc", "role": "fallback"}])
+        self.addCleanup(setattr, module, "build_shared_claude_account_service", original)
+        view = {row["key"]: row for row in service.build_claude_usage([folder])}
+        self.assertEqual(view["claude"]["windows"], [])
+        self.assertEqual(len(view["cc:a"]["windows"]), 2)
+        self.assertNotIn("cc", view)
+
+
 class StateAndHistoryPayloadTests(ReadTestCase):
     def test_state_turns_agents_and_totals_carry_the_sign_in(self):
         self.fixture.start()

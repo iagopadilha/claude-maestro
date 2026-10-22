@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contract of the `claude -p --output-format json` output, as the engine and the app read it (engine/cli_output.py).
+"""Contract of the `claude -p --output-format stream-json --verbose` output (the older `json` shape stays accepted), as the engine and the app read it (engine/cli_output.py).
 
 Run (from app/):  python -m unittest discover -s backend/tests -t backend -p "test_cli_contract.py" -v
 
@@ -8,7 +8,7 @@ The fixtures in fixtures/cli/ are recorded shapes of the CLI output: success, th
 `run_loop.parse_result` (engine) and `ClaudeClient.parse_json_output` (app) must agree on every one of them.
 
 Live test (OPT-IN, skipped by default): LOOP_LIVE_CLI_TEST=1 runs ONE real
-    claude -p "Reply with the single word OK" --output-format json --max-budget-usd 0.05
+    claude -p "Reply with the single word OK" --output-format stream-json --verbose --max-budget-usd 0.05
 in a temporary folder and checks the normalised schema. It uses your Claude Code login: it counts toward your plan's usage
 limits (or bills your API key, if that is how your CLI is signed in). Run it after updating Claude Code, then bump
 `cli_output.MIN_TESTED_CLAUDE_VERSION`.
@@ -33,8 +33,8 @@ LIVE_FLAG = "LOOP_LIVE_CLI_TEST"
 LIVE_PROMPT = "Reply with the single word OK"
 LIVE_BUDGET_USD = "0.05"
 LIVE_TIMEOUT_SECONDS = 180
-NORMALISED_TYPES = {"result": str, "is_error": bool, "subtype": str, "session_id": str, "usage": dict, "permission_denials": list}
-OPTIONAL_NUMBERS = {"total_cost_usd": float, "duration_ms": int, "num_turns": int}
+NORMALISED_TYPES = {"result": str, "is_error": bool, "subtype": str, "session_id": str, "usage": dict, "permission_denials": list, "rate_limit": dict}
+OPTIONAL_NUMBERS = {"total_cost_usd": float, "duration_ms": int, "num_turns": int, "api_error_status": int}
 
 
 def fixture(name):
@@ -113,6 +113,51 @@ class TestRecognisedShapes(ContractCase):
         data = self.parse("stream_json.jsonl")
         self.assert_schema(data)
         self.assertEqual(data["result"], "OK from the stream")
+
+    def test_the_old_json_format_has_no_rate_limit_and_no_api_error(self):
+        data = self.parse("success.json")
+        self.assertEqual(data["rate_limit"], {})
+        self.assertIsNone(data["api_error_status"])
+
+    def test_the_last_rate_limit_event_gives_the_windows_in_percent(self):
+        data = self.parse("stream_json_rate_limit.jsonl")
+        self.assert_schema(data)
+        self.assertEqual(data["result"], "OK with usage")
+        rate_limit = data["rate_limit"]
+        self.assertEqual((rate_limit["status"], rate_limit["limit_type"], rate_limit["overage_status"]), ("allowed", "five_hour", "rejected"))
+        self.assertEqual(rate_limit["windows"], {"five_hour": {"pct": 60.0, "reset_at": 1792702800}, "seven_day": {"pct": 33.0, "reset_at": 1792767600}})
+        self.assertEqual(rate_limit["reset_at"], 1792702800)
+
+    def test_a_rejected_event_and_the_api_error_status_of_the_result(self):
+        data = self.parse("stream_json_rejected_403.jsonl")
+        self.assert_schema(data)
+        self.assertEqual(data["api_error_status"], 403)
+        self.assertEqual((data["rate_limit"]["status"], data["rate_limit"]["limit_type"]), ("rejected", "seven_day"))
+        self.assertEqual(data["rate_limit"]["windows"]["seven_day"]["pct"], 100.0)
+
+    def test_utilization_already_in_percent_is_kept_and_bad_values_are_dropped(self):
+        event = {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "unifiedWindows": {
+            "five_hour": {"utilization": 60, "resetsAt": 1792702800}, "seven_day": {"utilization": "x", "resetsAt": 1}, "other": "nope"}}}
+        windows = cli_output.normalize_rate_limit(event)["windows"]
+        self.assertEqual(windows, {"five_hour": {"pct": 60.0, "reset_at": 1792702800}})
+
+    def test_an_unreadable_event_is_an_empty_rate_limit(self):
+        for event in ({"type": "rate_limit_event"}, {"type": "rate_limit_event", "rate_limit_info": "x"},
+                      {"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": []}}):
+            self.assertEqual(cli_output.normalize_rate_limit(event), {})
+        result = json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "ok"})
+        self.assertEqual(cli_output.parse('{"type": "rate_limit_event", "rate_limit_info": 7}\n' + result)["rate_limit"], {})
+
+    def test_a_future_window_key_is_kept(self):
+        event = {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "unifiedWindows": {"seven_day_opus": {"utilization": 0.1, "resetsAt": 5}}}}
+        self.assertEqual(list(cli_output.normalize_rate_limit(event)["windows"]), ["seven_day_opus"])
+
+    def test_the_rate_limit_event_lines_can_be_taken_out_of_a_text_search(self):
+        text = fixture("stream_json_rate_limit.jsonl")
+        self.assertIn("rate_limit_event", text)
+        self.assertNotIn("rate_limit_event", cli_output.strip_rate_limit_events(text))
+        self.assertIn("OK with usage", cli_output.strip_rate_limit_events(text))
+        self.assertEqual(cli_output.strip_rate_limit_events(None), "")
 
     def test_warning_line_before_the_json(self):
         data = self.parse("warning_before_json.txt")
@@ -223,7 +268,7 @@ class TestLiveCliContract(ContractCase):
         folder = tempfile.mkdtemp(prefix="cli-contract-")
         self.addCleanup(shutil.rmtree, folder, True)
         version = subprocess.run([binary, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
-        done = subprocess.run([binary, "-p", LIVE_PROMPT, "--output-format", "json", "--max-budget-usd", LIVE_BUDGET_USD],
+        done = subprocess.run([binary, "-p", LIVE_PROMPT, "--output-format", "stream-json", "--verbose", "--max-budget-usd", LIVE_BUDGET_USD],
                               cwd=folder, capture_output=True, text=True, encoding="utf-8", errors="replace",
                               stdin=subprocess.DEVNULL, timeout=LIVE_TIMEOUT_SECONDS)
         data = cli_output.parse(done.stdout)

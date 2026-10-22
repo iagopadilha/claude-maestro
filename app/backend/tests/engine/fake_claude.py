@@ -10,7 +10,9 @@ The behavior of each feature comes from a JSON pointed to by FAKE_SCENARIO:
    "argv_log": "<file>",                # appends the argv (JSON line) of every call
    "contracts": {"slug": "- [add] route GET /x — purpose (File.cs)"},  # contract.md the executor writes for that feature
    "decision_lines": {"2": ["- [a] ..."]},  # lines appended to VALIDATE.md by that turn
-   "output": "json",                    # json | noisy (warning line before the JSON, text after) | garbage (no JSON)
+   "output": "json",                    # json | stream (stream-json: init, assistant, rate_limit_event, result) | noisy (warning line before the JSON, text after) | garbage (no JSON)
+   "rate_limit": {"status": "allowed", "limit_type": "five_hour", "five_hour": 0.6, "seven_day": 0.33,
+                  "five_hour_reset_in": 7200, "seven_day_reset_in": 259200},  # the stream's rate_limit_event (utilization as a fraction, resets in seconds)
    "cheat": {"turn": 2, "type": "illegal|no_commit"},
    "features": {"slug": {"paths": "apps/a", "deps": "x,dir:y", "scope": "Small|Medium", "kind": "back",
                          "exec": "ok|fail", "gate": "ok|block", "ask": false}}}
@@ -21,6 +23,7 @@ import re
 import subprocess
 import sys
 import datetime
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), "harness_backend", "engine"))
@@ -58,6 +61,19 @@ def set_fields(text, slug, **fields):
                     line += " %s=%s" % (key, value)
             lines[number] = line
     return "\n".join(lines) + "\n"
+
+
+def rate_limit_event(settings):
+    """The `rate_limit_event` line of a stream-json output, as claude 2.1.x prints it (utilization is a fraction, resets in epoch seconds)."""
+    now = int(time.time())
+    five_reset = now + int(settings.get("five_hour_reset_in", 7200))
+    seven_reset = now + int(settings.get("seven_day_reset_in", 259200))
+    limit_type = settings.get("limit_type", "five_hour")
+    return {"type": "rate_limit_event", "rate_limit_info": {
+        "status": settings.get("status", "allowed"), "resetsAt": five_reset if limit_type == "five_hour" else seven_reset, "rateLimitType": limit_type,
+        "overageStatus": "rejected", "overageDisabledReason": "org_level_disabled", "isUsingOverage": False,
+        "unifiedWindows": {"five_hour": {"utilization": settings.get("five_hour", 0.6), "resetsAt": five_reset},
+                           "seven_day": {"utilization": settings.get("seven_day", 0.33), "resetsAt": seven_reset}}}}
 
 
 def git(*args):
@@ -200,8 +216,13 @@ def main():
     }))
     result = json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "ok",
                          "total_cost_usd": scenario.get("cost", 0.1), "permission_denials": scenario.get("denials", [])})
-    output = scenario.get("output", "json")  # json | noisy (warning line before, text after) | garbage (no JSON at all)
-    if output == "noisy":
+    output = scenario.get("output", "json")  # json | stream | noisy (warning line before, text after) | garbage (no JSON at all)
+    if output == "stream":
+        print(json.dumps({"type": "system", "subtype": "init", "session_id": "sess-1"}))
+        print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "working on the rate limit and 429 handling"}]}}))
+        print(json.dumps(rate_limit_event(scenario.get("rate_limit") or {})))
+        print(result)
+    elif output == "noisy":
         print("Warning: a newer CLI version is available")
         print(result)
         print("Session saved.")

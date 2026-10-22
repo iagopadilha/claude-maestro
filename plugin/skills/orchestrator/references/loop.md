@@ -3,7 +3,7 @@
 Caller: the Loop Harness engine (`python "<app>/harness.py" loop <repo>`, script `run_loop.py`, Python outside Claude; `<app>` resolved as in `SKILL.md`, section Runtime). Each turn is a new conversation:
 
 ```
-claude -p "/orchestrator continue --headless --turn N --wave W --branch B [--e2e]" --output-format json \
+claude -p "/orchestrator continue --headless --turn N --wave W --branch B [--e2e]" --output-format stream-json --verbose \
        --permission-mode auto --permission-prompts none --max-budget-usd <value>
 ```
 

@@ -11,7 +11,7 @@
   python harness.py check <repo> [flags...]           shortcut for `loop <repo> --check`
   python harness.py state|notify|summary|deliver|rules|audit|graph|classify|scale|inventory|tasks [args...]   passed on to the engine scripts
       tasks waves <slug> [--max N] | set <slug> <Tn> <status> [--note] | mirror <slug>   task waves of one feature (--root DIR)
-  python harness.py doctor [--json]                   diagnostics (the same as GET /api/app/info)
+  python harness.py doctor [--json] [--project <repo>]                   diagnostics (the same as GET /api/app/info)
   python harness.py install [--data-dir D] [--skill-dir S]   writes ~/.loop-harness/config.json (app_root_dir and the skill
                                                       folder); this is how the skill finds the app. Does not touch ~/.claude.
 Exit code: the one of the script passed on; `serve` 0 when it ends; `doctor` 1 when there is a problem.
@@ -120,18 +120,19 @@ def run_demo(args):
     return run_demo_mode(args)
 
 
-def build_diagnostics():
+def build_diagnostics(project_folders=()):
     from harness_backend.config.app_config import load_app_config
     from harness_backend.services.app_diagnostics_service import build_app_diagnostics_service
     import monitor_proc
     config = load_app_config()
-    diagnostics = build_app_diagnostics_service(config).build_diagnostics()
+    diagnostics = build_app_diagnostics_service(config).build_diagnostics(project_folders)
     app = monitor_proc.read_live_app()
     diagnostics["live_app"] = {"url": app["url"], "pid": app.get("pid")} if app else None
     return diagnostics
 
 
 def print_diagnostics(diagnostics):
+    from harness_backend.services.claude_account_service import format_usage_line
     def mark(value):
         return "ok " if value else "NO "
     guard = diagnostics["guard"]
@@ -146,6 +147,8 @@ def print_diagnostics(diagnostics):
     for command in diagnostics.get("claude_commands", []):
         state = command["label"] or (command["auth"].get("error") or "account unknown") if command["found"] else "not found (skipped, never blocks)"
         print("[%s] %-8s `%s`: %s" % (mark(command["found"]), command["role"], command["name"], state))
+    for usage in diagnostics.get("claude_usage", []):
+        print("      usage %-14s %s%s" % (usage["key"], format_usage_line(usage), "" if usage["age_seconds"] is None else " (read %d min ago)" % (usage["age_seconds"] // 60)))
     print("[%s] .env file found" % mark(diagnostics["env_loaded"]))
     for channel in diagnostics["notify_channels"]:
         print("[%s] channel %-9s enabled=%s required=%s" % (mark(channel["configured"]), channel["name"], channel["enabled"], channel["required"]))
@@ -162,9 +165,10 @@ def run_doctor(args):
     parser = argparse.ArgumentParser(prog="harness.py doctor", description="App diagnostics (skill, guard, claude, notify channels)")
     parser.add_argument("--json", action="store_true", help="JSON output")
     parser.add_argument("--data-dir", default="")
+    parser.add_argument("--project", default="", help="repo folder whose loop files tell the 5-hour/weekly usage (default: usage unknown)")
     options = parser.parse_args(args)
     apply_data_dir(options.data_dir)
-    diagnostics = build_diagnostics()
+    diagnostics = build_diagnostics([os.path.abspath(options.project)] if options.project else [])
     if options.json:
         print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
     else:

@@ -1,4 +1,4 @@
-"""Client of `claude -p` (headless Claude Code): builds the argv, runs it with stdin, reads the JSON output, environment
+"""Client of `claude -p` (headless Claude Code): builds the argv, runs it with stdin, reads the stream-json output, environment
 without secrets.
 
 Who uses it: the read-only chat, the action router, the roadmap/mapping jobs. The loop itself stays in the engine
@@ -15,6 +15,7 @@ from typing import Protocol
 from ..config import skill_locator
 from ..engine import claude_binaries  # engine/ has no __init__.py: it imports as a namespace package (stdlib only modules)
 from ..engine import cli_output
+from ..engine import usage_windows
 from .process_runner import TIMEOUT_CODE, TIMEOUT_MESSAGE
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ class IClaudeClient(Protocol):
     def build_command(self, model, budget_usd, allowed_tools=None, disallowed_tools=None, no_mcp=True,
                       resume_session="", fork_session=False, prompt_argument="", permission_mode="", hook_profile="",
                       mcp_config_path="") -> list:
-        """argv of `claude -p ... --output-format json`."""
+        """argv of `claude -p ... --output-format stream-json --verbose`."""
 
     def run_prompt(self, argv, folder, stdin_text, timeout_seconds, extra_env=None) -> dict:
         """{"ok", "reply", "cost_usd", "session_id", "error", "raw", "binary"}."""
@@ -125,7 +126,7 @@ class ClaudeClient:
                       mcp_config_path=""):
         """argv without a shell. Without `prompt_argument`, the prompt goes through stdin in `run_prompt`.
 
-        Order: base, -p [prompt], --output-format json, --model, --max-budget-usd, --permission-mode, --allowedTools...,
+        Order: base, -p [prompt], --output-format stream-json --verbose, --model, --max-budget-usd, --permission-mode, --allowedTools...,
         --disallowedTools..., --settings <hook json>, --strict-mcp-config --mcp-config {empty}, --resume <session> [--fork-session].
         `hook_profile` (e.g. "planning", "spec", "subprojects", "systemmap"; the name is passed through to guard.py as is) adds the guard.py PreToolUse hook with that profile through an inline `--settings`
         (nothing is written to the user's project). `mcp_config_path` (with `no_mcp`) replaces the empty config by that file, e.g. the
@@ -135,7 +136,7 @@ class ClaudeClient:
         argv.append("-p")
         if prompt_argument:
             argv.append(prompt_argument)
-        argv += ["--output-format", "json"]
+        argv += ["--output-format", "stream-json", "--verbose"]  # the stream carries the rate_limit_event (5-hour and weekly usage)
         if model:
             argv += ["--model", model]
         if budget_usd:
@@ -172,7 +173,7 @@ class ClaudeClient:
         return build_push_disabled_variables((output or "").split() if code == 0 else [])
 
     def run_prompt(self, argv, folder, stdin_text, timeout_seconds, extra_env=None):
-        """Runs the argv (no shell, environment without secrets, stdin = `stdin_text`) and parses the `--output-format json` JSON.
+        """Runs the argv (no shell, environment without secrets, stdin = `stdin_text`) and parses the `--output-format stream-json` output (its last `result` event).
         When the command hits an account usage limit, or its account cannot be used (authentication or authorization failure), the
         same argv runs again with each fallback binary in turn.
 
@@ -217,10 +218,11 @@ class ClaudeClient:
             lines = [line for line in (error or output or "").strip().splitlines() if line.strip()]
             reason = raw.get("result") if raw.get("is_error") else None
             result["error"] = redact_secrets(reason or (lines[-1] if lines else "claude finished with an error"), ERROR_MESSAGE_LIMIT)
-            failure_text = "\n".join((reason or "", output or "", error or ""))
-            if claude_binaries.is_usage_limit(failure_text):
+            failure_text = "\n".join((reason or "", cli_output.strip_rate_limit_events(output), error or ""))  # that event's name says "rate_limit"
+            if claude_binaries.is_usage_limit(failure_text) or usage_windows.is_limited(raw.get("rate_limit")) or raw.get("api_error_status") == 429:
                 return result, LIMIT_CAUSE
-            return result, UNUSABLE_CAUSE if claude_binaries.is_account_unusable(failure_text) else ""
+            unusable = claude_binaries.is_account_unusable(failure_text) or raw.get("api_error_status") in (401, 403)
+            return result, UNUSABLE_CAUSE if unusable else ""
         result["ok"] = True
         result["reply"] = str(raw.get("result") or "")
         return result, ""

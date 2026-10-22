@@ -287,3 +287,4 @@
 .z-totals{flex-basis:100%;padding:6px 10px;border:1px solid #23272e;border-radius:6px;background:#14171c;font-size:11px;color:#c9ced5;}
 .z-totals-row{display:flex;justify-content:space-between;gap:12px;padding:1px 0;}
 .z-totals .z-figure-k{margin-top:4px;}
+.z-totals .is-exhausted{color:var(--amber-soft);font-weight:600;}

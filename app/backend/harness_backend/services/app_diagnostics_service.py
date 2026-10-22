@@ -11,7 +11,9 @@ import sys
 from ..config import envload
 from ..engine import cli_output
 from ..infrastructure.claude_client import redact_secrets
-from .claude_account_service import build_shared_claude_account_service
+from ..repositories.claude_call_log_repository import ClaudeCallLogRepository
+from ..repositories.loop_file_repository import LoopFileRepository
+from .claude_account_service import build_shared_claude_account_service, command_name
 
 GUARD_GIT_PUSH_INPUT = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git push"}})
 GUARD_BLOCKED_CODE = 2
@@ -21,6 +23,7 @@ VERSION_OUTPUT_LIMIT = 120
 TEST_NOTIFICATION_TIMEOUT_SECONDS = 120
 DEFAULT_ENABLED_CHANNELS = ("console", "toast", "file")
 CHANNEL_DETAIL_LIMIT = 200
+RECENT_TURNS_FOR_USAGE = 5
 NOTIFY_RESULT_LINE_PATTERN = re.compile(r"^(\S+)\s+((?:ok|FAILED|SKIPPED).*)$")
 
 
@@ -32,8 +35,13 @@ def load_engine_module(engine_dir, name):
 
 
 class AppDiagnosticsService:
-    def __init__(self, config, process_runner, claude_client):
+    def __init__(self, config, process_runner, claude_client, loop_file_repository=None, claude_call_log_repository=None,
+                 project_folders_provider=None):
+        """`project_folders_provider()` -> the folders whose loop files tell the usage (None = no project: \"usage unknown\")."""
+        self.project_folders_provider = project_folders_provider
         self.config = config
+        self.loop_file_repository = loop_file_repository or LoopFileRepository()
+        self.claude_call_log_repository = claude_call_log_repository or ClaudeCallLogRepository()
         self.process_runner = process_runner
         self.claude_client = claude_client
 
@@ -74,9 +82,30 @@ class AppDiagnosticsService:
         """Main and fallback `claude` commands: found or not, auth method and account (`auth status`, never a secret)."""
         return build_shared_claude_account_service(self.config).get_rows(wait=True)  # cached a few minutes, shared with the loop panel
 
-    def build_diagnostics(self):
-        """Dictionary of /api/app/info (without `seconds_until_shutdown`, which belongs to the server process)."""
+    @staticmethod
+    def attach_usage(command_rows, usage_view):
+        """Each command row gets `usage`: the usage-view rows of that command (one per cc account), [] when none."""
+        return [dict(row, usage=[item for item in usage_view if item["command"] == command_name(row.get("name"))]) for row in command_rows]
+
+    def build_claude_usage(self, project_folders=()):
+        """5-hour and weekly usage per command/account, from `meta.json`, the newest turns and the call log of the given project folders
+        (the loop's work folder and the repo). No query of its own; without a project the configured commands show "usage unknown"."""
+        meta, turns, calls = {}, [], []
+        for folder in project_folders:
+            meta = meta or self.loop_file_repository.read_meta(folder)
+            for number in self.loop_file_repository.list_turn_numbers(folder)[-RECENT_TURNS_FOR_USAGE:]:
+                turns.append(self.loop_file_repository.read_turn(folder, number))
+            calls += self.claude_call_log_repository.read_calls(folder)
+        calls.sort(key=lambda entry: str(entry.get("at") or ""), reverse=True)
+        return build_shared_claude_account_service(self.config).build_usage_view(meta, turns, calls, wait=True)
+
+    def build_diagnostics(self, project_folders=None):
+        """Dictionary of /api/app/info (without `seconds_until_shutdown`, which belongs to the server process).
+        `project_folders` = the folders whose loop files tell the usage of each command (none = \"usage unknown\")."""
         guard_found, guard_blocks = self.check_guard_blocks_git_push()
+        if project_folders is None:
+            project_folders = self.project_folders_provider() if self.project_folders_provider else []
+        usage_view = self.build_claude_usage(project_folders)
         channels = self.list_notify_channels()
         problems = []
         if not self.config.orchestrator_skill_dir:
@@ -101,7 +130,8 @@ class AppDiagnosticsService:
             "claude": {"on_path": claude_on_path, "binary_configured": bool(self.config.claude_binary), "version": version["version"],
                        "version_output": version["output"], "min_tested_version": version["min_tested_version"],
                        "older_than_tested": version["older_than_tested"]},
-            "claude_commands": self.describe_claude_commands(),
+            "claude_commands": self.attach_usage(self.describe_claude_commands(), usage_view),
+            "claude_usage": usage_view,
             "notify_channels": channels,
             "env_loaded": bool(envload.load_all()),
             "problems": problems,
@@ -126,9 +156,10 @@ class AppDiagnosticsService:
         return {"ok": code == 0, "results": results, "error": error_message}
 
 
-def build_app_diagnostics_service(config):
+def build_app_diagnostics_service(config, project_folders_provider=None):
     """Factory used when the composition does not inject the service (AppController with the fixed 5-argument signature)."""
     from ..infrastructure.claude_client import ClaudeClient
     from ..infrastructure.process_runner import ProcessRunner
     process_runner = ProcessRunner()
-    return AppDiagnosticsService(config, process_runner, ClaudeClient(process_runner, config.claude_binary, fallback_binaries=config.claude_fallback_binaries))
+    return AppDiagnosticsService(config, process_runner, ClaudeClient(process_runner, config.claude_binary, fallback_binaries=config.claude_fallback_binaries),
+                                  project_folders_provider=project_folders_provider)

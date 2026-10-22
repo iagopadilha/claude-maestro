@@ -18,6 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import engine_env  # noqa: E402,F401  (engine on sys.path, temporary LOOP_DATA_DIR)
 import claude_binaries  # noqa: E402
+import usage_windows  # noqa: E402
 import loop_state  # noqa: E402
 import run_loop  # noqa: E402
 from test_loop import FAKE, ROAD_BASIC, SCEN_BASIC, LoopCase  # noqa: E402
@@ -342,6 +343,147 @@ class TestLoopFallback(LoopCase):
         project = self.make(ROAD_BASIC, SCEN_BASIC)
         self.done(project.run("--claude-fallback", "no-such-claude-wrapper"), 0)
         self.assertEqual(project.loop_json()["status"], "done")
+
+
+class TestUsageWindowsInTheLoop(LoopCase):
+    """The loop reads the 5-hour and weekly usage from the stream-json output (rate_limit_event) of every turn."""
+
+    def turn_log(self, project, number=1):
+        with open(os.path.join(loop_state.turns_dir(project.work), "%03d.json" % number), encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def stream_scenario(self, **rate_limit):
+        return dict(SCEN_BASIC, output="stream", rate_limit=rate_limit)
+
+    def test_the_turn_log_and_meta_keep_the_windows_of_the_command_that_ran(self):
+        project = self.make(ROAD_BASIC, self.stream_scenario(status="allowed", five_hour=0.6, seven_day=0.33))
+        self.done(project.run(), 0)
+        log = self.turn_log(project)
+        self.assertEqual(log["limit_status"], "allowed")
+        self.assertEqual((log["usage_windows"]["five_hour"]["pct"], log["usage_windows"]["seven_day"]["pct"]), (60.0, 33.0))
+        self.assertTrue(log["usage_windows"]["seven_day"]["reset_local"])
+        self.assertNotIn("rate_limit", log)
+        usage = project.meta()["claude_usage"]["fake_claude"]
+        self.assertEqual((usage["status"], usage["windows"]["five_hour"]["pct"]), ("allowed", 60.0))
+        self.assertTrue(usage["read_at"])
+
+    def test_a_cc_account_has_its_own_usage_entry(self):
+        project = self.make(ROAD_BASIC, self.stream_scenario(five_hour=0.5, seven_day=0.2))
+        project.extra_env["FAKE_CC_ACCOUNT"] = "claudep"
+        self.done(project.run(), 0)
+        self.assertEqual(list(project.meta()["claude_usage"]), ["fake_claude:claudep"])
+
+    def test_the_old_json_output_leaves_no_usage_entry(self):
+        project = self.make(ROAD_BASIC, SCEN_BASIC)
+        self.done(project.run(), 0)
+        self.assertEqual(self.turn_log(project)["usage_windows"], {})
+        self.assertNotIn("claude_usage", project.meta())
+
+    def test_a_5_hour_limit_names_the_window_and_its_time(self):
+        project = self.make(ROAD_BASIC, self.stream_scenario(five_hour=0.3, seven_day=0.1))
+        project.extra_env.update(FAKE_LIMITED_WINDOW="five_hour", FAKE_LIMITED_RESET_IN="7200", LOOP_NOTIFY_CHANNELS="console,file")
+        result = project.run("--claude", LIMITED, "--claude-fallback", FAKE, "--limit-retries", "0", fake=False)
+        self.done(result, 0)
+        self.assertRegex(result.stdout, r"usage limit on `[^`]+` \(5-hour window, back at \d\d:\d\d\); turn 1 again")
+        self.assertIn("hit its usage limit (5-hour window, back at", result.stdout, "the change notice names the window too")
+        self.assertEqual(project.meta()["claude"], FAKE)
+        self.assertNotIn("weekly limit reached", result.stdout, "a 5-hour limit is not the weekly alert")
+
+    def test_a_weekly_limit_names_the_window_and_alerts_once_listing_the_other_commands(self):
+        project = self.make(ROAD_BASIC, self.stream_scenario(five_hour=0.6, seven_day=0.33))
+        project.extra_env.update(FAKE_LIMITED_WINDOW="seven_day", FAKE_LIMITED_RESET_IN=str(3 * 24 * 3600), FAKE_LIMITED_OTHER_PCT="25",
+                                 LOOP_NOTIFY_CHANNELS="console,file")
+        result = project.run("--claude", LIMITED, "--claude-fallback", FAKE, "--limit-retries", "0", fake=False)
+        self.done(result, 0)
+        self.assertRegex(result.stdout, r"\(weekly window, back on (Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d\d/\d\d \d\d:\d\d\)")
+        self.assertEqual(result.stdout.count("main account weekly limit reached, unusable until"), 1, "one alert per run, on the console channel")
+        self.assertIn("the loop continues on `fake_claude`", result.stdout)
+        self.assertEqual(result.stdout.count("usage limit on `%s`" % LIMITED), 1, "sticky: the limited main command runs once")
+        usage = project.meta()["claude_usage"]
+        self.assertEqual(usage["fake_claude_limited"]["windows"]["seven_day"]["pct"], 100.0)
+        self.assertEqual(usage["fake_claude"]["windows"]["five_hour"]["pct"], 60.0)
+
+    def test_the_weekly_alert_reaches_every_channel_and_lists_the_last_known_usage(self):
+        opts = argparse.Namespace(claude=LIMITED, claude_fallback=[FAKE], claude_index=0)
+        meta = {"claude_usage": {"fake_claude:claudep": {"windows": {"five_hour": {"pct": 60.0, "reset_at": 1792702800},
+                                                                    "seven_day": {"pct": 33.0, "reset_at": 1792767600}},
+                                                      "status": "allowed", "read_at": "2026-10-22T14:05:00"}}}
+        blocking = {"key": "seven_day", "pct": 100.0, "reset_at": 1792767600}
+        sent = []
+        with mock.patch.object(run_loop, "notify_wait", lambda subject, body, only=None: sent.append((subject, body, only))):
+            self.assertTrue(run_loop.alert_main_weekly_limit(opts, meta, 4, LIMITED, blocking))
+            self.assertFalse(run_loop.alert_main_weekly_limit(opts, meta, 5, LIMITED, blocking), "same reset: no repeat")
+            self.assertTrue(run_loop.alert_main_weekly_limit(opts, meta, 9, LIMITED, dict(blocking, reset_at=1793372400)), "the reset changed")
+        self.assertEqual(len(sent), 2)
+        subject, body, only = sent[0]
+        self.assertIsNone(only, "every channel")
+        self.assertTrue(subject.startswith("main account weekly limit reached, unusable until "), subject)
+        self.assertTrue(subject.endswith("the loop continues on `fake_claude`"), subject)
+        self.assertIn("`fake_claude:claudep`: 5h 60%", body)
+        self.assertIn("weekly 33%", body)
+        self.assertIn("read at 14:05", body)
+
+    def test_only_the_main_command_and_only_the_weekly_window_alert(self):
+        sent = []
+        weekly = {"key": "seven_day", "pct": 100.0, "reset_at": 1792767600}
+        with mock.patch.object(run_loop, "notify_wait", lambda subject, body, only=None: sent.append(subject)):
+            self.assertFalse(run_loop.alert_main_weekly_limit(argparse.Namespace(claude=LIMITED, claude_fallback=[FAKE], claude_index=1), {}, 2, FAKE, weekly))
+            self.assertFalse(run_loop.alert_main_weekly_limit(argparse.Namespace(claude=LIMITED, claude_fallback=[FAKE], claude_index=0), {}, 2, LIMITED,
+                                                              {"key": "five_hour", "pct": 100.0, "reset_at": 1792702800}))
+        self.assertEqual(sent, [])
+
+    def test_the_main_command_comes_back_at_the_reset_of_its_blocking_window(self):
+        now = datetime.datetime.now()
+        opts = argparse.Namespace(claude="claude", claude_fallback=[FAKE], limit_wait=30, claude_index=1, picker_tried=[])
+        weekly = usage_windows.reset_moment({"key": "seven_day", "reset_at": int((now + datetime.timedelta(days=3)).timestamp())})
+        opts.main_reset = run_loop.main_reset_moment(opts, weekly)
+        self.assertAlmostEqual((opts.main_reset - now).total_seconds(), 3 * 86400 + run_loop.RESET_MARGIN_SECONDS, delta=5)
+        self.assertFalse(run_loop.return_to_main_command(opts), "the weekly reset is days away: stay on the fallback")
+        five_hours = usage_windows.reset_moment({"key": "five_hour", "reset_at": int((now + datetime.timedelta(hours=2)).timestamp())})
+        self.assertAlmostEqual((run_loop.main_reset_moment(opts, five_hours) - now).total_seconds(), 7200 + run_loop.RESET_MARGIN_SECONDS, delta=5)
+        self.assertAlmostEqual((run_loop.main_reset_moment(opts, None) - now).total_seconds(), 1800 + run_loop.RESET_MARGIN_SECONDS, delta=5)
+
+    def test_the_wait_goes_to_the_earliest_window_and_names_it(self):
+        now = datetime.datetime.now()
+        opts = argparse.Namespace(limit_wait=30)
+        week = {"key": "seven_day", "reset_at": int((now + datetime.timedelta(days=3)).timestamp())}
+        five = {"key": "five_hour", "reset_at": int((now + datetime.timedelta(hours=2)).timestamp())}
+        for blocking in (week, five):
+            run_loop.remember_reset(opts, usage_windows.reset_moment(blocking), usage_windows.phrase(blocking))
+        seconds, moment = run_loop.limit_wait_seconds(opts)
+        self.assertAlmostEqual(seconds, 7200 + run_loop.RESET_MARGIN_SECONDS, delta=5)
+        self.assertTrue(opts.limit_reset_phrases[moment].startswith("5-hour window, back at "))
+
+    def test_a_rejected_status_makes_a_failed_turn_a_usage_limit_without_any_limit_text(self):
+        project = self.make(ROAD_BASIC, SCEN_BASIC)
+        project.extra_env["FAKE_LIMITED_WINDOW"] = "five_hour"
+        result = project.run("--claude", LIMITED, "--limit-retries", "0", fake=False)
+        self.done(result, 20)
+        self.assertIn("usage limit persisted", project.meta()["reason"])
+
+    def test_the_models_own_words_about_rate_limits_are_not_taken_for_a_limit(self):
+        project = self.make(ROAD_BASIC, self.stream_scenario(five_hour=0.1, seven_day=0.1))
+        failing = os.path.join(project.tmp, "failing_stream_claude.py")
+        with open(failing, "w", encoding="utf-8") as handle:
+            handle.write("import subprocess, sys\n"
+                         "subprocess.run([sys.executable, %r] + sys.argv[1:], stdin=sys.stdin)\n"
+                         "sys.exit(7)\n" % FAKE)
+        result = project.run("--claude", failing, "--claude-fallback", LIMITED, fake=False)
+        self.assertEqual(result.returncode, run_loop.EXIT["error"], result.stdout[-1500:])
+        self.assertNotIn("usage limit on", result.stdout, "the stream mentions rate limit and 429 only as the model's own text")
+
+    def test_a_401_or_403_api_status_is_an_unusable_account(self):
+        project = self.make(ROAD_BASIC, SCEN_BASIC)
+        silent = os.path.join(project.tmp, "silent_403_claude.py")
+        with open(silent, "w", encoding="utf-8") as handle:
+            handle.write("import json, sys\n"
+                         "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': True, 'result': 'Request refused', "
+                         "'api_error_status': 403, 'total_cost_usd': 0}))\n"
+                         "sys.exit(1)\n")
+        result = project.run("--claude", silent, "--claude-fallback", FAKE, "--limit-retries", "0", fake=False)
+        self.done(result, 0)
+        self.assertIn("account unusable on `%s`" % silent, result.stdout)
+        self.assertEqual(project.meta()["claude_unusable"][0]["turn"], 1)
 
 
 if __name__ == "__main__":

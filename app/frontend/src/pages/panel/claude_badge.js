@@ -30,6 +30,57 @@ export function methodCodeOf(source) {
 /** The same long wording written as a sentence ("subscription, browser login"). */
 export const methodSentence = (code) => (METHOD_WORDS[code] || '').replace(' · ', ', ');
 
+const WINDOW_WORDS = { five_hour: '5-hour', seven_day: 'weekly' };
+const pad = (number) => String(number).padStart(2, '0');
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** "14:30" for a reset today, "Mon 27/10 09:00" for another day (local time of the browser, from the epoch the loop recorded). */
+export function resetText(epochSeconds) {
+  if (!epochSeconds) return '';
+  const moment = new Date(epochSeconds * 1000), today = new Date();
+  const time = `${pad(moment.getHours())}:${pad(moment.getMinutes())}`;
+  return moment.toDateString() === today.toDateString() ? time : `${WEEKDAYS[moment.getDay()]} ${pad(moment.getDate())}/${pad(moment.getMonth() + 1)} ${time}`;
+}
+
+/** "5-hour 60 % (reset 14:30)" or "weekly 100 % - exhausted (reset Mon 27/10 09:00)" for one window ({key, label, pct, reset_at, exhausted}). */
+export function windowText(window) {
+  const label = window.label || WINDOW_WORDS[window.key] || String(window.key).replace(/_/g, ' ');
+  const reset = resetText(window.reset_at);
+  return `${label} ${Math.round(window.pct * 10) / 10} %${window.exhausted || window.pct >= 100 ? ' · exhausted' : ''}${reset ? ` (reset ${reset})` : ''}`;
+}
+
+/** The windows of one turn (`usage_windows`, an object keyed by window) as tooltip lines; [] when the turn has none. */
+function turnWindowLines(data) {
+  const windows = data.usage_windows || {};
+  const keys = Object.keys(windows).sort((a, b) => (a === 'five_hour' ? -1 : b === 'five_hour' ? 1 : a === 'seven_day' ? -1 : b === 'seven_day' ? 1 : 0));
+  return keys.map((key) => windowText({ ...windows[key], key, exhausted: windows[key].pct >= 100 }));
+}
+
+/** Usage line of the account row ("read 12 min ago"), or "usage unknown". */
+export function ageText(seconds) {
+  if (seconds === null || seconds === undefined) return '';
+  const minutes = Math.floor(seconds / 60);
+  return minutes < 1 ? 'read just now' : minutes < 120 ? `read ${minutes} min ago` : `read ${Math.floor(minutes / 60)} h ago`;
+}
+
+/** Tooltip lines for one command/account row of `state.meta.claude_usage_view`: its windows, or "usage unknown". */
+export function usageViewLines(row) {
+  const who = row.cc_account ? `${row.command} (cc account ${row.cc_account})` : row.command;
+  if (!row.windows || !row.windows.length) return [`${who}: usage unknown`];
+  return [`${who}: ${row.windows.map(windowText).join(' · ')}${ageText(row.age_seconds) ? ' · ' + ageText(row.age_seconds) : ''}`];
+}
+
+/** Every command/account with its 5-hour and weekly usage; a window at 100 % is drawn in the warning colour. Nothing without rows. */
+export function ClaudeUsageWindows() {
+  const rows = (ctx.state && ctx.state.meta && ctx.state.meta.claude_usage_view) || [];
+  if (!rows.length) return null;
+  return html`<div class="z-totals" aria-label="Usage windows per command and account">
+    <div class="z-figure-k">5-HOUR AND WEEKLY USAGE</div>
+    ${rows.map((row) => html`<div key=${row.key} class="z-totals-row"><span>${row.cc_account ? `${row.command} · ${row.cc_account}` : row.command}</span>
+      <span class="mono">${row.windows.length ? row.windows.map((window, index) => html`${index ? ' · ' : ''}<span class=${window.exhausted ? 'is-exhausted' : ''}>${windowText(window)}</span>`) : 'usage unknown'}${ageText(row.age_seconds) ? ' · ' + ageText(row.age_seconds) : ''}</span></div>`)}
+  </div>`;
+}
+
 /** What a badge shows for one turn or agent: { command, method, short, words, warning, title }; null when nothing is known. */
 export function describeClaude(source, { inherited = false } = {}) {
   const command = commandOf(source), method = methodCodeOf(source);
@@ -40,6 +91,9 @@ export function describeClaude(source, { inherited = false } = {}) {
   const lines = [`command: ${command || 'not recorded'}`, `sign-in: ${METHOD_WORDS[method] || 'unknown'}`];
   if (who) lines.push('account: ' + who);
   if (data.auth_plan) lines.push('plan: ' + data.auth_plan);
+  const windowLines = turnWindowLines(data);
+  if (windowLines.length) lines.push('usage after this turn: ' + windowLines.join(' · '));
+  if (data.limit_status === 'rejected') lines.push('this turn hit a usage limit');
   if (inherited) lines.push('', 'An agent runs inside the process of its turn, so it uses the same command, account and sign-in as the turn.');
   return { command, method, short, words: METHOD_WORDS[method] || '', warning: method === 'api_key', title: lines.join('\n') };
 }

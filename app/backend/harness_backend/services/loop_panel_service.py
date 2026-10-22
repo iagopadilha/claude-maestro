@@ -9,7 +9,7 @@ from ..domain.roadmap_settings import parse_loop_settings
 from ..domain.project_errors import InvalidPathError, SpecFileNotFoundError
 from ..repositories.specs_file_repository import compute_bytes_version, run_hints  # noqa: F401  (also puts the engine folder on sys.path)
 import subprojects as subprojects_engine  # noqa: E402
-from .claude_account_service import build_turn_claude, build_usage_totals  # noqa: E402
+from .claude_account_service import build_turn_claude, build_usage_totals, build_usage_view  # noqa: E402
 from .decisions_service import DecisionsService  # noqa: E402
 
 DEFAULT_LIMITS = {"max_cost": 50.0, "max_stall": 10, "timeout": 60}
@@ -139,6 +139,7 @@ class LoopPanelService:
         guard = self.guard_event_service.build_guard_summary(work_dir)
         self.attach_tasks_to_features(work_dir, features)
         turn_rows = self.turn_service.list_turns(work_dir, turn if running else None)
+        calls = self.list_panel_calls(context)
         agents = self.agent_history_service.build_state_agents(work_dir, summary, features, numbers)
         loop_settings = parse_loop_settings(roadmap_text)
         agent_claude = build_turn_claude(meta)  # every agent runs inside the turn's process: same command and sign-in
@@ -153,7 +154,8 @@ class LoopPanelService:
                      "max_cost_usd": effective_cost_cap(meta, read_command_limits(self.loop_file_repository.read_loop_command(work_dir))), "branch": meta.get("branch"), "pr": meta.get("pr"),
                      "pr_status": meta.get("pr_status"), "claude": meta.get("claude"), "claude_account": meta.get("claude_account"),
                      "claude_switches": meta.get("claude_switches"), "claude_account_info": self.build_claude_account(meta),
-                     "claude_totals": self.build_claude_totals(context, turn_rows), **build_turn_claude(meta),
+                     "claude_totals": self.build_claude_totals(context, turn_rows, calls),
+                     "claude_usage_view": self.build_claude_usage_view(meta, turn_rows, calls), **build_turn_claude(meta),
                      "max_parallel_tasks": loop_settings["settings"]["max_parallel_tasks"],
                      "max_parallel_tasks_in_header": "max_parallel_tasks" not in loop_settings["missing"]},
             "limits": self.build_limits(work_dir, meta, running, numbers), "stages": stages, "features": features, "counts": counts,
@@ -171,12 +173,21 @@ class LoopPanelService:
             "monitor": {"url": project_url, "idle_in_s": None, "shutdown_in_s": self.activity_monitor.seconds_until_shutdown()},
         }
 
-    def build_claude_totals(self, context, turn_rows):
+    def list_panel_calls(self, context):
+        """Every kept panel call (chat, map, roadmap...), newest first; [] when there is no call log service."""
+        if self.claude_call_log_service is None:
+            return []
+        return self.claude_call_log_service.list_all_calls([context.work_dir, context.repo_path])
+
+    def build_claude_totals(self, context, turn_rows, calls=None):
         """Turns and panel calls (chat, map, roadmap...) with their cost, per sign-in method and per command; see build_usage_totals."""
-        calls = []
-        if self.claude_call_log_service is not None:
-            calls = self.claude_call_log_service.list_all_calls([context.work_dir, context.repo_path])
-        return build_usage_totals(turn_rows, calls)
+        return build_usage_totals(turn_rows, self.list_panel_calls(context) if calls is None else calls)
+
+    def build_claude_usage_view(self, meta, turn_rows, calls):
+        """5-hour and weekly usage per command/account from meta, turn logs and the call log; never waits and never queries Claude."""
+        if self.claude_account_service is None:
+            return build_usage_view(meta, (), turn_rows, calls)
+        return self.claude_account_service.build_usage_view(meta, turn_rows, calls)
 
     def build_claude_account(self, meta):
         """Structured account in use ({command, role, method, email, org, plan, cc_account, switches, label}); never waits for `auth status`."""

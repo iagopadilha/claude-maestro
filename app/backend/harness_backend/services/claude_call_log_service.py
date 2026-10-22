@@ -1,13 +1,15 @@
 """Which command and sign-in each `claude -p` call of the panel used (chat, map, roadmap, validation, follow-up...).
 
 `ClaudeClient.run_prompt` hands every finished call to `record_call`; one line per call goes to the project's call log (see
-repositories/claude_call_log_repository.py): time, kind, command, sign-in method, account/e-mail, cost, ok. Recording never raises and
+repositories/claude_call_log_repository.py): time, kind, command, sign-in method, account/e-mail, cost, ok, and the 5-hour/weekly usage windows the call's own output reported (`usage_windows`,
+`limit_status`; empty when the output had no rate limit event). Recording never raises and
 never waits for `auth status`: the sign-in method comes from the account cache the loop panel already keeps warm (empty before it is read).
 """
 import datetime
 import threading
 
 from ..engine import claude_binaries
+from ..engine import usage_windows
 from ..repositories.claude_call_log_repository import ClaudeCallLogRepository
 from .claude_account_service import build_shared_claude_account_service, command_name, method_code
 
@@ -32,9 +34,12 @@ class ClaudeCallLogService:
         cc_account = str(result.get("account") or "")
         email = str(auth.get("email") or "") if not cc_account else ""
         cost = result.get("cost_usd")
+        rate_limit = (result.get("raw") or {}).get("rate_limit") or {}
         return {"at": self.clock().isoformat(timespec="seconds"), "kind": kind or UNKNOWN_KIND, "claude": command,
                 "auth_method": method_code(auth.get("method")), "auth_email": email, "auth_plan": str(auth.get("plan") or ""),
-                "cc_account": cc_account, "cost_usd": cost if isinstance(cost, (int, float)) else None, "ok": bool(result.get("ok"))}
+                "cc_account": cc_account, "cost_usd": cost if isinstance(cost, (int, float)) else None, "ok": bool(result.get("ok")),
+                "usage_windows": usage_windows.with_local_reset(usage_windows.windows_of(rate_limit)),
+                "limit_status": str(rate_limit.get("status") or "")}
 
     def find_command_auth(self, command):
         if self.account_service is None:

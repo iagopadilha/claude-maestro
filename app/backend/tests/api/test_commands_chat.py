@@ -145,7 +145,7 @@ class ChatTests(CommandsTestCase):
         self.assertEqual((job["state"], job["reply"], job["cost_usd"], job["error"], job["thread"]), ("ok", "test reply", 0.25, None, sent["thread"]))
         record, = self.records()
         argv = record["argv"]
-        self.assertEqual(argv[:4], ["-p", "--output-format", "json", "--model"])
+        self.assertEqual(argv[:5], ["-p", "--output-format", "stream-json", "--verbose", "--model"])
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
         self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "1")
         allowed = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
