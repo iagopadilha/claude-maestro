@@ -122,6 +122,39 @@ class TestLayoutResolution(GuardTestCase):
         self.assertFalse(os.path.exists(self.specs("project", "loop", "internal", "guard.log")))
 
 
+class TestStraySpecsInsideTheRepo(GuardTestCase):
+    """False positive of a real run: a test had left `app/backend/.specs` inside the repo; an executor whose cwd was under app/backend took that
+    folder as the root and its edit of `app/docs/API.md` was blocked by `repo-only`. The `.specs` of the git root wins over a nearer one."""
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.project, ".git"))
+        self.subfolder = os.path.join(self.project, "app", "backend", "service")
+        os.makedirs(os.path.join(self.project, "app", "backend", ".specs", "project"))
+        os.makedirs(self.subfolder)
+
+    def edit_from_subfolder(self, target, profile="orchestrator"):
+        payload = {"tool_name": "Edit", "tool_input": {"file_path": target}, "cwd": self.subfolder}
+        return subprocess.run([sys.executable, GUARD, "--profile", profile], input=json.dumps(payload), capture_output=True, text=True,
+                              env=self.env, cwd=self.subfolder).returncode
+
+    def test_a_repo_file_outside_the_stray_folder_is_allowed(self):
+        self.assertEqual(self.edit_from_subfolder(os.path.join(self.project, "app", "docs", "API.md")), PASSED)
+        self.assertEqual(self.edit_from_subfolder(os.path.join(self.project, "app", "docs", "API.md").replace("/", "\\")), PASSED)
+
+    def test_a_file_outside_the_repo_is_still_blocked(self):
+        # under the home folder: files in the system temp folder (where this test project lives) are exempt on purpose
+        self.assertEqual(self.edit_from_subfolder(os.path.join(os.path.expanduser("~"), "not-a-worktree-stray-specs", "x.md")), BLOCKED)
+
+    def test_the_git_root_specs_wins_and_without_git_the_nearest_is_used_as_before(self):
+        guard = load_guard_module()
+        previous = os.environ.pop("LOOP_SPECS_DIR", None)
+        self.addCleanup(lambda: previous is not None and os.environ.__setitem__("LOOP_SPECS_DIR", previous))
+        self.assertEqual(os.path.normcase(guard.find_specs_dir(self.subfolder)), os.path.normcase(self.specs()))
+        shutil.rmtree(os.path.join(self.project, ".git"))
+        self.assertEqual(os.path.normcase(guard.find_specs_dir(self.subfolder)), os.path.normcase(os.path.join(self.project, "app", "backend", ".specs")))
+
+
 class TestGuardLogTurnAndAttempt(GuardTestCase):
     """Each guard.log line says in which loop turn it happened and what the agent tried; the block message tells the agent it is final."""
 

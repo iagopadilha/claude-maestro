@@ -187,19 +187,25 @@ def specs_dir_from_env():
 
 
 def find_specs_dir(cwd):
+    """LOOP_SPECS_DIR, else walking up from `cwd`: the `.specs` of the git root (the folder holding `.git`, a repo or a worktree) wins
+    over a nearer one. A stray `.specs` inside the repo (a test run in a subfolder) would otherwise become the root, and every repo
+    file outside that subfolder would be blocked as outside the worktrees."""
     from_env = specs_dir_from_env()
     if from_env:
         return from_env
     here = os.path.abspath(cwd or os.getcwd())
+    nearest = None
     for _ in range(8):
         candidate = os.path.join(here, ".specs")
         if os.path.isdir(candidate):
-            return candidate
+            nearest = nearest or candidate
+        if os.path.exists(os.path.join(here, ".git")):
+            return candidate if os.path.isdir(candidate) else nearest
         parent = os.path.dirname(here)
         if parent == here:
             break
         here = parent
-    return None
+    return nearest
 
 
 def load_permissions(specs_dir):
