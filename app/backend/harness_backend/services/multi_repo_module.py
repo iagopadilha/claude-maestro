@@ -74,7 +74,8 @@ def build_multi_repo_module(config, log, project_service, loop_status_service, l
             paths.extend(repo.path for repo in stored)
         return list(dict.fromkeys(paths))
 
-    claude_client = ClaudeClient(process_runner, claude_binary=config.claude_binary, guard_path=config.guard_path)
+    claude_client = ClaudeClient(process_runner, claude_binary=config.claude_binary, guard_path=config.guard_path,
+                                 fallback_binaries=config.claude_fallback_binaries)
     repo_catalog_service = RepoCatalogService(claude_client, WorkspaceFileGuard(), log, known_paths_provider=list_known_repo_paths)
     if loop_control_service is not None:  # Start asks for the repository definition before it creates anything
         loop_control_service.scope_defined_provider = lambda context: project_repos.is_scope_defined(context.repo_path)

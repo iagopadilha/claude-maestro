@@ -43,7 +43,7 @@ def build_loop_commands_module(config, log, project_service, loop_status_service
     `planning_requirement_service` comes from the projects module (composition); alone (tests) the module builds its own."""
     process_runner = ProcessRunner()
     planning_requirement_service = planning_requirement_service or PlanningRequirementService(SpecsFileRepository(), process_runner)
-    claude_client = ClaudeClient(process_runner, config.claude_binary)
+    claude_client = ClaudeClient(process_runner, config.claude_binary, fallback_binaries=config.claude_fallback_binaries)
     git_client = GitClient(process_runner)
 
     loop_command_file_repository = LoopCommandFileRepository()

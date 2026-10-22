@@ -119,7 +119,7 @@ re-evaluated on every call: a worktree created later is picked up without reopen
 
 ## Data the app keeps
 - `~/.loop-harness/` (or `LOOP_DATA_DIR`): `repo-catalog.json` (the repo catalog, written only by the catalog job), `config.json` (`app_root_dir`, `orchestrator_skill_dir`,
-  `claude_transcripts_dir`, `output_dir`, `claude_binary`, `idle_hours`, `orchestrator_model`: model alias or id of the loop's orchestrator turns, default `opus`, `""` = no `--model` flag), `projects.json` (`{version, projects[]}`, one
+  `claude_transcripts_dir`, `output_dir`, `claude_binary` (the main `claude` command; empty = `claude` from PATH), `claude_fallback_binaries` (commands tried in order when the running one hits the account usage limit, e.g. `["cc"]`, a wrapper signed in with another account; a `.cmd` wrapper gets the prompt through stdin; a fallback missing on the machine is skipped; each turn logs `claude` and `claude_account`, shown in the turn header and by `harness.py doctor`; engine/claude_binaries.py), `idle_hours`, `orchestrator_model`: model alias or id of the loop's orchestrator turns, default `opus`, `""` = no `--model` flag), `projects.json` (`{version, projects[]}`, one
   item per project: `id, name, repo_path, opened_at, last_opened_at, favorite`), `app.json` of the live app (`pid, port,
   url, token, started_at, app_root_dir`), an optional `.env` and `logs/app.jsonl`.
 - In each project, under `.specs/` (layout of `engine/loop_state.py`): `project/` (`PROJECT.md`, `ROADMAP.md`,

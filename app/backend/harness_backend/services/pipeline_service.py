@@ -191,7 +191,8 @@ class PipelineService:
         return {"n": number, "label": build_turn_label(events, waves),
                 "status": get_turn_status(record, repository.read_snapshot_loop_json(snapshot)),
                 "cost_usd": to_number(record.get("total_cost_usd")), "duration_s": ms_to_seconds(record.get("duration_ms")),
-                "decision": decision or None, "events": events, "files": self.list_turn_files(work_dir, snapshot, previous)}
+                "decision": decision or None, "events": events, "files": self.list_turn_files(work_dir, snapshot, previous),
+                "claude": str(record.get("claude") or ""), "claude_account": str(record.get("claude_account") or "")}
 
     def build_live_turn(self, number, feature_rows, waves):
         """The turn in progress has no file yet: its RUNNING events are the features the loop is working on (agent inferred from the status,

@@ -8,12 +8,11 @@ import json
 import logging
 import os
 import re
-import shutil
-import sys
 from typing import Protocol
 
 from ..config import skill_locator
-from ..engine import cli_output  # engine/ has no __init__.py: it imports as a namespace package (stdlib only module)
+from ..engine import claude_binaries  # engine/ has no __init__.py: it imports as a namespace package (stdlib only modules)
+from ..engine import cli_output
 from .process_runner import TIMEOUT_CODE, TIMEOUT_MESSAGE
 
 logger = logging.getLogger(__name__)
@@ -60,7 +59,7 @@ class IClaudeClient(Protocol):
         """argv of `claude -p ... --output-format json`."""
 
     def run_prompt(self, argv, folder, stdin_text, timeout_seconds, extra_env=None) -> dict:
-        """{"ok", "reply", "cost_usd", "session_id", "error", "raw"}."""
+        """{"ok", "reply", "cost_usd", "session_id", "error", "raw", "binary"}."""
 
     def build_push_disabled_env(self, folder) -> dict:
         """GIT_CONFIG_* variables that turn off the push of every remote of the folder (for `extra_env`)."""
@@ -70,21 +69,22 @@ class IClaudeClient(Protocol):
 
 
 class ClaudeClient:
-    def __init__(self, process_runner, claude_binary="", guard_path=""):
-        """Empty `claude_binary` = `claude` from PATH. A `.py` (the tests' fake claude) runs with `sys.executable`.
+    def __init__(self, process_runner, claude_binary="", guard_path="", fallback_binaries=()):
+        """Empty `claude_binary` = `claude` from PATH; a name such as `cc` (a wrapper signed in with another account) is looked up
+        on PATH and on the saved user PATH. A `.py` (the tests' fake claude) runs with `sys.executable`. `fallback_binaries` =
+        the commands tried, in order, when the running one hits an account usage limit (engine/claude_binaries.py).
         `guard_path` = the orchestrator skill's guard.py (the app config's); empty = looked up through the skill locator."""
         self.process_runner = process_runner
         self.claude_binary = claude_binary
         self.guard_path = guard_path
+        self.fallback_binaries = list(fallback_binaries or [])
 
     def get_binary(self):
-        return self.claude_binary or shutil.which(DEFAULT_BINARY_NAME) or DEFAULT_BINARY_NAME
+        return claude_binaries.executable(self.claude_binary or DEFAULT_BINARY_NAME)
 
     def is_available(self):
-        """True if the configured binary exists or `claude` is on the PATH."""
-        if self.claude_binary:
-            return os.path.isfile(self.claude_binary) or bool(shutil.which(self.claude_binary))
-        return bool(shutil.which(DEFAULT_BINARY_NAME))
+        """True if the configured binary (or `claude`) is found."""
+        return bool(claude_binaries.resolve(self.claude_binary or DEFAULT_BINARY_NAME))
 
     def locate_guard(self):
         """guard.py of the orchestrator skill ('' when it is not installed)."""
@@ -113,8 +113,7 @@ class ClaudeClient:
         (nothing is written to the user's project). `mcp_config_path` (with `no_mcp`) replaces the empty config by that file, e.g. the
         read-only Grafana server of a project that opted in: still `--strict-mcp-config`, so no other MCP server joins it.
         """
-        binary = self.get_binary()
-        argv = [sys.executable, binary] if binary.endswith(".py") else [binary]
+        argv = claude_binaries.base_argv(self.claude_binary or DEFAULT_BINARY_NAME)
         argv.append("-p")
         if prompt_argument:
             argv.append(prompt_argument)
@@ -156,6 +155,7 @@ class ClaudeClient:
 
     def run_prompt(self, argv, folder, stdin_text, timeout_seconds, extra_env=None):
         """Runs the argv (no shell, environment without secrets, stdin = `stdin_text`) and parses the `--output-format json` JSON.
+        When the command hits an account usage limit, the same argv runs again with each fallback binary in turn.
 
         Always returns a dict (never raises):
           ok          True only with code 0, a JSON object and a false `is_error`
@@ -164,23 +164,40 @@ class ClaudeClient:
           session_id  the JSON `session_id` ('' if missing) - used for `--resume` later
           error       '' on success; otherwise short redacted text ("timed out", last stderr line, the error `result`)
           raw         the JSON dict (or {} if the output was not JSON)
+          binary      the command name that produced this result
+          account     the `cc` account that ran it ('' for any other command)
         """
-        code, output, error = self.process_runner.run_and_wait(argv, folder, timeout_seconds, input_text=stdin_text or "",
+        names = claude_binaries.ordered(self.claude_binary, self.fallback_binaries)
+        result = {}
+        for position, name in enumerate(names):
+            attempt = argv if position == 0 else claude_binaries.swap_binary(argv, names[0], name)
+            result, limited = self.run_once(attempt, folder, stdin_text, timeout_seconds, extra_env)
+            result["binary"] = name
+            result["account"] = result.pop("stderr_account", "")
+            if not limited or position == len(names) - 1:
+                break
+            logger.warning("`%s` hit the account usage limit: trying `%s`", name, names[position + 1])
+        return result
+
+    def run_once(self, argv, folder, stdin_text, timeout_seconds, extra_env):
+        """(result dict of `run_prompt`, True when it failed with an account usage limit)."""
+        argv, stdin_text = claude_binaries.prompt_through_stdin(argv, stdin_text or "")
+        code, output, error = self.process_runner.run_and_wait(argv, folder, timeout_seconds, input_text=stdin_text,
                                                                env=self.build_env_without_secrets(), extra_env=extra_env)
         raw = self.parse_json_output(output)
         result = {"ok": False, "reply": "", "cost_usd": self.extract_cost(raw), "session_id": str(raw.get("session_id") or ""),
-                  "error": "", "raw": raw}
+                  "error": "", "raw": raw, "stderr_account": claude_binaries.account_from_stderr(error)}
         if code == TIMEOUT_CODE:
             result["error"] = TIMEOUT_MESSAGE
-            return result
+            return result, False
         if code != 0 or not raw or raw.get("is_error"):
             lines = [line for line in (error or output or "").strip().splitlines() if line.strip()]
             reason = raw.get("result") if raw.get("is_error") else None
             result["error"] = redact_secrets(reason or (lines[-1] if lines else "claude finished with an error"), ERROR_MESSAGE_LIMIT)
-            return result
+            return result, claude_binaries.is_usage_limit("\n".join((reason or "", output or "", error or "")))
         result["ok"] = True
         result["reply"] = str(raw.get("result") or "")
-        return result
+        return result, False
 
     @staticmethod
     def parse_json_output(output):

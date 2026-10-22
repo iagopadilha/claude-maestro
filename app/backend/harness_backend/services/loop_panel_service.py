@@ -110,7 +110,7 @@ def parse_answers(text):
 
 class LoopPanelService:
     def __init__(self, loop_status_service, loop_file_repository, roadmap_view_service, turn_service, agent_history_service, activity_monitor,
-                 guard_event_service, planning_requirement_service, decisions_service=None, task_status_repository=None):
+                 guard_event_service, planning_requirement_service, decisions_service=None, task_status_repository=None, claude_account_service=None):
         self.loop_status_service = loop_status_service
         self.loop_file_repository = loop_file_repository
         self.roadmap_view_service = roadmap_view_service
@@ -121,6 +121,7 @@ class LoopPanelService:
         self.planning_requirement_service = planning_requirement_service
         self.decisions_service = decisions_service or DecisionsService()
         self.task_status_repository = task_status_repository  # None = no `tasks` block in the features
+        self.claude_account_service = claude_account_service  # None = `meta.claude_account_info` only repeats what meta.json has
 
     def build_state(self, context, project_url):
         work_dir = context.work_dir
@@ -141,7 +142,8 @@ class LoopPanelService:
             "loop": self.build_loop_block(work_dir, summary, turn),
             "meta": {"turns": meta.get("turns"), "cost_usd": meta.get("cost_usd"),
                      "max_cost_usd": effective_cost_cap(meta, read_command_limits(self.loop_file_repository.read_loop_command(work_dir))), "branch": meta.get("branch"), "pr": meta.get("pr"),
-                     "pr_status": meta.get("pr_status")},
+                     "pr_status": meta.get("pr_status"), "claude": meta.get("claude"), "claude_account": meta.get("claude_account"),
+                     "claude_switches": meta.get("claude_switches"), "claude_account_info": self.build_claude_account(meta)},
             "limits": self.build_limits(work_dir, meta, running, numbers), "stages": stages, "features": features, "counts": counts,
             "graph": graph, "agents": self.agent_history_service.build_state_agents(work_dir, summary, features, numbers),
             "validate": [line.strip() for line in self.loop_file_repository.read_state_file(work_dir, "VALIDATE.md").splitlines()
@@ -156,6 +158,12 @@ class LoopPanelService:
             "guard_events": guard["events"], "guard_counts": guard["counts"],
             "monitor": {"url": project_url, "idle_in_s": None, "shutdown_in_s": self.activity_monitor.seconds_until_shutdown()},
         }
+
+    def build_claude_account(self, meta):
+        """Structured account in use ({command, role, method, email, org, plan, cc_account, switches, label}); never waits for `auth status`."""
+        if self.claude_account_service is None:
+            return None
+        return self.claude_account_service.build_current_account(meta)
 
     def attach_tasks_to_building_features(self, work_dir, features):
         """Adds `tasks` ({tasks:[{id,title,status,wave,note}], max_parallel}) to each feature that is being built; others get no key."""

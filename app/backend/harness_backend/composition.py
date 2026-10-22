@@ -18,6 +18,7 @@ from .infrastructure.structured_log import StructuredLog
 from .infrastructure.activity_monitor import ActivityMonitor
 from .api.controllers.app_controller import AppController
 from .services.app_diagnostics_service import build_app_diagnostics_service
+from .services.claude_account_service import build_shared_claude_account_service
 from .services.decisions_service import DecisionsService
 from .services.projects_module import build_projects_module
 from .services.loop_read_module import build_loop_read_module
@@ -60,7 +61,8 @@ def build_application(config=None, **config_overrides):
     projects_module = build_projects_module(config, log, get_app_url)
     decisions_service = DecisionsService()  # one instance: the loop panel, the decisions routes and the wrap-up share it
     loop_read_module = build_loop_read_module(config, log, projects_module.project_service, activity_monitor,
-                                              projects_module.planning_requirement_service, decisions_service=decisions_service)
+                                              projects_module.planning_requirement_service, decisions_service=decisions_service,
+                                              claude_account_service=build_shared_claude_account_service(config))
     loop_commands_module = build_loop_commands_module(config, log, projects_module.project_service,
                                                       loop_read_module.loop_status_service, activity_monitor, get_app_url,
                                                       projects_module.planning_requirement_service)

@@ -332,6 +332,29 @@ Without an explicit file, 2 and 3 are merged (the first one that defines a key w
 - Test the configuration: `python <app>/harness.py notify --test` (or **Test notification** in the hub).
 - When the loop stops waiting for you, the email brings what was done, the question, what to check and **the ready resume command**: one per option and one with `--answer "WRITE YOUR MESSAGE HERE"`.
 
+## Fallback to another account (`claude` -> `cc`)
+When the account that runs the turns hits its usage limit, the loop can carry on with another command, for example `cc`, a wrapper signed in with a different account, instead of stopping.
+- **Config:** `claude_fallback_binaries` in `config.json` (a list such as `["cc"]`, or the flag `--claude-fallback cc`). The main command is `claude_binary` / `--claude` (default `claude`). A fallback that is not on this machine's PATH is skipped (`--check` only warns).
+- **Order of attempts:** the main command first, then each fallback in the listed order. The switch is sticky: after a limit the next turns stay on the new command, no turn is run twice on a limited one.
+- **What counts as a usage limit:** a failed turn whose output says 429, `usage limit`, `rate limit`, `limit reached`, `too many requests` or `quota`. `overloaded` (529) is a server problem, never a reason to switch.
+- **`cc` picker retry:** `cc` has several accounts and a picker. When the account it chose runs out during the turn, the loop runs the same turn again, once per `cc` account; each run the picker queries the fresh usage and picks the account with the least used 5-hour window (ties: the least used weekly window).
+- **Every command limited:** the loop waits until the first known reset plus 2 minutes (cap 8 days; when no reset time is known, `--limit-wait` minutes), up to `--limit-retries` times, then starts again from the main command. A pause in the panel interrupts the wait.
+- **Back to the main command without waiting for the others:** when the main command is the one that hit the limit, the loop remembers its reset moment (unknown: now + `--limit-wait` minutes). Before each turn, if it is on a fallback and that moment has passed, it goes back to the main command. If the main command hits the limit again, the normal fallback applies.
+- **`.cmd` / `.bat` wrappers** get the prompt through stdin (a multi-line prompt would break in `cmd.exe` arguments).
+- **Which command and account ran:** the turn log (`turns/NNN.json`: `claude`, `claude_account`), the CLAUDE block in the panel's turn header, and `python harness.py doctor`.
+- **Sign-in methods**, as `claude auth status` reports them: *browser login* (`claude.ai`) and *sign-in token* (`claude setup-token`) are both billed to the **subscription**; only an *API key* is billed per token. The notices and the panel name the method in these words.
+- **Notices sent.** The subject says which account the loop is on now and how it signs in. The body names both accounts (now and before) with the e-mail or `cc` account, the method, the organization and the plan, and why it changed:
+
+| Notice (subject) | When | Channels |
+|---|---|---|
+| `now on the backup account: cc account claude2 (subscription, sign-in token)` | the main command hit its limit and the loop moved to `cc` | every configured channel |
+| `back on the main account: dev@x.com (subscription, browser login)` | the main account's reset moment passed and the loop went back to it | every configured channel |
+| `cc switched to cc account claude3 (subscription, sign-in token)` | the `cc` picker moved to another account of the same command | local only: console, toast, file |
+| `credits ran out, back in 3h 21min` | every command is limited; carries the reset time | every configured channel |
+| `spend at 80 % of the cap` | the cost cap is close | every configured channel |
+
+The email provider (`LOOP_EMAIL_PROVIDER`) can be `smtp`, `http` or a local extension such as `backmail` (`engine/local_ext`, git-ignored). The `LOOP_SMTP_*` variables are ignored when another provider is chosen.
+
 ## Rewind and safety caps
 - `--max-cost N` (default US$ 50; `0` turns it off): when the spend summed over all turns passes the cap (or a turn would start over it) the loop PAUSES (`paused`, exit 10, resumable) instead of failing, with one notice at 80 %. Raise the cap of the run with `POST loop/raise-limit` (the status dialog) and it continues; the spent total is kept in `meta.json` and never reset.
 - On every turn the script validates the state (`loop_state.py`) and keeps a snapshot in `.specs/project/loop/internal/snapshots/NNN/`. If a turn leaves the state invalid, the loop stops and says which `--rewind` to use.

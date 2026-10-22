@@ -66,7 +66,9 @@ def git(*args):
 
 def main():
     argv = sys.argv[1:]
-    prompt = argv[argv.index("-p") + 1] if "-p" in argv else ""
+    prompt = argv[argv.index("-p") + 1] if "-p" in argv and argv.index("-p") + 1 < len(argv) else ""
+    if prompt.startswith("--"):  # no prompt argument: it came through stdin (a .cmd wrapper such as `cc`)
+        prompt = sys.stdin.read()
     tokens = prompt.split()
     turn = int(option(tokens, "--turn", "1"))
     phase = option(tokens, "--phase")
@@ -80,6 +82,8 @@ def main():
     e2e = "--e2e" in tokens
 
     scenario = json.loads(read(os.environ["FAKE_SCENARIO"]) or "{}")
+    if os.environ.get("FAKE_CC_ACCOUNT"):  # plays the `cc` account picker in headless mode: it names the account on stderr
+        print("[cc] conta: %s" % os.environ["FAKE_CC_ACCOUNT"], file=sys.stderr)
     if scenario.get("argv_log"):  # one JSON line per call: the whole argv (tests check --model and friends)
         with open(scenario["argv_log"], "a", encoding="utf-8") as handle:
             handle.write(json.dumps(argv) + "\n")

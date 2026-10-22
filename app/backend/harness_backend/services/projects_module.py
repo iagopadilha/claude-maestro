@@ -78,7 +78,8 @@ def build_projects_module(config, log, get_app_url, folder_dialog_argv=None, job
     """`folder_dialog_argv` and `job_timeout_seconds` only exist for tests (fake dialog, short job)."""
     process_runner = ProcessRunner()
     git_client = GitClient(process_runner)
-    claude_client = ClaudeClient(process_runner, claude_binary=config.claude_binary, guard_path=config.guard_path)
+    claude_client = ClaudeClient(process_runner, claude_binary=config.claude_binary, guard_path=config.guard_path,
+                                 fallback_binaries=config.claude_fallback_binaries)
     project_repository = ProjectRepository(config.projects_registry_path)
     specs_file_repository = SpecsFileRepository()
 

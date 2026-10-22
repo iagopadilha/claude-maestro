@@ -1,5 +1,5 @@
 /* LOOP zone (amber, main area): everything here depends on the selected turn. From top to bottom: the wrap-up (loop done or stopped
-   with a worktree), the pause banner, the turn
+   with a worktree), the Claude account chip (always visible), the pause banner, the turn
    strip, the header of the selected turn, the tabs (Pipeline | Decision & events | Files | Errors) and a row with the tab
    content plus the inspector. The zone scrolls vertically, so the pipeline gets height when the user scrolls down. */
 import { html } from '../../util/preact.js';
@@ -16,10 +16,17 @@ import { TurnStrip, stepsInTurn } from './turn_strip.js';
 import { Inspector } from './inspector.js';
 import { TabBar } from './global_zone.js';
 import { WrapUp, wrapUpVisible } from './wrap_up.js';
+import { ClaudeAccountChip, MethodTag, methodOf } from './claude_account_chip.js';
 
 const TURN_STATUS_LABEL = { done: 'DONE', error: 'ERROR', running: 'RUNNING', awaiting_user: 'WAITING FOR YOU', continue: 'CONTINUING' };
 const FALLBACK_DOT = 'var(--line4)';
 const DECISION_CLIP = 260;
+
+/** `claude`, `cc`...: the command of the turn without its folder and extension ('—' for turns logged before it was recorded). */
+function commandName(path) {
+  const name = String(path || '').split(/[\\/]/).pop().replace(/\.(cmd|bat|exe|py)$/i, '');
+  return name || '—';
+}
 
 function pickTab(tab) { pipe.tab = tab; renderAll(); }
 function pickView(view) { pipe.view = view; renderAll(); }
@@ -44,6 +51,8 @@ function TurnHeader({ turn }) {
       <div><div class="z-figure-k">DURATION</div><div>${isNum(turn.duration_s) ? dur(turn.duration_s) : '—'}</div></div>
       <div><div class="z-figure-k">COST</div><div>${isNum(turn.cost_usd) ? cost(turn.cost_usd) : '—'}</div></div>
       <div><div class="z-figure-k">STEPS IN TURN</div><div>${steps == null ? '—' : steps}</div></div>
+      <div title=${turn.claude_account || ''}><div class="z-figure-k">CLAUDE</div><div>${commandName(turn.claude)}<${MethodTag} method=${methodOf(turn.claude_account)} /></div>
+        ${turn.claude_account ? html`<div class="z-figure-k">${turn.claude_account}</div>` : null}</div>
     </div>
   </div>`;
 }
@@ -66,7 +75,7 @@ export function LoopZone({ on, planning }) {
   const tabs = [['pipeline', 'Pipeline'], ['log', 'Decision & events'], ['files', 'Files'], ['errors', failed ? `Errors (${failed})` : 'Errors']];
   return html`<main class="z-loop loop" id="loop-zone" aria-label="Loop" hidden=${planning}>
     ${on && wrapUpVisible() ? html`<${WrapUp} />` : null}
-    ${on ? html`<${PauseBanner} /><${TurnStrip} />
+    ${on ? html`<${ClaudeAccountChip} /><${PauseBanner} /><${TurnStrip} />
       <div class="z-loop-head"><${TurnHeader} turn=${turn} />
         <div class="z-loop-tabs">
           <${TabBar} tabs=${tabs} current=${tab} label="Loop views" className="z-ltabs" onPick=${pickTab} />

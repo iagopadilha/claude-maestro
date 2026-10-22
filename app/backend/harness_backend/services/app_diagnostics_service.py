@@ -11,6 +11,7 @@ import sys
 from ..config import envload
 from ..engine import cli_output
 from ..infrastructure.claude_client import redact_secrets
+from .claude_account_service import build_shared_claude_account_service
 
 GUARD_GIT_PUSH_INPUT = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git push"}})
 GUARD_BLOCKED_CODE = 2
@@ -69,6 +70,10 @@ class AppDiagnosticsService:
         return [{"name": name, "enabled": name in enabled, "required": name in required, "configured": not notify.missing_config(name)}
                 for name in notify.CHANNELS]
 
+    def describe_claude_commands(self):
+        """Main and fallback `claude` commands: found or not, auth method and account (`auth status`, never a secret)."""
+        return build_shared_claude_account_service(self.config).get_rows(wait=True)  # cached a few minutes, shared with the loop panel
+
     def build_diagnostics(self):
         """Dictionary of /api/app/info (without `seconds_until_shutdown`, which belongs to the server process)."""
         guard_found, guard_blocks = self.check_guard_blocks_git_push()
@@ -96,6 +101,7 @@ class AppDiagnosticsService:
             "claude": {"on_path": claude_on_path, "binary_configured": bool(self.config.claude_binary), "version": version["version"],
                        "version_output": version["output"], "min_tested_version": version["min_tested_version"],
                        "older_than_tested": version["older_than_tested"]},
+            "claude_commands": self.describe_claude_commands(),
             "notify_channels": channels,
             "env_loaded": bool(envload.load_all()),
             "problems": problems,
@@ -125,4 +131,4 @@ def build_app_diagnostics_service(config):
     from ..infrastructure.claude_client import ClaudeClient
     from ..infrastructure.process_runner import ProcessRunner
     process_runner = ProcessRunner()
-    return AppDiagnosticsService(config, process_runner, ClaudeClient(process_runner, config.claude_binary))
+    return AppDiagnosticsService(config, process_runner, ClaudeClient(process_runner, config.claude_binary, fallback_binaries=config.claude_fallback_binaries))

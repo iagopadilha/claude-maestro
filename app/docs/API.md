@@ -87,7 +87,10 @@ already ran loops and lost the approval (rows changed) is NOT in planning mode (
     "reason": "text (the question, or the cause of the error)", "next": "text",
     "options": ["a (recommended)", "b"], "to_check": ["x"], "at": "ISO", "pause_requested": false
   },
-  "meta": {"turns": 12, "cost_usd": 6.2, "max_cost_usd": 50, "branch": "...", "pr": null, "pr_status": null},
+  "meta": {"turns": 12, "cost_usd": 6.2, "max_cost_usd": 50, "branch": "...", "pr": null, "pr_status": null,
+           "claude": "cc", "claude_account": "token, cc account claude2", "claude_switches": 2,
+           "claude_account_info": {"command": "cc", "role": "main|fallback|''", "method": "login|token|API key|''", "email": "...", "org": "...",
+                                   "plan": "team", "cc_account": "claude2", "switches": 2, "label": "token, cc account claude2"}},
   "limits": [
     {"key": "cost", "label": "cost", "value": 6.2, "max": 50, "unit": "US$", "pct": 12.4},
     {"key": "turns_without_progress", "label": "without progress", "value": 0, "max": 10, "unit": "", "pct": 0},
@@ -120,6 +123,7 @@ already ran loops and lost the approval (rows changed) is NOT in planning mode (
   "monitor": {"url": "http://127.0.0.1:47801/p/<id>/", "idle_in_s": null, "shutdown_in_s": null}
 }
 ```
+`meta.claude_account_info` (`ClaudeAccountService`) is the account in use: the per-turn label of `meta.json` wins; the `auth status` rows (cached 5 min, refreshed by a background thread, never awaited by the poll) fill method/e-mail/org/plan and give the main command before turn 1 (empty fields until the first refresh ends). `GET /api/app/info` `claude_commands` reads the same cache and the hub diagnostics lists it.
 Derivation rules (server):
 - `loop.status`: `LOOP.lock` with a live PID = `running` (even if an old LOOP.json says otherwise); no lock and LOOP.json
   present = the LOOP.json status; no lock with LOOP.json in `continue` = `stopped` (the script died), or `error` when

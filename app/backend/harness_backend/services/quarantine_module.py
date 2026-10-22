@@ -22,7 +22,7 @@ class QuarantineModule:
 
 def build_quarantine_module(config, log, project_service, loop_read_module, loop_commands_module, planning_requirement_service):
     process_runner = ProcessRunner()
-    claude_client = ClaudeClient(process_runner, config.claude_binary)
+    claude_client = ClaudeClient(process_runner, config.claude_binary, fallback_binaries=config.claude_fallback_binaries)
     quarantine_service = QuarantineService(
         log, loop_read_module.loop_status_service, loop_read_module.loop_file_repository, loop_read_module.pipeline_service,
         loop_read_module.claude_transcript_repository, loop_commands_module.loop_control_service, GitClient(process_runner), claude_client,

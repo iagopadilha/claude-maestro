@@ -123,6 +123,52 @@ class TestRunPrompt(ClaudeClientCase):
         self.assertFalse(client.is_available())
 
 
+LIMITED_CLAUDE = r'''
+import json, sys
+sys.stdin.read()
+print(json.dumps({"type": "result", "is_error": True, "result": "Claude AI usage limit reached|1767225600"}))
+sys.exit(1)
+'''
+
+
+class TestFallbackBinaries(ClaudeClientCase):
+    def setUp(self):
+        super().setUp()
+        self.limited = os.path.join(self.folder, "limited_claude.py")
+        with open(self.limited, "w", encoding="utf-8") as handle:
+            handle.write(LIMITED_CLAUDE)
+
+    def test_usage_limit_runs_the_same_argv_with_the_fallback(self):
+        client = ClaudeClient(ProcessRunner(), self.limited, fallback_binaries=[self.binary])
+        result = client.run_prompt(client.build_command("sonnet", 1, prompt_argument="/x"), self.folder, "question", 60)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["binary"], self.binary)
+        self.assertEqual(result["raw"]["argv"][:2], ["-p", "/x"])
+        self.assertEqual(result["raw"]["argv"][result["raw"]["argv"].index("--model") + 1], "sonnet")
+
+    def test_other_errors_never_switch(self):
+        self.set_variable("FAKE_CLAUDE_MODE", "text")
+        client = ClaudeClient(ProcessRunner(), self.binary, fallback_binaries=[self.limited])
+        result = client.run_prompt(client.build_command("sonnet", 1), self.folder, "", 60)
+        self.assertEqual((result["ok"], result["binary"]), (False, self.binary))
+
+    def test_every_command_limited_returns_the_last_error(self):
+        client = ClaudeClient(ProcessRunner(), self.limited, fallback_binaries=[self.limited])
+        result = client.run_prompt(client.build_command("sonnet", 1), self.folder, "", 60)
+        self.assertFalse(result["ok"])
+        self.assertIn("usage limit", result["error"])
+
+    @unittest.skipUnless(os.name == "nt", "cmd.exe wrappers exist only on Windows")
+    def test_cmd_wrapper_gets_a_multi_line_prompt_whole_through_stdin(self):
+        wrapper = os.path.join(self.folder, "cc.cmd")
+        with open(wrapper, "w", newline="\r\n") as handle:
+            handle.write('@echo off\n"%s" "%s" %%*\n' % (sys.executable, self.binary))
+        client = ClaudeClient(ProcessRunner(), wrapper)
+        result = client.run_prompt(client.build_command("sonnet", 1, prompt_argument="line 1\nline 2"), self.folder, "", 60)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["reply"], "echo: line 1\nline 2")
+
+
 class TestExtraEnvAndPushDisabled(ClaudeClientCase):
     def test_extra_env_reaches_claude(self):
         variables = self.client.run_prompt(self.client.build_command("sonnet", 1), self.folder, "", 60,

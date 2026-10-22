@@ -39,7 +39,8 @@ class TurnService:
             status = TURN_STATUS_RUNNING if number == running_number else get_turn_status(record, snapshot_loop)
             rows.append({"n": number, "cost_usd": to_number(record.get("total_cost_usd")),
                          "duration_s": ms_to_seconds(record.get("duration_ms")), "status": status,
-                         "feature": to_text_list(snapshot_loop.get("feature")), "commits": commits, "has_snapshot": bool(snapshot)})
+                         "feature": to_text_list(snapshot_loop.get("feature")), "commits": commits, "has_snapshot": bool(snapshot),
+                         "claude": str(record.get("claude") or ""), "claude_account": str(record.get("claude_account") or "")})
         return rows
 
     def count_turns_without_progress(self, work_dir):

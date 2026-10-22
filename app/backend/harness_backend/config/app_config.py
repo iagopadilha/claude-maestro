@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass, field
 
 from . import skill_locator
+from ..engine import claude_binaries  # engine/ has no __init__.py: it imports as a namespace package (stdlib only module)
 
 APP_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 DATA_DIR_VARIABLE = "LOOP_DATA_DIR"
@@ -62,7 +63,8 @@ class AppConfig:
     engine_dir: str
     claude_transcripts_dir: str
     output_dir: str
-    claude_binary: str = ""  # empty = `claude` from PATH; tests inject a fake .py
+    claude_binary: str = ""  # empty = `claude` from PATH; a name such as `cc` (wrapper of another account) works; tests inject a fake .py
+    claude_fallback_binaries: list = field(default_factory=list)  # tried in order when the running command hits the account usage limit
     port_range: tuple = DEFAULT_PORT_RANGE
     fixed_port: int = 0
     idle_hours: float = DEFAULT_IDLE_HOURS  # 0 = never shuts down on its own
@@ -113,11 +115,12 @@ def load_app_config(**overrides):
         "claude_transcripts_dir": user_config.get("claude_transcripts_dir") or os.path.join(os.path.expanduser("~"), ".claude", "projects"),
         "output_dir": user_config.get("output_dir") or os.path.join(os.path.expanduser("~"), "Downloads"),
         "claude_binary": user_config.get("claude_binary", ""),
+        "claude_fallback_binaries": claude_binaries.read_fallbacks(user_config.get("claude_fallback_binaries")),
         "orchestrator_model": read_orchestrator_model(user_config),
         "idle_hours": float(user_config.get("idle_hours", DEFAULT_IDLE_HOURS)),
     }
     values["inventory_threshold_note"] = "; ".join(threshold_notes)
     for key, value in overrides.items():
-        if value not in (None, "", {}):
+        if value not in (None, "", {}, []):
             values[key] = value
     return AppConfig(**values)

@@ -143,6 +143,9 @@ def print_diagnostics(diagnostics):
     claude = diagnostics["claude"]
     print("[%s] `claude` available" % mark(claude["on_path"]))
     print("claude version ... %s (JSON contract tested with %s)" % (claude.get("version") or "unknown", claude.get("min_tested_version", "?")))
+    for command in diagnostics.get("claude_commands", []):
+        state = command["label"] or (command["auth"].get("error") or "account unknown") if command["found"] else "not found (skipped, never blocks)"
+        print("[%s] %-8s `%s`: %s" % (mark(command["found"]), command["role"], command["name"], state))
     print("[%s] .env file found" % mark(diagnostics["env_loaded"]))
     for channel in diagnostics["notify_channels"]:
         print("[%s] channel %-9s enabled=%s required=%s" % (mark(channel["configured"]), channel["name"], channel["enabled"], channel["required"]))
