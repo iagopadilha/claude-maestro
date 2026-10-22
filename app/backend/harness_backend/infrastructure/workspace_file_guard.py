@@ -12,6 +12,9 @@ from typing import Protocol
 
 BACKUP_FILE_LIMIT_BYTES = 1024 * 1024
 BACKUP_TOTAL_LIMIT_BYTES = 64 * 1024 * 1024
+# Folder names that are never compared nor copied, at ANY depth (`frontend/node_modules`, `backend/bin`): build output and
+# dependencies change by themselves and can hold tens of thousands of files, which would make the snapshot take minutes.
+DEFAULT_IGNORED_NAMES = ("node_modules", "bin", "obj", "dist", "build", ".git", ".vs", ".next", "coverage", "__pycache__")
 
 
 def to_relative_key(root, path):
@@ -30,13 +33,17 @@ def is_link_or_junction(path):
 class WorkspaceSnapshot:
     root: str
     ignored: tuple
+    ignored_names: tuple = DEFAULT_IGNORED_NAMES  # matched against every path segment
     files: dict = field(default_factory=dict)  # relative path -> (size, mtime_ns)
     folders: set = field(default_factory=set)
     copies: dict = field(default_factory=dict)  # relative path -> bytes
 
+    def __post_init__(self):
+        self.ignored_names_set = frozenset(self.ignored_names)
+
 
 class IWorkspaceFileGuard(Protocol):
-    def take_snapshot(self, root, ignored_paths=()) -> WorkspaceSnapshot: ...
+    def take_snapshot(self, root, ignored_paths=(), ignored_names=DEFAULT_IGNORED_NAMES) -> WorkspaceSnapshot: ...
     def revert_unexpected_changes(self, snapshot, allowed_paths) -> dict: ...
 
 
@@ -46,9 +53,11 @@ class WorkspaceFileGuard:
         self.backup_total_limit_bytes = backup_total_limit_bytes
 
     # ------------------------------------------------ snapshot
-    def take_snapshot(self, root, ignored_paths=()):
-        """`ignored_paths`: relative paths (`/` separator) of folders or files that are neither compared nor restored."""
-        snapshot = WorkspaceSnapshot(os.path.abspath(root), tuple(normalize_key(item).strip("/") for item in ignored_paths))
+    def take_snapshot(self, root, ignored_paths=(), ignored_names=DEFAULT_IGNORED_NAMES):
+        """`ignored_paths`: relative paths (`/` separator) of folders or files that are neither compared nor restored.
+        `ignored_names`: folder or file names ignored at any depth (every path segment is checked); an ignored folder is never descended."""
+        snapshot = WorkspaceSnapshot(os.path.abspath(root), tuple(normalize_key(item).strip("/") for item in ignored_paths),
+                                     tuple(normalize_key(name).strip("/") for name in ignored_names))
         copied_bytes = 0
         for relative, path, size, mtime_ns in self.walk_files(snapshot):
             snapshot.files[relative] = (size, mtime_ns)
@@ -62,6 +71,8 @@ class WorkspaceFileGuard:
 
     def is_ignored(self, snapshot, relative):
         key = normalize_key(relative)
+        if snapshot.ignored_names and not snapshot.ignored_names_set.isdisjoint(key.split("/")):
+            return True
         return any(key == item or key.startswith(item + "/") for item in snapshot.ignored)
 
     def walk_folders(self, snapshot):

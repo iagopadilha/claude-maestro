@@ -1,0 +1,37 @@
+/* AI decisions to review: the list component (components/decision_list.js), the dialog and the section of the turn tabs
+   (pages/panel/decisions.js). Tokens of base.css only. */
+.dl{display:flex;flex-direction:column;gap:16px;min-width:0;}
+.dl-empty{color:var(--muted);font-size:13px;padding:4px 0;text-align:left;}
+.dl-explain{margin:0 0 12px;color:var(--text2);font-size:12px;line-height:1.5;}
+.dl-group{display:flex;flex-direction:column;gap:8px;min-width:0;}
+.dl-turn{margin:0;font-size:11px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);}
+.dl-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;min-width:0;}
+.dl-item{border:1px solid var(--line2);background:var(--panel);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;min-width:0;}
+.dl-item.is-critical{border-color:var(--red-line);background:var(--red-bg);}
+.dl-item.is-reviewed{opacity:.7;}
+.dl-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;}
+.dl-level{font-size:10px;font-weight:600;letter-spacing:.08em;padding:1px 6px;border-radius:3px;border:1px solid var(--amber-line);color:var(--amber);background:var(--amber-bg);}
+.dl-level.is-critical{border-color:var(--red-line);color:var(--red-text);background:var(--red-bg);}
+.dl-feature{font-size:12px;font-weight:600;color:var(--text);min-width:0;overflow-wrap:anywhere;}
+.dl-state{font-size:10px;color:var(--green);border:1px solid var(--green-line);border-radius:3px;padding:0 5px;}
+.dl-state.is-change{color:var(--blue);border-color:var(--blue-line);}
+.dl-fields{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 10px;margin:0;font-size:12px;}
+.dl-fields dt{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em;padding-top:2px;}
+.dl-fields dd{margin:0;color:var(--text2);overflow-wrap:anywhere;}
+.dl-actions{display:flex;gap:8px;flex-wrap:wrap;}
+.dl-hint{margin:0;color:var(--muted);font-size:11px;}
+.dl-raw{flex-direction:row;gap:8px;align-items:baseline;}
+.dl-raw-no{font-size:10px;color:var(--muted);flex:none;}
+.dl-raw-text{font:11px var(--mono);color:var(--text2);overflow-wrap:anywhere;white-space:pre-wrap;}
+.dl-error{color:var(--red-text);font-size:12px;}
+
+/* count chip (DecisionsCount) */
+.dc{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;background:none;border:0;padding:0;font:inherit;color:var(--text2);cursor:pointer;text-align:left;}
+.dc:hover .dc-n{text-decoration:underline;}
+.dc-n{font-size:12px;}
+.dc-chip{font:600 10px var(--mono);letter-spacing:.06em;padding:1px 6px;border-radius:3px;border:1px solid var(--amber-line);color:var(--amber);background:var(--amber-bg);}
+.dc-chip.is-critical{border-color:var(--red-line);color:var(--red-text);background:var(--red-bg);}
+.dc-none{color:var(--muted);font-size:12px;}
+
+/* section in the turn tabs */
+.td{margin-top:16px;display:flex;flex-direction:column;gap:8px;min-width:0;}

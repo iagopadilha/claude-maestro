@@ -162,17 +162,17 @@ class LoopFileRepository:
         """STATE.md, VALIDATE.md, ANSWERS.md... at the place the engine uses."""
         return loop_state.read(loop_state.state_file(work_dir, name))
 
-    def read_roadmap_approval(self, work_dir):
-        return loop_state.roadmap_approval(work_dir)
+    def read_roadmap_approval(self, work_dir, primary_repo=None):
+        return loop_state.roadmap_approval_for_run(work_dir, primary_repo)
 
     def read_feature_spec(self, work_dir, slug):
-        return self.read_cached_text(os.path.join(work_dir, ".specs", "features", slug, "spec.md"))
+        return self.read_cached_text(os.path.join(loop_state.feature_dir(work_dir, slug), "spec.md"))
 
     def read_feature_spec_head(self, work_dir, slug, max_lines):
         """First lines of spec.md (only for the title); missing = []."""
         lines = []
         try:
-            with open(os.path.join(work_dir, ".specs", "features", slug, "spec.md"), encoding="utf-8", errors="replace") as handle:
+            with open(os.path.join(loop_state.feature_dir(work_dir, slug), "spec.md"), encoding="utf-8", errors="replace") as handle:
                 for _ in range(max_lines):
                     line = handle.readline()
                     if not line:
@@ -240,6 +240,27 @@ class LoopFileRepository:
             except (OSError, subprocess.SubprocessError):
                 count = None
             self.commit_cache[key] = count
+        return self.commit_cache[key]
+
+    def read_numstat_between(self, work_dir, previous_head, current_head):
+        """[{"path","add","del"}] of `git diff --numstat previous..current` (read only), cached; failure = None. A binary file counts 0/0."""
+        key = ("numstat", work_dir, previous_head, current_head)
+        if key not in self.commit_cache:
+            rows = None
+            try:
+                result = subprocess.run(["git", "-c", "core.quotepath=false", "-C", work_dir, "diff", "--numstat", "--no-renames",
+                                         previous_head, current_head], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                        timeout=GIT_TIMEOUT_SECONDS)
+                if result.returncode == 0:
+                    rows = []
+                    for line in result.stdout.splitlines():
+                        added, _, rest = line.partition("\t")
+                        removed, _, path = rest.partition("\t")
+                        if path:
+                            rows.append({"path": path, "add": int(added) if added.isdigit() else 0, "del": int(removed) if removed.isdigit() else 0})
+            except (OSError, subprocess.SubprocessError):
+                rows = None
+            self.commit_cache[key] = rows
         return self.commit_cache[key]
 
     def get_live_events_turn(self, work_dir, numbers):

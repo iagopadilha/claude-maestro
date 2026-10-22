@@ -14,9 +14,11 @@ Usage (CLI):
   python loop_state.py next <folder> [--wave N] [--headless]  # JSON: next phase and the features it must dispatch (deterministic scheduler)
 
 Feature line grammar (ROADMAP.md):
-  - [slug] status=<pending|speccing|specced|approved|building|verified|blocked> scope=<Small|Medium|Large|Complex>
+  - [slug] status=<pending|speccing|specced|approved|building|verified|blocked> title="<what the user gets>" scope=<Small|Medium|Large|Complex>
     kind=<back|front|both|generic> paths=<p1,p2> [repo-order=<repo,repo>] [deps=<slug|dir:folder,...>] [isolation=same-tree|worktree]
     [tries=<n>] [origin=adopted] [e2e=ok|failed|not-covered] [regression=yes|baseline|ok|failed] [note=...]
+`title="..."` = the readable name of the feature (a short sentence of what the user gets, in double quotes, no inner quotes). It is the only
+field whose value may hold spaces; the panel shows it as the feature name (`features[].name`). The slug stays the stable id (kebab case, 3-6 words).
 `regression` only exists on refactoring features (slug `refactor-*`) and only when the user asked for it in the ROADMAP: `yes` = requested,
 `baseline` = old code captured, `ok`/`failed` = comparison result. A feature with `regression` runs ALONE in the wave.
 `deps` = the feature's dependencies, comma-separated. `slug` = another feature that must be `verified` before the
@@ -46,7 +48,7 @@ REFACTOR_PREFIX = "refactor-"
 DIR_PREFIX = "dir:"
 REPO_PATH_PREFIX = re.compile(r"^([a-z0-9._-]+):(?![/\\])(.+)$")  # `<repo>:<path>`; a drive letter (C:/x) is never a repo prefix
 MAX_TRIES = 2
-LOOP_STATUS = ("continue", "awaiting_user", "done", "error")
+LOOP_STATUS = ("continue", "awaiting_user", "paused", "done", "error")  # paused = resumable stop written by run_loop.py (spend cap)
 ANSWERS_OK = ("approved", "specced", "pending")  # legal destinations of a `blocked` feature unblocked by the user
 
 # Graph edges (the supervisor decides which to follow). Within one turn the orchestrator may chain several.
@@ -65,7 +67,22 @@ BACK = {  # retry: lost dispatch, gate/verifier/E2E sent the feature back
     "specced": ("specced",),    # gate BLOCKED goes back to the spec-writer and the spec stays specced
 }
 FEATURE_LINE = re.compile(r"^- \[([^\]]+)\]\s*(.*)$")
+TITLE_FIELD = re.compile(r'\btitle="([^"]*)"')  # the one field whose value has spaces; cut out BEFORE the `key=value` scan
 STAGE_LINE = re.compile(r"^#{1,6}\s*Stage\s+(\S+)", re.I)
+FEATURE_FOLDER_INVALID_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')  # what a Windows path cannot hold ('backend:version-endpoint' is a legal slug)
+
+
+def feature_folder_name(slug):
+    """The folder name of a feature under `.specs/features/`: the slug with ':' (and any character a Windows path cannot hold) replaced by '-'."""
+    return FEATURE_FOLDER_INVALID_CHARACTERS.sub("-", str(slug or ""))
+
+
+def feature_dir(root, slug):
+    """`<root>/.specs/features/<folder>` of a feature. A legacy folder named with the raw slug is used only when it exists and the
+    new name does not (a slug with ':' on a system that allows it)."""
+    folder = os.path.join(root, ".specs", "features", feature_folder_name(slug))
+    legacy = os.path.join(root, ".specs", "features", str(slug))
+    return legacy if legacy != folder and os.path.isdir(legacy) and not os.path.isdir(folder) else folder
 
 
 def read(path):
@@ -89,7 +106,16 @@ def parse_roadmap(text):
         if not match:
             continue
         slug, rest = match.group(1), match.group(2)
-        fields = dict(re.findall(r"([\w-]+)=(\S+)", rest))  # [\w-]: repo-order has a hyphen
+        title = TITLE_FIELD.search(rest)
+        if title:
+            rest = rest[:title.start()] + " " + rest[title.end():]
+        # [\w-]: repo-order has a hyphen. Every key=value is kept as written, including the optional
+        # reqs=<ID|range,...> (e.g. reqs=ORIG-01..06,CRIA-01..08): fields["reqs"] is the raw comma list, no spaces.
+        fields = dict(re.findall(r"([\w-]+)=(\S+)", rest))
+        if title and title.group(1).strip():
+            fields["title"] = " ".join(title.group(1).split())
+        if not title and "title=" in rest:
+            errors.append('ROADMAP line %d: [%s] title= must be written title="short sentence" (double quotes, none inside)' % (number, slug))
         if "status" not in fields:
             errors.append("ROADMAP line %d: [%s] has no status=" % (number, slug))
             continue
@@ -349,8 +375,20 @@ def pick_wave(features, candidates, wave, headless=False, primary_name=""):
     return chosen
 
 
+LANE_RECOVER, LANE_EXECUTE, LANE_GATE, LANE_SPEC = "recover", "execute", "gate", "spec"
+LANE_PHASE = {LANE_RECOVER: "recover", LANE_EXECUTE: "execute", LANE_GATE: "gate", LANE_SPEC: "specs"}  # step -> the old per-turn phase name
+LANE_MIXED_PHASE = "lanes"
+
+
 def next_work(features, wave=1, headless=False, primary_name=""):
-    """Decides the next phase of the turn. Same priority as loop.md: the most advanced work that exists."""
+    """Decides the work of the next turn as independent LANES: one per feature, each at ITS OWN step (`lanes`: [{"slug", "step"}]).
+
+    A lane is the whole pipeline of one feature (spec -> gate -> execute -> verify -> commit); the turn starts every lane at the step its
+    feature is at, up to `wave` lanes, and the orchestrator then advances each lane by itself. Steps: `recover` (building/speccing: a lost
+    dispatch), `execute` (approved, deps verified, paths disjoint), `gate` (specced), `spec` (pending). Priority when there are more
+    candidates than `wave`: the most advanced first (recover > execute > gate > spec), file order inside a step. A feature that has to run
+    ALONE (regression=, isolation=worktree in headless) is the only lane of its turn. `phase` keeps the old name when every lane is at the
+    same step (`execute`, `gate`, `specs`, `recover`) and is `lanes` when they differ; `slugs` is every lane's slug."""
     # only the current stage moves: the first (in file order) that still has an open feature. A dependency between stages
     # needs no deps=: the next stage only starts when this one closes (verified/blocked).
     stages = list(dict.fromkeys(f.get("stage", "") for f in features.values()))
@@ -358,20 +396,35 @@ def next_work(features, wave=1, headless=False, primary_name=""):
     everything = features
     features = {slug: f for slug, f in everything.items() if f.get("stage", "") == current} if current is not None else everything
     by = lambda status: [s for s, f in features.items() if f["status"] == status]
+    cap = max(1, wave)
     approved = [s for s in by("approved") if ready(everything, s)]
     result = {
-        "phase": "none", "slugs": [], "waiting_deps": [s for s in by("approved") if not ready(everything, s)],
-        "stuck_by_blocked": [], "deferred_by_collision": [], "isolation": {},
+        "phase": "none", "slugs": [], "lanes": [], "waiting_deps": [s for s in by("approved") if not ready(everything, s)],
+        "stuck_by_blocked": [], "deferred_by_collision": [], "deferred_by_wave": [], "isolation": {},
     }
-    if by("building") or by("speccing"):
-        result.update(phase="recover", slugs=by("building") + by("speccing"))  # lost dispatch: Phase 0 resolves it
-    elif approved:
-        chosen = pick_wave(features, approved, max(1, wave), headless, primary_name)
-        result.update(phase="execute", slugs=chosen, deferred_by_collision=[s for s in approved if s not in chosen])
-    elif by("specced"):
-        result.update(phase="gate", slugs=by("specced")[:3])
-    elif by("pending"):
-        result.update(phase="specs", slugs=by("pending")[:3])
+    lanes = [{"slug": s, "step": LANE_RECOVER} for s in (by("building") + by("speccing"))[:cap]]  # lost dispatch: Phase 0 resolves it
+    room = cap - len(lanes)
+    chosen = pick_wave(features, approved, room, headless, primary_name) if room > 0 else []
+    if any(alone_in_wave(features[s], headless) for s in chosen):
+        chosen = [] if lanes else chosen[:1]  # alone in the wave: it is the only lane of its turn (or it waits for the recover lanes)
+        alone = bool(chosen)
+    else:
+        alone = False
+    lanes += [{"slug": s, "step": LANE_EXECUTE} for s in chosen]
+    room = 0 if alone else cap - len(lanes)
+    for step, status in ((LANE_GATE, "specced"), (LANE_SPEC, "pending")):
+        picked = by(status)[:max(0, room)]
+        lanes += [{"slug": s, "step": step} for s in picked]
+        room -= len(picked)
+    result["lanes"] = lanes
+    result["slugs"] = [lane["slug"] for lane in lanes]
+    result["deferred_by_collision"] = [s for s in approved if s not in result["slugs"]]
+    result["deferred_by_wave"] = [s for status in ("specced", "pending") for s in by(status) if s not in result["slugs"]]
+    steps = {lane["step"] for lane in lanes}
+    if len(steps) == 1:
+        result["phase"] = LANE_PHASE[next(iter(steps))]
+    elif steps:
+        result["phase"] = LANE_MIXED_PHASE
     for slug, f in features.items():
         if f["status"] not in ("verified", "blocked") and stuck_by_blocked(everything, slug):
             result["stuck_by_blocked"].append(slug)
@@ -381,6 +434,11 @@ def next_work(features, wave=1, headless=False, primary_name=""):
     if result["phase"] == "none" and all(f["status"] in ("verified", "blocked") for f in everything.values()):
         result["phase"] = "final"
     return result
+
+
+def alone_in_wave(feature, headless=False):
+    """Does this feature have to be the only lane of its turn? (regression proof, or a worktree feature in headless)"""
+    return feature.get("regression") in ("yes", "baseline", "failed") or (headless and feature.get("isolation") == "worktree")
 
 
 # ---------------------------------------------------------------- .specs/project layout
@@ -482,6 +540,28 @@ def roadmap_approval(work):
         return {"approved": False, "reason": "the roadmap changed after the approval (different features or stages): approve it again in the panel",
                 "at": saved.get("at"), "features": count}
     return {"approved": True, "reason": None, "at": saved.get("at"), "features": count}
+
+
+def roadmap_approval_for_run(work, primary):
+    """Approval status to SHOW for a loop that already started in `work` (the worktree), never to gate a start (that stays `roadmap_approval`,
+    which refuses a changed roadmap). The approval is written in the primary repo; the worktree may not hold its own copy (it is engine state, not
+    copied back and not tracked), so a worktree without the file shows the primary's approval, as long as the primary file is a real approval
+    of this roadmap's features and stages (the signature the user approved, compared with the roadmap that ran) or the worktree has none at all."""
+    own = roadmap_approval(work)
+    if own["approved"] or not primary or os.path.normcase(os.path.abspath(work)) == os.path.normcase(os.path.abspath(primary)):
+        return own
+    try:
+        with open(loop_path(primary, APPROVAL_NAME), encoding="utf-8") as handle:
+            saved = json.load(handle)
+    except (OSError, ValueError):
+        return own
+    worktree_has_file = os.path.isfile(loop_path(work, APPROVAL_NAME))
+    text = read(os.path.join(work, ".specs", "project", "ROADMAP.md"))
+    if not text or not isinstance(saved, dict):
+        return own
+    if worktree_has_file and saved.get("signature") != roadmap_signature(text)[0]:
+        return own  # the worktree holds its own approval and the roadmap moved away from what was approved: keep the honest answer
+    return {"approved": True, "reason": None, "at": saved.get("at") or own.get("at"), "features": own["features"]}
 
 
 def approve_roadmap(work, now_iso):

@@ -4,7 +4,7 @@
 Usage (orchestrator in chat, when closing the last roadmap item; run_loop.py calls `finalize()` by itself):
   python delivery.py <repo-or-worktree-root> [--base <integration branch>] [--branch NAME] [--draft] [--dry-run]
 
-The integration branch (PR target) is `--base`, else env/.env LOOP_INTEGRATION_BRANCH, else `developer`.
+The integration branch (PR target) is `--base`, else the ROADMAP `**Branch base:**` line, else env/.env LOOP_PR_BASE / LOOP_INTEGRATION_BRANCH, else `developer`.
 
 Rules (user decision; no flag turns them off):
   * feature branch only: the integration branch, develop, main, master, release, production, dev are REFUSED (push and PR from/to them);
@@ -36,14 +36,20 @@ sys.path.insert(0, HERE)
 import loop_state  # noqa: E402
 import notify  # noqa: E402  (only to read variables from the app .env via envload)
 import graph_view  # noqa: E402  (Mermaid graph in the PR body)
+import prod_database_script  # noqa: E402  (the .sql the user runs on PRODUCTION before deploying)
+import app_paths  # noqa: E402,F401  (puts the harness_backend package on sys.path)
+from harness_backend.domain.roadmap_settings import read_roadmap_base_branch  # noqa: E402
 
 BASE_PROTECTED = {"main", "master", "develop", "developer", "dev", "release", "production"}
 OPEN = {"pending", "speccing", "specced", "approved", "building"}
 DEFAULT_BASE = "developer"
 
 
-def integration_branch():
-    """Integration branch (PR target): LOOP_PR_BASE / LOOP_INTEGRATION_BRANCH from the environment or the app .env, default `developer`."""
+def integration_branch(chosen=""):
+    """Integration branch (PR target): `chosen` (the ROADMAP `Branch base`, passed as an option) first, then LOOP_PR_BASE /
+    LOOP_INTEGRATION_BRANCH from the environment or the app .env, default `developer`."""
+    if chosen and chosen.strip():
+        return chosen.strip()
     notify.envload.load()
     for name in ("LOOP_PR_BASE", "LOOP_INTEGRATION_BRANCH"):
         value = os.environ.get(name) or notify.envload.get(name)
@@ -52,8 +58,13 @@ def integration_branch():
     return DEFAULT_BASE
 
 
-def protected_names():
-    return BASE_PROTECTED | {integration_branch().lower()}
+def roadmap_base_branch(root):
+    """The `**Branch base:**` of the ROADMAP under `root` ("" when the line is absent or invalid)."""
+    return read_roadmap_base_branch(read(os.path.join(root, ".specs", "project", "ROADMAP.md")))
+
+
+def protected_names(chosen=""):
+    return BASE_PROTECTED | {integration_branch(chosen).lower()}
 
 
 def run(args, cwd=None, timeout=120):
@@ -155,11 +166,12 @@ def finalize(root, branch="", base="", draft=False, dry_run=False, roadmap_root=
     notify.envload.load()
     result = {"push": "not done", "pr": None, "pr_status": "not created"}
     branch = branch or git(root, "branch", "--show-current")[1]
-    base = base or integration_branch()
+    chosen = base or roadmap_base_branch(roadmap_root)
+    base = integration_branch(chosen)
     mode = (os.environ.get("LOOP_PR_MODE") or notify.envload.get("LOOP_PR_MODE") or "auto").lower()
     if not branch:
         result["push"] = "not done: detached HEAD (no branch)"
-    elif branch.lower() in protected_names():
+    elif branch.lower() in protected_names(chosen):
         result["push"] = "refused: %s is a protected branch; feature branch only" % branch
     elif branch == base:
         result["push"] = "refused: the feature branch cannot be the PR base (%s)" % base
@@ -227,24 +239,54 @@ def edit_pr_body(root, pr_url, branch, base, roadmap_root, related_prs, own_name
         os.unlink(body_file)
 
 
-def read_base(root):
+def read_base(root, fallback=""):
     """The PR base `finalize()` used, as it wrote it in that worktree's delivery.json (falls back to the integration branch)."""
     try:
         with open(loop_state.loop_path(root, "delivery.json"), encoding="utf-8") as handle:
-            return json.load(handle).get("base") or integration_branch()
+            return json.load(handle).get("base") or integration_branch(fallback)
     except (OSError, ValueError):
-        return integration_branch()
+        return integration_branch(fallback)
 
 
-def finalize_project(primary_work, meta, draft=False, dry_run=False):
+def attach_prod_database(primary_work, meta, result, dry_run=False, output_dir="", runner=None):
+    """Writes the production database script (never a block) and records it in `result["prod_database"]` (+ `result["warnings"]`) and in
+    the primary's delivery.json. Only after a confirmed push and never in a dry run. Returns `result`."""
+    if dry_run or not str(result.get("push", "")).startswith("done"):
+        return result
+    try:
+        outcome = prod_database_script.generate_for_meta(primary_work, meta, output_dir=output_dir, runner=runner)
+    except Exception as error:  # a delivery is never blocked by this
+        outcome = {"path": "", "repos": [], "sql_files": [], "warnings": ["production database script failed: %s" % str(error)[:300]]}
+    if outcome.get("path") or outcome.get("warnings"):
+        result["prod_database"] = outcome
+        if outcome.get("warnings"):
+            result["warnings"] = list(result.get("warnings") or []) + outcome["warnings"]
+        try:
+            target = loop_state.loop_path(primary_work, "delivery.json")
+            with open(target, encoding="utf-8") as handle:
+                saved = json.load(handle)
+            saved["prod_database"] = outcome
+            if outcome.get("warnings"):
+                saved["warnings"] = result["warnings"]
+            with open(target, "w", encoding="utf-8") as handle:
+                json.dump(saved, handle, ensure_ascii=False, indent=2)
+        except (OSError, ValueError):
+            pass
+    return result
+
+
+def finalize_project(primary_work, meta, draft=False, dry_run=False, output_dir="", runner=None, base=""):
     """Delivery of the whole project. `meta` = the primary worktree's meta.json (`repos`: name -> {worktree, branch, ...}).
 
     Without a `repos` map this IS the single-repo delivery (same call as before). With it: one `finalize()` per repo, the primary
     first, then the sibling links are written into the PR bodies this run created. Returns the aggregate (top-level fields =
-    the primary repo's, plus `repos`). The PR base is always the integration branch, never the branch of the user's folder."""
+    the primary repo's, plus `repos`). The PR base is always the integration branch (`base` = the ROADMAP `Branch base` passed as an option, else read from the
+    ROADMAP, else the environment, else `developer`), never the branch of the user's folder."""
+    base = base or roadmap_base_branch(primary_work)
     repos = meta.get("repos")
     if not isinstance(repos, dict) or not repos:
-        return finalize(primary_work, meta.get("branch", ""), draft=draft, dry_run=dry_run)
+        single = finalize(primary_work, meta.get("branch", ""), base, draft=draft, dry_run=dry_run)
+        return attach_prod_database(primary_work, meta, single, dry_run, output_dir, runner)
     names = sorted(repos, key=lambda name: not repos[name].get("primary"))
     primary_name = names[0]
     results, roots = {}, {}
@@ -254,13 +296,13 @@ def finalize_project(primary_work, meta, draft=False, dry_run=False):
         roots[name] = root
         if not os.path.isdir(root):
             results[name] = {"push": "not done: worktree missing", "pr": None, "pr_status": "not created",
-                             "branch": entry.get("branch", ""), "base": integration_branch(), "at": timestamp()}
+                             "branch": entry.get("branch", ""), "base": integration_branch(base), "at": timestamp()}
             continue
         try:
-            result = finalize(root, entry.get("branch", ""), draft=draft, dry_run=dry_run, roadmap_root=primary_work)
+            result = finalize(root, entry.get("branch", ""), base, draft=draft, dry_run=dry_run, roadmap_root=primary_work)
         except Exception as error:  # one repo failing never stops the others
             result = {"push": "FAILED: delivery.py: %s" % str(error)[:200], "pr": None, "pr_status": "not created"}
-        results[name] = dict(result, branch=entry.get("branch", ""), base=read_base(root), at=timestamp())
+        results[name] = dict(result, branch=entry.get("branch", ""), base=read_base(root, base), at=timestamp())
     links = {name: result["pr"] for name, result in results.items() if result.get("pr")}
     if len(links) > 1:
         for name, result in results.items():
@@ -274,6 +316,9 @@ def finalize_project(primary_work, meta, draft=False, dry_run=False):
             json.dump(aggregate, handle, ensure_ascii=False, indent=2)
     except OSError:
         pass
+    all_pushed = all(str(item.get("push", "")).startswith("done") for item in results.values())
+    if all_pushed:
+        attach_prod_database(primary_work, meta, aggregate, dry_run, output_dir, runner)
     return aggregate
 
 
@@ -281,7 +326,7 @@ def main():
     parser = argparse.ArgumentParser(description="Push of the feature branch + PR to the integration branch (end of flow)")
     parser.add_argument("root")
     parser.add_argument("--branch", default="")
-    parser.add_argument("--base", default="", help="PR target branch (default: LOOP_PR_BASE / LOOP_INTEGRATION_BRANCH, else developer)")
+    parser.add_argument("--base", default="", help="PR target branch (default: the ROADMAP `Branch base`, else LOOP_PR_BASE / LOOP_INTEGRATION_BRANCH, else developer)")
     parser.add_argument("--draft", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     opts = parser.parse_args()
@@ -300,6 +345,7 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if all(item["push"].startswith(("done", "dry-run")) for item in result["repos"].values()) else 1
     result = finalize(root, opts.branch, opts.base, opts.draft, opts.dry_run)
+    attach_prod_database(root, meta, result, opts.dry_run)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["push"].startswith(("done", "dry-run")) else 1
 

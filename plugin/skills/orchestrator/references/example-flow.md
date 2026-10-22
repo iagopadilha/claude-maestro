@@ -99,11 +99,11 @@ Press **Start loop** in the panel, or run the printed command, and walk away. Th
 | Phase | Action |
 |---|---|
 | 0 Orient | read `RULES.md` first, then `ROADMAP.md`, `STATE.md`; apply any pending answer in `ANSWERS.md` |
-| 3 Specs | for each `pending` feature with no `spec.md`, dispatch `spec-writer` (up to 3 in parallel) |
+| 3 Specs | for each `pending` feature with no `spec.md`, dispatch ONE `spec-writer` per feature, all in parallel (up to `--wave`); each feature is its own lane and moves to its gate as soon as its own spec is back |
 | Dependency audit | skill `orchestrator-audit-dependencies` reads real imports and specs and flags a forgotten `deps=` before the wave starts |
-| 4 Gate | `spec-reviewer` on every `Medium`, `Large` or `Complex` spec. Result `APPROVED` or `BLOCKED` with the requirement IDs checked. A `Small` spec written by this loop skips the gate; an adopted spec never does |
-| 5 Execute | pick the executor by `KIND` and `PATHS`. Only features whose `deps=` are already `verified` run. A wave runs up to `--wave N` features with disjoint paths |
-| 6 Verify | `verifier` runs build, typecheck and lint and returns `PASS`, `FAIL` or `UNVERIFIED`. This phase always runs |
+| 4 Gate | one `spec-reviewer` per feature (never one for several specs) on every `Medium`, `Large` or `Complex` spec. Result `APPROVED` or `BLOCKED` with the requirement IDs checked. A `Small` spec written by this loop skips the gate; an adopted spec never does |
+| 5 Execute | pick the executor by `KIND` and `PATHS`. Only features whose `deps=` are already `verified` run. Up to `--wave N` lanes run at once, with disjoint paths; a feature enters execution as soon as its own gate approved it |
+| 6 Verify | one `verifier` per feature, as soon as its executor is done, runs build, typecheck and lint and returns `PASS`, `FAIL` or `UNVERIFIED`. This phase always runs |
 | 6a, 6b | optional: behaviour regression for refactors (`regression=baseline`) and, only with `--e2e`, flow validation with curl and a browser |
 | 7 Commit | only the orchestrator commits: one atomic Conventional Commit per verified feature |
 | 8 Checkpoint | when a stage is done: `phases/stage-NN.md` is written, `STATE.md` is emptied, a short report with the progress graph is produced |

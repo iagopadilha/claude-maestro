@@ -8,8 +8,10 @@ import os
 import re
 from typing import Protocol
 
-from ..domain.project_errors import InvalidPathError, LoopRunningError
-from ..repositories.specs_file_repository import classify_structure, list_test_environment_problems, loop_state, run_hints
+from ..domain.project import LOOP_WORKTREE_SUFFIX
+from ..domain.project_errors import InvalidPathError, LoopRunningError, RepoConflictError
+from ..repositories.specs_file_repository import classify_structure, list_test_environment_problems, loop_state, run_hints, test_env_fallback
+import subprojects as subprojects_engine  # noqa: E402  (the engine folder is on sys.path after the import above)
 
 CONFORMANCE_VALUES = ("STANDARD", "LEGACY")
 CONFORMANCE_LINE_PATTERN = re.compile(r"^Conformance:\s*(STANDARD|LEGACY)", re.M)  # the same check as run_loop --check
@@ -36,6 +38,8 @@ EXAMPLE_RULE_COMMENT = ('<!-- example (delete this comment): | R-01 | Never crea
 MINIMAL_RULES = "# Limiting rules\n\n| ID | Rule | Why | How to apply | Origin |\n|----|------|-----|--------------|--------|\n"
 MINIMAL_TEST_ENVIRONMENT = "# Test environment (DEV)\n\nFILL_IN\n"
 CONFORMANCE_NOTE = "written by the harness app"
+MONOREPO_ROOT_CONFORMANCE_MESSAGE = "this repository is a monorepo: set the Conformance per subproject"
+MONOREPO_ROOT_CONFORMANCE_CODE = "monorepo_root_conformance"
 PROJECT_NAME_PLACEHOLDER = "{project_name}"
 TODAY_PLACEHOLDER = "{today}"
 
@@ -79,17 +83,32 @@ class SpecsStructureService:
         self.templates_dir = templates_dir
         self.process_runner = process_runner
         self.log = log
+        self.context_block_service = None  # optional (`attach_context_block_service`)
+
+    def attach_context_block_service(self, context_block_service):
+        """A Conformance written at the root of a single project (from the project routes) refreshes its `maestro:context` block."""
+        self.context_block_service = context_block_service
+
+    def refresh_root_context_block(self, folder):
+        if self.context_block_service is not None:
+            self.context_block_service.refresh_folder(folder, None, "", subprojects_root=folder)
 
     # ------------------------------------------------ from the project context (routes /p/<id>/api/...)
     def initialize_project_structure(self, context, conformance=None):
         """Initializes in the `work` dir (loop worktree when it exists). Refused with the loop running: it touches CLAUDE.md
         and .gitignore."""
         self.ensure_loop_stopped(context)
-        return self.initialize_structure(context.work_dir, conformance, context.project.name)
+        result = self.initialize_structure(context.work_dir, conformance, context.project.name)
+        if conformance:
+            self.refresh_root_context_block(context.work_dir)
+        return result
 
     def write_project_conformance(self, context, value):
         self.ensure_loop_stopped(context)
-        return self.write_conformance(context.work_dir, value)
+        written = self.write_conformance(context.work_dir, value)
+        self.ensure_specs_in_gitignore(context.work_dir)  # defining the Conformance always leaves `.specs/` out of git
+        self.refresh_root_context_block(context.work_dir)
+        return written
 
     def ensure_loop_stopped(self, context):
         if self.process_runner.is_alive(self.specs_file_repository.read_loop_lock_pid(context.work_dir)):
@@ -118,7 +137,7 @@ class SpecsStructureService:
         """Creates what is missing in `.specs/` (never overwrites). Returns {"created","changed","existing","conformance"}."""
         if not os.path.isdir(project_dir):
             raise InvalidPathError("project folder does not exist: %s" % project_dir)
-        conformance_value = self.validate_conformance(conformance) if conformance else None
+        conformance_value = self.validate_conformance(conformance) if conformance and not self.is_monorepo_root(project_dir) else None
         name = project_name or os.path.basename(os.path.normpath(project_dir))
         created, existing, changed = [], [], []
         for path in self.list_structure_folders(project_dir):
@@ -132,7 +151,8 @@ class SpecsStructureService:
         changed += self.ensure_specs_in_gitignore(project_dir)
         changed += self.ensure_env_files_in_gitignore(project_dir)
         changed += self.ensure_rules_in_claude_md(project_dir, name)
-        changed += self.ensure_run_block(project_dir)
+        if not self.is_monorepo_root(project_dir):  # the root of a monorepo is not a project: each subproject has its own run facts
+            changed += self.ensure_run_block(project_dir)
         if conformance_value:
             self.write_conformance(project_dir, conformance_value)
             changed.append("CLAUDE.md (Conformance: %s)" % conformance_value)
@@ -144,10 +164,33 @@ class SpecsStructureService:
     def write_conformance(self, project_dir, value):
         """Writes the Conformance section of CLAUDE.md with the engine code (the same as `classify_structure.py --write`)."""
         validated_value = self.validate_conformance(value)
+        if self.is_confirmed_monorepo(project_dir):
+            raise RepoConflictError(MONOREPO_ROOT_CONFORMANCE_MESSAGE, code=MONOREPO_ROOT_CONFORMANCE_CODE)
         stack, suggestion, _ = classify_structure.analyze(project_dir)
         classify_structure.write_claude_md(project_dir, validated_value, stack, suggestion, CONFORMANCE_NOTE)
         self.log.info("conformance_written", folder=project_dir, value=validated_value)
         return validated_value
+
+    @staticmethod
+    def is_confirmed_monorepo(project_dir):
+        """True when `SUBPROJECTS.json` of that folder says the repository is a confirmed monorepo: its root gets no Conformance block.
+        The repository key is the folder name (the loop worktree name without its suffix)."""
+        name = os.path.basename(os.path.normpath(project_dir))
+        if name.endswith(LOOP_WORKTREE_SUFFIX):
+            name = name[:-len(LOOP_WORKTREE_SUFFIX)]
+        return subprojects_engine.monorepo_confirmed(project_dir, name)
+
+    @staticmethod
+    def is_monorepo_root(project_dir):
+        """The structure step happens before the list is confirmed: a stored entry decides ("Not a monorepo" = false), else the free
+        detection does. A monorepo root never gets a Conformance block from the structure initialization."""
+        name = os.path.basename(os.path.normpath(project_dir))
+        if name.endswith(LOOP_WORKTREE_SUFFIX):
+            name = name[:-len(LOOP_WORKTREE_SUFFIX)]
+        entry = subprojects_engine.load(project_dir, name).get("entry")
+        if isinstance(entry, dict):
+            return bool(entry.get("monorepo"))
+        return bool(subprojects_engine.detect(project_dir).get("monorepo"))
 
     def create_test_environment_template(self, project_dir):
         """Creates `.specs/project/TEST-ENVIRONMENT.md` from the template (with FILL_IN). False when it already existed."""
@@ -157,10 +200,15 @@ class SpecsStructureService:
             os.path.join(project_dir, ".specs", "project", TEST_ENVIRONMENT_FILE_NAME), content)
 
     def create_env_test_template(self, project_dir):
-        """Creates `.specs/project/.env.test` (the project's test VALUES, commented out) and makes sure git ignores it."""
+        """Creates `.specs/project/.env.test` (the project's test VALUES, commented template) and makes sure git ignores it, and,
+        when it was just created, fills it from the machine-level TEST values (default fallback; never overwrites a line)."""
         self.ensure_env_files_in_gitignore(project_dir)
-        return self.specs_file_repository.create_file_if_missing(
+        created = self.specs_file_repository.create_file_if_missing(
             os.path.join(project_dir, ".specs", "project", ENV_TEST_FILE_NAME), self.read_template(ENV_TEST_TEMPLATE_NAME))
+        if created:  # an existing file is left untouched here; the Check completes it later (only names it does not define)
+            added = test_env_fallback.ensure_env_test(project_dir)["added"]
+            self.log.info("env_test_fallback_applied", folder=project_dir, added=len(added))
+        return created
 
     def ensure_env_files_in_gitignore(self, project_dir):
         """Appends the missing secret-file lines (`.env`, `.env.*`, `!.env.example`, `.specs/project/.env.test`, `.specs/project/ACCESS.json`) to .gitignore."""

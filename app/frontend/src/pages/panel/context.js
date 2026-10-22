@@ -42,8 +42,9 @@ export const NL_STATES = ['done', 'error', 'stopped', 'awaiting_user'];
 export const ui = {
   view: 'turn', sel: null, tab: 'log', pastN: null, past: null, loadingN: null, pinLast: null, det: {}, histOpen: {},
   hist: { data: null, key: undefined, loading: false, err: null, ver: 0 }, logLoading: null,
+  errors: { data: null, key: undefined, loading: false, err: null, open: {}, confirmDiscard: false },
   pausePending: false, confirmShutdown: false, freeText: '', resuming: null, busy: {},
-  qSent: {}, agentLog: null, showNew: false, hov: null, attach: [], chatGeneral: false,
+  qSent: {}, agentLog: null, showNew: false, showWorkspace: false, hov: null, attach: [], chatGeneral: false,
   closed: null, // full-screen notice over the panel: { kind: 'notfound', message } | { kind: 'shutdown' }
 };
 

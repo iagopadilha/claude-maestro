@@ -1,0 +1,44 @@
+/* Planning layout (decision D12): side panel (tabs + Approve) LEFT, chat RIGHT; one --plan-inset shared by the workspace bar, the
+   "Writing the plan in" line and both columns, so their left and right edges line up; the page is exactly as tall as the window
+   (same flex fit as the loop view, see "SCROLL FIX" in ux_header.css): no fixed heights, each column scrolls inside itself.
+   Loaded after panel.css and ux_header.css. Only planning mode is touched: the loop view keeps its own spacing. */
+:root{--plan-inset:16px;}
+#app[data-mode="planning"]{height:100vh;overflow-x:hidden;overflow-y:auto;}
+#app[data-mode="planning"]>.header,#app[data-mode="planning"]>.chrome-zones{flex:none;}
+#app[data-mode="planning"] .workspace-zone{flex:none;margin:0;padding:6px var(--plan-inset) 0;}
+#app[data-mode="planning"] .workspace-zone .ws{margin:0;}
+#app[data-mode="planning"] .planning-zone{flex:1 1 0;min-height:0;overflow:visible;}
+#app[data-mode="planning"] .plan{flex:1 1 0;min-height:0;overflow:visible;padding:8px 0 12px;}
+#app[data-mode="planning"] .plan-where,
+#app[data-mode="planning"] .plan-intro,
+#app[data-mode="planning"] .plan-grid,
+#app[data-mode="planning"] .plan-wizard{margin-inline:var(--plan-inset);}
+#app[data-mode="planning"] .plan-grid{flex:1 1 0;height:auto;min-height:320px;grid-template-columns:minmax(300px,1fr) minmax(0,1.5fr);grid-template-rows:minmax(0,1fr);}
+@media (max-width:1000px){
+  #app[data-mode="planning"] .plan{flex:none;}
+  #app[data-mode="planning"] .plan-grid{flex:none;min-height:0;display:flex;flex-direction:column;}
+  #app[data-mode="planning"] .plan-chat,#app[data-mode="planning"] .plan-docs{height:min(640px,82vh);}
+}
+
+/* Import a spec dialog, imports as attachments, readiness item, Access card */
+.plan-imp{display:flex;flex-direction:column;gap:10px;}
+.plan-imp-row{display:flex;gap:8px;align-items:center;}
+.plan-imp-col{display:flex;flex-direction:column;gap:8px;}
+.plan-imp-in{flex:1;min-width:0;width:100%;box-sizing:border-box;font:inherit;font-size:13px;padding:6px 8px;border:1px solid var(--border,#444);border-radius:6px;background:transparent;color:inherit;}
+.plan-imp-prev ul{margin:6px 0 0;padding-left:18px;font-size:12px;}
+.plan-imp-main{font-size:10px;text-transform:uppercase;padding:1px 6px;border-radius:8px;border:1px solid currentColor;}
+.plan-imp-act{display:flex;gap:8px;justify-content:flex-end;}
+.plan-imports{list-style:none;margin:0;padding:6px var(--plan-inset,16px);display:flex;flex-direction:column;gap:4px;font-size:12px;border-top:1px solid var(--border,#333);}
+.plan-import{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.plan-ready{display:flex;flex-direction:column;gap:4px;margin-top:4px;font-size:12px;align-items:flex-start;}
+.plan-ready-ok{color:var(--green,#3fb950);}
+.plan-ready-p{color:var(--red,#f85149);}
+.plan-ready-w{color:var(--amber,#d29922);}
+.plan-access-layers{list-style:none;margin:8px 0;padding:0;display:flex;flex-direction:column;gap:8px;}
+.plan-access-layer{padding:8px;border:1px solid var(--border,#333);border-radius:6px;}
+.plan-access-layer.none{opacity:.7;}
+.plan-access-names{display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:4px;font-size:12px;}
+.plan-access-win{color:var(--green,#3fb950);}
+.plan-access-lose{opacity:.6;text-decoration:line-through;}
+.plan-access-h{margin:10px 0 4px;font-size:13px;}
+.plan-access-mcp{list-style:none;margin:0 0 8px;padding:0;font-size:12px;display:flex;flex-direction:column;gap:3px;}

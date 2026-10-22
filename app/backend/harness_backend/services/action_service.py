@@ -12,7 +12,7 @@ import threading
 from typing import Protocol
 
 from ..infrastructure.claude_client import redact_secrets
-from .loop_worktree_service import MAX_TARGETS, extract_last_json, get_integration_branch
+from .loop_worktree_service import MAX_TARGETS, extract_last_json, get_context_integration_branch
 
 ACTION_DELIVER = "deliver"
 ACTION_SUMMARY = "summary"
@@ -129,7 +129,7 @@ class ActionService:
 
     # ------------------------------------------------ GET actions
     def build_deliver_preview(self, context, meta, block_reason):
-        base = get_integration_branch()
+        base = get_context_integration_branch(context)
         deliver = {"id": ACTION_DELIVER, "title": DELIVER_TITLE % base, "available": False, "unavailable_reason": block_reason,
                    "preview": {"branch": meta.get("branch"), "base": base,
                                "existing_pr": meta.get("pr") if str(meta.get("pr_status") or "").startswith(EXISTING_PR_PREFIX) else None,

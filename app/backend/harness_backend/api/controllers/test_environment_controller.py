@@ -17,7 +17,6 @@ class TestEnvironmentController:
     def register_routes(self, router):
         router.add("GET", TEST_ENVIRONMENT_ROUTE, self.get_test_environment)
         router.add("PUT", TEST_ENVIRONMENT_ROUTE + "/values", self.save_values)
-        router.add("PUT", TEST_ENVIRONMENT_ROUTE + "/access", self.save_access)
 
     def respond_with_context(self, request, action_with_context):
         return respond_converting_errors(lambda: Response.json(200, action_with_context(
@@ -30,6 +29,3 @@ class TestEnvironmentController:
         body = request.body
         return self.respond_with_context(request, lambda context: self.test_environment_service.save_values(
             context, body.get("values"), body.get("target", "project")))
-
-    def save_access(self, request):
-        return self.respond_with_context(request, lambda context: self.test_environment_service.save_access(context, request.body))

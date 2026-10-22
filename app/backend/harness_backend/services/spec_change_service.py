@@ -26,7 +26,7 @@ SPEC_CHANGE_BUSY_CODE = "spec_change_busy"
 PROJECT_SCOPE_PATHS = (".specs/project/PROJECT.md", ".specs/project/ROADMAP.md", ".specs/project/FLOWS.md", ".specs/project/RULES.md")
 ROADMAP_PATH = ".specs/project/ROADMAP.md"
 FEATURES_FOLDER = ".specs/features"
-FEATURE_SLUG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
+FEATURE_SLUG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$")
 SPEC_CHANGE_MODEL = ""  # empty = the account's default model
 SPEC_CHANGE_BUDGET_USD = 1
 SPEC_CHANGE_TIMEOUT_SECONDS = 600
@@ -45,10 +45,10 @@ ROLE_AI = "ai"
 PUBLIC_MESSAGE_FIELDS = ("role", "text", "at", "cost_usd", "changed")
 
 FEATURE_RULES = """You are the spec-writer of ONE feature of a project that already has its definition written.
-The user found something new and wants to CHANGE the definition. Scope: feature `%(slug)s`, files under `.specs/features/%(slug)s/` (spec.md, design.md, tasks.md, ...).
+The user found something new and wants to CHANGE the definition. Scope: feature `%(slug)s`, files under `.specs/features/%(folder)s/` (spec.md, design.md, tasks.md, ...).
 Rules:
 - Read the files of the feature (and .specs/project/ROADMAP.md and FLOWS.md for context, read-only) before editing.
-- Edit only files under `.specs/features/%(slug)s/`. Never edit code, ROADMAP.md, FLOWS.md or any other file; if the change needs them, say so in the reply instead.
+- Edit only files under `.specs/features/%(folder)s/`. Never edit code, ROADMAP.md, FLOWS.md or any other file; if the change needs them, say so in the reply instead.
 - Keep the requirement IDs stable (add new ones, mark removed ones as removed); change only what the user asked.
 - If tasks.md exists, update the tasks the change affects and mark them not done.
 - Reply short: what you changed (file and requirement IDs) and which already-built parts are likely affected."""
@@ -101,19 +101,19 @@ class SpecChangeService:
 
     @staticmethod
     def build_editable_paths(scope):
-        return list(PROJECT_SCOPE_PATHS) if scope == PROJECT_SCOPE else ["%s/%s" % (FEATURES_FOLDER, scope)]
+        return list(PROJECT_SCOPE_PATHS) if scope == PROJECT_SCOPE else ["%s/%s" % (FEATURES_FOLDER, loop_state.feature_folder_name(scope))]
 
     @staticmethod
     def build_edit_rules(scope):
         if scope == PROJECT_SCOPE:
             return ["Edit(/%s)" % path for path in PROJECT_SCOPE_PATHS]
-        return ["Edit(/%s/%s/**)" % (FEATURES_FOLDER, scope)]
+        return ["Edit(/%s/%s/**)" % (FEATURES_FOLDER, loop_state.feature_folder_name(scope))]
 
     def list_scope_files(self, work_dir, scope):
         """Relative paths (`/`) of the files the AI may edit that exist now."""
         if scope == PROJECT_SCOPE:
             return [path for path in PROJECT_SCOPE_PATHS if os.path.isfile(os.path.join(work_dir, *path.split("/")))]
-        root = os.path.join(work_dir, *FEATURES_FOLDER.split("/"), scope)
+        root = loop_state.feature_dir(work_dir, scope)
         found = []
         for current, folders, files in os.walk(root, followlinks=False):
             folders.sort()
@@ -187,7 +187,7 @@ class SpecChangeService:
     def compose_prompt(scope, message, include_rules):
         rules = ""
         if include_rules:
-            rules = (PROJECT_RULES if scope == PROJECT_SCOPE else FEATURE_RULES % {"slug": scope}) + "\n\n"
+            rules = (PROJECT_RULES if scope == PROJECT_SCOPE else FEATURE_RULES % {"slug": scope, "folder": loop_state.feature_folder_name(scope)}) + "\n\n"
         return "%sSPEC-CHANGE-SCOPE: %s\n\nUser request:\n%s" % (rules, scope, message)
 
     def ensure_can_send(self, context):

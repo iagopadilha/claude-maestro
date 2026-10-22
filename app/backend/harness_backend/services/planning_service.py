@@ -3,8 +3,8 @@ document preview of a project that never approved a roadmap.
 
 One conversation per project (`internal/planning/thread.json`), one `claude -p` session resumed on every message. Each
 reply is a claude job (ClaudeJobService: one job per project at a time, kept in `internal/jobs/`) with: the account's
-default model, US$ 2 per message, 600 s, no MCP (except the read-only Grafana/Loki tools when the project opted in, ACCESS.json
-`grafana_read`), `--permission-mode dontAsk`, `--allowedTools Read Grep Glob Skill
+default model, US$ 2 per message, 600 s, MCP only the read tools of the servers the user has in `~/.claude.json` (engine/mcp_access:
+grafana, mcp-mysql-dev, mcp-mysql-prod; no per-project toggle), the REPOS.json `reference` repos as `--add-dir` (read), `--permission-mode dontAsk`, `--allowedTools Read Grep Glob Skill
 Edit(/.specs/project/PROJECT.md) Edit(/.specs/project/ROADMAP.md) Edit(/.specs/project/FLOWS.md)
 Edit(/.specs/project/TEST-ENVIRONMENT.md) Edit(/.specs/project/RULES.md)` (an `Edit` rule also
 covers Write; `/path` in a CLI rule = the session's working directory) and `--disallowedTools Bash NotebookEdit Agent`.
@@ -23,10 +23,11 @@ from ..config import app_config
 from ..infrastructure.claude_client import redact_secrets
 from ..repositories.loop_command_file_repository import now_iso
 from ..repositories.specs_file_repository import loop_state, run_hints
-import access_settings  # noqa: E402  (engine folder is on sys.path through specs_file_repository)
-import grafana_access  # noqa: E402
+import mcp_access  # noqa: E402  (engine folder is on sys.path through specs_file_repository)
+import project_repos  # noqa: E402
 from .claude_job_service import JOB_STATE_ERROR, JOB_STATE_OK, JOB_TYPE_PLANNING, ClaudeJobCommand
-from .planning_gates import PREREQUISITE_GATES, are_gates_ok, are_prerequisites_ok, describe_gates_for_ai
+from .planning_gates import PREREQUISITE_GATES, are_gates_ok, are_prerequisites_ok, describe_gates_for_ai, read_roadmap_loop_settings
+from .project_capabilities_service import END_MARKER, PROJECT_FILE_PARTS, START_MARKER, ProjectCapabilitiesService
 from .roadmap_service import extract_open_questions
 
 RECOMMENDED_SEPARATOR = re.compile(r"\s*\|\s*recommended\s*:\s*", re.IGNORECASE)
@@ -61,11 +62,10 @@ PLANNING_CREDENTIALS_NOTE = (
     "source and whether it is set, NEVER the values. Read it to know what exists. Never ask the user for a password, token or any value "
     "and never write one in a document or in chat: write only the $NAME in TEST-ENVIRONMENT.md and tell the user to fill the value in the "
     "panel's Test environment tab.]")
-PLANNING_GRAFANA_NOTE = (
-    "\n[Grafana: the user allowed read-only lookups. You may use ONLY the mcp__grafana__ Loki tools (query_loki_logs, list_loki_label_names, "
-    "list_loki_label_values, query_loki_stats, query_loki_patterns, find_error_pattern_logs) and list_datasources, to find sample "
-    "data (real ids, routes, payload shapes) for TEST-ENVIRONMENT.md and FLOWS.md. Never copy a secret, token or personal data from a log "
-    "into a document.]")
+PLANNING_MCP_NOTE = (
+    "\n[MCP read access: besides the files you may use ONLY these read tools: %s. Use them to find sample data (real ids, routes, "
+    "payload shapes) for TEST-ENVIRONMENT.md and FLOWS.md and to check how the data is built. Never write through them. Never copy a secret, "
+    "token or personal data from a result into a document.]")
 PLANNING_HOOK_PROFILE = "planning"  # guard.py profile of the PreToolUse hook: Write/Edit only inside .specs/ (extra layer, deterministic)
 GUARD_IGNORED_PATHS = (".git", "node_modules", ".specs/project/loop/internal", ".specs/project/loop/json/MONITOR.json",
                         ".specs/.trash")
@@ -89,8 +89,12 @@ class IPlanningService(Protocol):
 
 class PlanningService:
     def __init__(self, planning_thread_repository, specs_file_repository, project_progress_service, planning_requirement_service,
-                 claude_job_service, claude_client, workspace_file_guard, log, test_environment_service=None):
+                 claude_job_service, claude_client, workspace_file_guard, log, test_environment_service=None, planning_repos_service=None,
+                 project_capabilities_service=None, readiness_service=None):
         self.test_environment_service = test_environment_service  # writes credential-names.json (names without values) for the AI
+        self.planning_repos_service = planning_repos_service  # applies REPOS-SUGGESTED.json to REPOS.json after each reply
+        self.project_capabilities_service = project_capabilities_service  # rewrites the marked block of PROJECT.md after each reply
+        self.readiness_service = readiness_service  # background `--check --planning` after each reply
         self.planning_thread_repository = planning_thread_repository
         self.specs_file_repository = specs_file_repository
         self.project_progress_service = project_progress_service
@@ -156,13 +160,19 @@ class PlanningService:
             self.project_progress_service.ensure_test_environment_template(context)  # before the snapshot: it is the app's file, not the AI's
             names_file = self.test_environment_service.write_credential_names_file(context) if self.test_environment_service else ""
             snapshot = self.workspace_file_guard.take_snapshot(work_dir, GUARD_IGNORED_PATHS)
-            allowed_tools, disallowed_tools, mcp_config = self.build_grafana_read_access(work_dir)
+            allowed_tools, disallowed_tools, mcp_config, mcp_tools = self.build_mcp_read_access()
             argv = self.claude_client.build_command(PLANNING_MODEL, PLANNING_BUDGET_USD, allowed_tools, disallowed_tools,
                                                     no_mcp=True, resume_session=session, permission_mode=PLANNING_PERMISSION_MODE,
                                                     hook_profile=PLANNING_HOOK_PROFILE, mcp_config_path=mcp_config)
-            status = describe_gates_for_ai(gates)  # every turn: the AI sees which documents and gates are still red
+            argv += self.build_reference_repo_arguments(context)
+            # every turn: the AI sees which documents and gates are still red, the repositories the app refused and the readiness
+            subprojects = self.project_progress_service.read_subproject_facts(context).get("subprojects")  # None for a single project
+            status = describe_gates_for_ai(gates, work_dir=context.work_dir, subprojects=subprojects,
+                                           loop_settings=read_roadmap_loop_settings(context.work_dir))
             if names_file:
-                status += "\n\n" + PLANNING_CREDENTIALS_NOTE + (PLANNING_GRAFANA_NOTE if mcp_config else "")
+                status += "\n\n" + PLANNING_CREDENTIALS_NOTE
+            if mcp_tools:
+                status += PLANNING_MCP_NOTE % ", ".join(mcp_tools)
             stdin_text = status + "\n\n" + message if session else PLANNING_FIRST_PROMPT + "\n" + status + "\n\n" + message
             thread["messages"].append({"role": ROLE_USER, "text": message, "at": now_iso(), "cost_usd": None})
             self.planning_thread_repository.write_thread(work_dir, thread)
@@ -178,16 +188,29 @@ class PlanningService:
         return {"ok": True, "job_id": job["id"]}
 
     @staticmethod
-    def build_grafana_read_access(work_dir):
-        """(allowed, disallowed, mcp config path): the planning rules, plus the read-only Grafana/Loki tools and their config only when the
-        project opted in (ACCESS.json `grafana_read`) and the user's `grafana` MCP server could be copied. Otherwise nothing changes."""
+    def build_mcp_read_access():
+        """(allowed, disallowed, strict mcp config path, read tools): the planning rules plus, for every known server the user has in
+        `~/.claude.json`, its read tools, the writer tools denied by name and the one strict config file (no config = no MCP flags)."""
         allowed, disallowed = list(PLANNING_ALLOWED_TOOLS), list(PLANNING_DISALLOWED_TOOLS)
-        if not access_settings.read_access(work_dir)[access_settings.GRAFANA_READ_KEY]:
-            return allowed, disallowed, ""
-        mcp_config = grafana_access.write_mcp_config(app_config.get_user_data_dir())
-        if not mcp_config:
-            return allowed, disallowed, ""
-        return allowed + list(grafana_access.READ_TOOLS), disallowed + list(grafana_access.DENIED_WRITE_TOOLS), mcp_config
+        access = mcp_access.build_access(app_config.get_user_data_dir())
+        if not access["config_path"]:
+            return allowed, disallowed, "", []
+        return (allowed + list(access["allowed_tools"]), disallowed + list(access["denied_tools"]), access["config_path"],
+                list(access["allowed_tools"]))
+
+    @staticmethod
+    def build_reference_repo_arguments(context):
+        """`--add-dir <path>` for every `reference` repo of REPOS.json that exists, so the chat can read them. The other catalog repos
+        are read by absolute path (read only, outside the planning rules' write scope)."""
+        arguments = []
+        try:
+            repos = project_repos.reference_repos(project_repos.load_repos(context.repo_path))
+        except (OSError, ValueError):
+            return arguments
+        for repo in repos:
+            if os.path.isdir(repo.path):
+                arguments += ["--add-dir", repo.path]
+        return arguments
 
     def ensure_can_send(self, context):
         """Order of the refusals: loop running, loop worktree, prerequisites (git/structure/conformance/map), a job running."""
@@ -211,6 +234,8 @@ class PlanningService:
         if touched:
             self.log.warn("planning_guard_reverted", project=context.project.id, reverted=report["reverted"][:50],
                           removed=report["removed"][:50], unrestorable=report["unrestorable"][:50])
+        self.restore_capabilities_region(context, snapshot)  # logged, no note: the rest of the document is the AI's and stays
+        self.apply_reply_effects(context)
         result = dict(result)
         if result.get("ok"):
             reply = redact_secrets(result.get("reply") or "", PLANNING_REPLY_LIMIT)
@@ -225,6 +250,51 @@ class PlanningService:
             thread["session_id"] = result.get("session_id") or thread.get("session_id")
             self.planning_thread_repository.write_thread(context.work_dir, thread)
         return result
+
+    def restore_capabilities_region(self, context, snapshot):
+        """The block between the capabilities markers of PROJECT.md is the app's: when the reply changed it (or deleted a marker), the
+        block of the snapshot is put back and the rest of the file (the AI's edits) stays. Returns True when it restored something."""
+        before_bytes = snapshot.copies.get("/".join(PROJECT_FILE_PARTS))
+        if before_bytes is None:
+            return False
+        before = before_bytes.decode("utf-8", errors="replace").replace("\r\n", "\n")
+        start = before.find(START_MARKER)
+        end = before.find(END_MARKER, start + len(START_MARKER)) if start >= 0 else -1
+        if start < 0 or end < 0:
+            return False
+        before_block = before[start:end + len(END_MARKER)]
+        path = os.path.join(context.work_dir, *PROJECT_FILE_PARTS)
+        try:
+            with open(path, encoding="utf-8", newline="") as handle:
+                current = handle.read()
+            current_start = current.find(START_MARKER)
+            current_end = current.find(END_MARKER, current_start + len(START_MARKER)) if current_start >= 0 else -1
+            if current_start >= 0 and current_end >= 0 and \
+                    current[current_start:current_end + len(END_MARKER)].replace("\r\n", "\n") == before_block:
+                return False
+            restored = ProjectCapabilitiesService.replace_block(current, before_block)
+            with open(path, "w", encoding="utf-8", newline="") as handle:
+                handle.write(restored)
+        except OSError as failure:
+            self.log.warn("planning_capabilities_region_not_restored", project=context.project.id, message=str(failure)[:200])
+            return False
+        self.log.warn("planning_capabilities_region_restored", project=context.project.id)
+        return True
+
+    def apply_reply_effects(self, context):
+        """After a reply (even a failed one: the documents it wrote stay): apply REPOS-SUGGESTED.json, rewrite the capabilities block,
+        schedule the readiness check. Each step is isolated: one failing never loses the reply."""
+        steps = (("repos", self.planning_repos_service and self.planning_repos_service.apply_suggested_repos),
+                 ("capabilities", self.project_capabilities_service and self.project_capabilities_service.write),
+                 ("readiness", self.readiness_service and self.readiness_service.schedule))
+        for name, step in steps:
+            if not step:
+                continue
+            try:
+                step(context)
+            except Exception as failure:  # noqa: BLE001
+                self.log.warn("planning_reply_step_failed", project=context.project.id, step=name, type=type(failure).__name__,
+                              message=str(failure)[:200])
 
     # ------------------------------------------------ reset
     def reset_conversation(self, context, confirm):

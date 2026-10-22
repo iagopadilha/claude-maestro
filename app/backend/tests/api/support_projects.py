@@ -54,7 +54,9 @@ def write(path, text):
         handle.write(text)
 result = "nothing"
 session = "fake-roadmap-session-1"
-if "dontAsk" in argv:  # planning chat (/orchestrator plan): stdin = first prompt + text, or just the text when resumed
+roadmap_job = (prompt.startswith("/orchestrator roadmap") or prompt.startswith("/orchestrator map")
+               or stdin_text.startswith("Continue in this session's `/orchestrator roadmap"))
+if "dontAsk" in argv and not roadmap_job:  # planning chat (/orchestrator plan): stdin = first prompt + text, or just the text when resumed
     session = "fake-planning-session-1"
     write(os.path.join(project, "PROJECT.md"), "# Project\n\n**Vision:** a to-do app.\n")
     questions = "- Which database? | recommended: SQLite\n" if "ASK" in stdin_text else "- none\n"
@@ -166,10 +168,28 @@ def loop_file_path(work_dir, *parts):
     return os.path.join(work_dir, *(LOOP_DIR_PARTS + parts))
 
 
+FAKE_READY_RESULT = {"state": "ready", "at": "2026-10-20T10:00:00", "problems": [], "warnings": [], "fingerprint": "", "error": ""}
+
+
+class FakeReadinessRunner:
+    """Stands in for the process runner of the readiness service: never starts `run_loop.py --check`; answers READY (or `result`)."""
+
+    def __init__(self, result=(0, "[check] READY. Command: python run_loop.py x\n", "")):
+        self.result, self.calls = result, []
+
+    def run_and_wait(self, argv, folder, timeout_seconds, input_text=None, extra_env=None, env=None):
+        self.calls.append((list(argv), folder, timeout_seconds))
+        return self.result
+
+
 class ProjectsTestCase(unittest.TestCase):
-    """Starts the app with the projects module on a local port; every test gets new folders."""
+    """Starts the app with the projects module on a local port; every test gets new folders.
+
+    Readiness: enforcement stays ON (the product default) but the check never runs `run_loop.py`: the readiness service has a fake
+    runner and, unless a test sets `use_real_readiness = True`, `readiness_service.get` answers READY (`self.fake_readiness_result`)."""
 
     folder_dialog_argv = None
+    use_real_readiness = False
 
     def setUp(self):
         self.temporary_dir = tempfile.mkdtemp(prefix="harness-projects-")
@@ -197,6 +217,11 @@ class ProjectsTestCase(unittest.TestCase):
         self.server.open_port(TEST_PORT_RANGE)
         self.module = build_projects_module(self.config, self.log, lambda: self.server.url or "",
                                             folder_dialog_argv=self.folder_dialog_argv, job_timeout_seconds=TEST_JOB_TIMEOUT_SECONDS)
+        self.readiness_runner = FakeReadinessRunner()
+        self.module.readiness_service.process_runner = self.readiness_runner
+        self.fake_readiness_result = dict(FAKE_READY_RESULT)
+        if not self.use_real_readiness:
+            self.module.readiness_service.get = lambda context: dict(self.fake_readiness_result)
         for controller in self.module.controllers:
             controller.register_routes(self.router)
         self.server_thread = threading.Thread(target=self.server.serve_until_stopped, daemon=True)

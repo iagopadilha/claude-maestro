@@ -1,5 +1,5 @@
 """Loop command routes of a project (`/p/<project_id>/api/...`): answer, resume, note, pause, loop/check, loop/start,
-instruction, whiteboard and the legacy shutdown (a no-op: shutting down belongs to the app). Same bodies and responses as
+instruction, loop/settings, loop/raise-limit, whiteboard and the legacy shutdown (a no-op: shutting down belongs to the app). Same bodies and responses as
 the legacy panel (docs/API.md). POST requires the token (the server checks it). In planning mode every POST here except
 the legacy shutdown is refused with 409 `code:"planning_required"`."""
 from ...domain.project import ProjectNotFoundError
@@ -41,9 +41,11 @@ class LoopCommandsController:
     def register_routes(self, router):
         post_routes = (("answer", self.answer_question), ("resume", self.resume_loop), ("note", self.write_note),
                        ("pause", self.request_pause), ("loop/check", self.check_preflight), ("loop/start", self.start_loop),
-                       ("instruction", self.send_instruction), ("shutdown", self.ignore_legacy_shutdown))
+                       ("instruction", self.send_instruction), ("loop/raise-limit", self.raise_limit),
+                       ("shutdown", self.ignore_legacy_shutdown))
         for path, handler in post_routes:
             router.add("POST", "%s/%s" % (PROJECT_ROUTE_PREFIX, path), handler)
+        router.add("GET", PROJECT_ROUTE_PREFIX + "/loop/settings", self.get_loop_settings)
         router.add("GET", PROJECT_ROUTE_PREFIX + "/whiteboard", self.get_whiteboard)
         router.add("POST", PROJECT_ROUTE_PREFIX + "/whiteboard", self.save_whiteboard, body_limit_bytes=WHITEBOARD_BODY_LIMIT_BYTES)
 
@@ -61,7 +63,8 @@ class LoopCommandsController:
             lambda context: self.loop_control_service.answer_loop_question(context, request.body)))
 
     def resume_loop(self, request):
-        return self.respond_after_planning(request, self.respond_if_repos_free(self.loop_control_service.resume_loop))
+        return self.respond_after_planning(request, self.respond_if_repos_free(
+            lambda context: self.loop_control_service.resume_loop(context, request.body)))
 
     def write_note(self, request):
         return self.respond_after_planning(request, lambda context: self.loop_control_service.write_user_note(context, request.body))
@@ -75,6 +78,14 @@ class LoopCommandsController:
     def start_loop(self, request):
         return self.respond_after_planning(request, self.respond_if_repos_free(
             lambda context: self.loop_control_service.start_new_loop(context, request.body)))
+
+    def get_loop_settings(self, request):
+        """Read-only (the Start dialog): works in any mode, planning included (the settings are decided there)."""
+        return respond_with_project_context(self.project_service, request, self.loop_control_service.get_loop_settings)
+
+    def raise_limit(self, request):
+        return self.respond_after_planning(request, self.respond_if_repos_free(
+            lambda context: self.loop_control_service.raise_loop_limit(context, request.body)))
 
     def send_instruction(self, request):
         return self.respond_after_planning(request, lambda context: self.loop_control_service.send_instruction_to_loop(context, request.body))

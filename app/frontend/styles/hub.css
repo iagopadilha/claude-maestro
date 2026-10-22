@@ -27,6 +27,8 @@
 .hub-project-actions{display:flex;gap:6px;margin-top:2px;}
 .confirm-reset{flex-wrap:wrap;padding:8px 10px;}
 .confirm-reset .reset-name{width:220px;max-width:100%;}
+.reset-worktree{flex:1 1 100%;font-size:12px;color:var(--amber);}
+.reset-worktree-item{display:block;margin-top:2px;overflow-wrap:anywhere;}
 .hub-chip{display:inline-flex;align-items:center;gap:6px;font:500 10.5px var(--mono);border:1px solid;border-radius:999px;padding:1px 8px;white-space:nowrap;}
 .hub-empty{border:1px dashed var(--line3);border-radius:10px;padding:28px;text-align:center;display:flex;flex-direction:column;gap:6px;}
 .hub-empty-t{font-weight:600;font-size:14px;}

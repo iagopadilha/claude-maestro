@@ -16,27 +16,31 @@ from ..domain.project_errors import (PLANNING_GATES_CODE, InvalidRequestError, I
                                      LoopRunningError, LoopWorktreeExistsError, PlanningGatesError, RoadmapSessionMissingError)
 from ..domain.roadmap_settings import parse_roadmap_e2e
 from ..repositories.specs_file_repository import loop_state, run_hints
-from .claude_job_service import JOB_TYPE_MAP, JOB_TYPE_ROADMAP, JOB_TYPE_ROADMAP_REFINE, ROADMAP_JOB_TYPES, ClaudeJobCommand
+from .map_job_runner import MAP_GUARD_IGNORED_PATHS, MapJobRunner
+from .planning_gates import GATE_READY, create_readiness_gate
+from .claude_job_service import JOB_TYPE_ROADMAP, JOB_TYPE_ROADMAP_REFINE, ROADMAP_JOB_TYPES, ClaudeJobCommand
 
 GOAL_FILE_NAME = "roadmap-goal.md"
 GOAL_RELATIVE_PATH = "/".join((".specs", "project", loop_state.LOOP_FOLDER_NAME, loop_state.INTERNAL_FOLDER_NAME, GOAL_FILE_NAME))
 GENERATE_ROADMAP_PROMPT = "/orchestrator roadmap --headless --goal-file " + GOAL_RELATIVE_PATH
 MAP_FIRST_FLAG = "--map-first"
-MAP_CODEBASE_PROMPT = "/orchestrator map"
-MAP_ALLOWED_FOLDERS = (".specs", run_hints.MAP_FOLDER)  # the map job may only change files here; anything else is undone after the job
-MAP_GUARD_IGNORED_PATHS = (".git", "node_modules", ".specs/project/loop/internal", ".specs/project/loop/json/MONITOR.json",
-                        ".specs/.trash")
-MAP_NOTHING_WRITTEN = ("The AI finished but wrote no document in docs/codebase, so nothing was mapped. The usual cause: the /orchestrator "
-                       "skill is not loaded in that claude session (update the plugin: claude plugin update "
-                       "loop-engineering-harness@loop-engineering-harness) and the AI answered as a plain chat.")
-MAP_GUARD_NOTE = "\n\n(The app undid changes outside .specs/ and docs/codebase/: %s)"
-MAP_GUARD_FILES_SHOWN = 8
 REFINE_ROADMAP_PREFIX = ("Continue in this session's `/orchestrator roadmap --headless` mode: adjust .specs/project/ROADMAP.md "
                          "and .specs/project/FLOWS.md (one flow per feature), and PROJECT.md if needed, following the request below, in the grammar of references/state.md. Do not ask "
                          "(doubts go to the `## Open questions` section of the ROADMAP), never approve the roadmap, and finish.\n\n"
                          "User request:\n")
-JOB_PERMISSION_MODE = "auto"  # the same default as run_loop (--permission-mode auto)
-DEFAULT_JOB_MODEL = ""  # empty = the account's default model, as in run_loop
+ROADMAP_PERMISSION_MODE = "dontAsk"  # what the rules do not pre-approve is denied (nobody answers a prompt in -p)
+ROADMAP_HOOK_PROFILE = "planning"  # guard.py profile: Write/Edit only inside .specs/
+ROADMAP_EDITABLE_PATHS = tuple(".specs/project/%s" % name for name in ("ROADMAP.md", "FLOWS.md", "PROJECT.md", "RULES.md", "TEST-ENVIRONMENT.md"))
+ROADMAP_ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Skill"] + ["Edit(/%s)" % path for path in ROADMAP_EDITABLE_PATHS]
+ROADMAP_DISALLOWED_TOOLS = ["Bash", "PowerShell", "NotebookEdit", "Agent", "WebFetch"]
+# Map-first variant: Phase 1 dispatches brownfield-mapper agents (Agent) and sizes them with `harness.py scale` (Bash), and writes
+# docs/codebase/. The guard profile still confines the writes. Neither `planning` (no docs/codebase) nor `spec` (state-write blocks
+# ROADMAP.md) fits: this profile is `planning` rules + `map-docs` and must exist in plugin guard.py PROFILES.
+ROADMAP_MAP_FIRST_HOOK_PROFILE = "roadmapmap"
+ROADMAP_MAP_FIRST_EDITABLE_PATHS = ROADMAP_EDITABLE_PATHS + (run_hints.MAP_FOLDER,)
+ROADMAP_MAP_FIRST_ALLOWED_TOOLS = ROADMAP_ALLOWED_TOOLS + ["Agent", "Bash", "Edit(/%s/**)" % run_hints.MAP_FOLDER]
+ROADMAP_MAP_FIRST_DISALLOWED_TOOLS = ["PowerShell", "NotebookEdit", "WebFetch"]
+DEFAULT_JOB_MODEL = ""# empty = the account's default model, as in run_loop
 DEFAULT_BUDGET_USD = 5.0
 MAX_BUDGET_USD = 50.0
 GOAL_TEXT_LIMIT = 20000
@@ -89,7 +93,9 @@ class IRoadmapService(Protocol):
 
 class RoadmapService:
     def __init__(self, specs_file_repository, project_progress_service, claude_job_service, claude_client, planning_requirement_service,
-                 workspace_file_guard, log):
+                 workspace_file_guard, log, readiness_service=None, project_capabilities_service=None):
+        self.readiness_service = readiness_service  # cached `run_loop.py --check --planning`; refuses the approval when enforced and not READY
+        self.project_capabilities_service = project_capabilities_service  # rewrites the marked block of PROJECT.md at approval
         self.specs_file_repository = specs_file_repository
         self.project_progress_service = project_progress_service
         self.claude_job_service = claude_job_service
@@ -97,6 +103,10 @@ class RoadmapService:
         self.planning_requirement_service = planning_requirement_service
         self.workspace_file_guard = workspace_file_guard
         self.log = log
+        self.map_job_runner = MapJobRunner(claude_job_service, claude_client, workspace_file_guard, log, self.read_short_head)
+
+    def read_short_head(self, repo_path):
+        return self.project_progress_service.git_client.get_short_head(repo_path)
 
     # ------------------------------------------------ read
     def get_roadmap(self, context):
@@ -116,6 +126,8 @@ class RoadmapService:
         if self.project_progress_service.is_loop_running(context):
             raise LoopRunningError("loop running: the roadmap was already approved")
         self.ensure_planning_gates_ok(context)
+        self.ensure_ready_to_run(context)
+        self.write_capabilities(context)
         try:
             approval = loop_state.approve_roadmap(context.work_dir, now_iso())
         except ValueError as failure:
@@ -133,6 +145,25 @@ class RoadmapService:
                 "%s (%s)" % (gate["label"], gate["detail"]) if gate["detail"] else gate["label"] for gate in failing),
                 gates, PLANNING_GATES_CODE)
 
+    def ensure_ready_to_run(self, context):
+        """Server side re-check of the `ready` gate (the last moment the user is present): refuses with the first problem."""
+        if not self.readiness_service or not self.readiness_service.enforced:
+            return
+        gate = create_readiness_gate(self.readiness_service.get(context))
+        if not gate["ok"]:
+            self.log.info("roadmap_approval_refused", project=context.project.id, gates=[GATE_READY])
+            raise PlanningGatesError("the roadmap cannot be approved yet: %s (%s)" % (gate["label"], gate["detail"]),
+                                     [item for item in self.project_progress_service.build_planning_gates(context)
+                                      if item["id"] != GATE_READY] + [gate], PLANNING_GATES_CODE)
+
+    def write_capabilities(self, context):
+        if not self.project_capabilities_service:
+            return
+        try:
+            self.project_capabilities_service.write(context)
+        except OSError as failure:  # PROJECT.md is a guide for the agents: never block the approval for it
+            self.log.warn("capabilities_block_not_written", project=context.project.id, message=str(failure)[:200])
+
     # ------------------------------------------------ jobs
     def generate_roadmap(self, context, goal, map_first=False, budget_usd=None):
         self.planning_requirement_service.ensure_planning_done(context)
@@ -141,9 +172,9 @@ class RoadmapService:
         self.ensure_repo_free_for_job(context)
         self.write_goal(context.repo_path, goal_text, bool(map_first))
         prompt = GENERATE_ROADMAP_PROMPT + (" " + MAP_FIRST_FLAG if map_first else "")
-        argv = self.claude_client.build_command(DEFAULT_JOB_MODEL, budget, no_mcp=False, prompt_argument=prompt,
-                                                permission_mode=JOB_PERMISSION_MODE)
-        return self.claude_job_service.start_job(context.repo_path, JOB_TYPE_ROADMAP, ClaudeJobCommand(argv))
+        argv = self.build_confined_argv(budget, prompt_argument=prompt, map_first=bool(map_first))
+        return self.claude_job_service.start_job(context.repo_path, JOB_TYPE_ROADMAP,
+                                                 self.create_confined_command(context.repo_path, argv, map_first=bool(map_first)))
 
     def refine_roadmap(self, context, text, budget_usd=None):
         self.planning_requirement_service.ensure_planning_done(context)
@@ -153,47 +184,52 @@ class RoadmapService:
         session = self.claude_job_service.get_last_session(context.repo_path, ROADMAP_JOB_TYPES)
         if not session:
             raise RoadmapSessionMissingError("no roadmap generated by the app in this project to refine: generate the roadmap first")
-        argv = self.claude_client.build_command(DEFAULT_JOB_MODEL, budget, no_mcp=False, resume_session=session,
-                                                permission_mode=JOB_PERMISSION_MODE)
+        argv = self.build_confined_argv(budget, resume_session=session)
         return self.claude_job_service.start_job(context.repo_path, JOB_TYPE_ROADMAP_REFINE,
-                                                 ClaudeJobCommand(argv, REFINE_ROADMAP_PREFIX + request, session))
+                                                 self.create_confined_command(context.repo_path, argv, REFINE_ROADMAP_PREFIX + request, session))
+
+    def build_confined_argv(self, budget, prompt_argument="", resume_session="", map_first=False):
+        """Same confinement as the planning chat: hook profile `planning` (Write/Edit only inside .specs/), dontAsk, only the roadmap
+        documents editable, no Bash/Agent/web, no MCP (the roadmap job reads files only)."""
+        allowed = ROADMAP_MAP_FIRST_ALLOWED_TOOLS if map_first else ROADMAP_ALLOWED_TOOLS
+        disallowed = ROADMAP_MAP_FIRST_DISALLOWED_TOOLS if map_first else ROADMAP_DISALLOWED_TOOLS
+        return self.claude_client.build_command(DEFAULT_JOB_MODEL, budget, list(allowed), list(disallowed),
+                                                no_mcp=True, prompt_argument=prompt_argument, resume_session=resume_session,
+                                                permission_mode=ROADMAP_PERMISSION_MODE,
+                                                hook_profile=ROADMAP_MAP_FIRST_HOOK_PROFILE if map_first else ROADMAP_HOOK_PROFILE)
+
+    def create_confined_command(self, repo_path, argv, stdin_text="", resumed_session="", map_first=False):
+        """The snapshot is taken in the job thread (before claude) and everything outside the roadmap documents is undone afterwards."""
+        holder = {}
+        editable = ROADMAP_MAP_FIRST_EDITABLE_PATHS if map_first else ROADMAP_EDITABLE_PATHS
+
+        def take_snapshot(update_progress):
+            holder["snapshot"] = self.workspace_file_guard.take_snapshot(repo_path, MAP_GUARD_IGNORED_PATHS)
+
+        def revert_changes(result):
+            report = self.workspace_file_guard.revert_unexpected_changes(holder["snapshot"], list(editable))
+            if report["reverted"] or report["removed"] or report["unrestorable"]:
+                self.log.warn("roadmap_guard_reverted", reverted=report["reverted"][:50], removed=report["removed"][:50])
+            if map_first and result.get("ok") and run_hints.list_map_documents(os.path.join(repo_path, *run_hints.MAP_FOLDER.split("/"))):
+                try:  # the app (not the AI) writes the map index and the CLAUDE.md block, as after a map job
+                    run_hints.write_map_index(repo_path, self.read_short_head(repo_path))
+                    run_hints.write_codebase_block(repo_path)
+                except Exception as failure:  # a nicety: never fail the roadmap for it
+                    self.log.warn("roadmap_map_index_failed", message=str(failure)[:200])
+            return result
+
+        return ClaudeJobCommand(argv, stdin_text, resumed_session, before_start=take_snapshot, finalize=revert_changes)
 
     def map_codebase(self, context, budget_usd=None):
-        budget = self.validate_budget(budget_usd)
-        self.ensure_repo_free_for_job(context)
-        snapshot = self.workspace_file_guard.take_snapshot(context.repo_path, MAP_GUARD_IGNORED_PATHS)
-        argv = self.claude_client.build_command(DEFAULT_JOB_MODEL, budget, no_mcp=True, prompt_argument=MAP_CODEBASE_PROMPT,
-                                                permission_mode=JOB_PERMISSION_MODE, hook_profile="spec")
-        command = ClaudeJobCommand(argv, finalize=lambda result: self.finish_map(context, snapshot, result))
-        return self.claude_job_service.start_job(context.repo_path, JOB_TYPE_MAP, command)
-
-    def finish_map(self, context, snapshot, result):
-        """Runs in the job thread: undoes changes outside .specs/ and docs/codebase/ and fails the job when no map document was written."""
-        report = self.workspace_file_guard.revert_unexpected_changes(snapshot, MAP_ALLOWED_FOLDERS)
-        touched = report["reverted"] + report["removed"] + report["unrestorable"]
-        if touched:
-            self.log.warn("map_guard_reverted", project=context.project.id, reverted=report["reverted"][:50],
-                          removed=report["removed"][:50], unrestorable=report["unrestorable"][:50])
-        result = dict(result)
-        if result.get("ok") and touched:
-            result["reply"] = str(result.get("reply") or "") + MAP_GUARD_NOTE % ", ".join(touched[:MAP_GUARD_FILES_SHOWN])
-        if result.get("ok") and not run_hints.list_map_documents(os.path.join(context.repo_path, *run_hints.MAP_FOLDER.split("/"))):
-            result.update(ok=False, error=MAP_NOTHING_WRITTEN)
-        if result.get("ok"):  # after the undo above: this is the app (not the AI) writing the index and pointing CLAUDE.md at the map
-            try:
-                run_hints.write_map_index(context.repo_path, self.read_short_head(context.repo_path))
-                run_hints.write_codebase_block(context.repo_path)
-            except OSError as failure:
-                self.log.warn("map_claude_md_block_failed", project=context.project.id, message=str(failure)[:200])
-        return result
-
-    def read_short_head(self, repo_path):
-        """Short sha of HEAD for the "mapped at" marker; None when git cannot tell (the marker then says it is unknown)."""
+        """Only validates and registers the job: the safety snapshot and claude run in the job thread (MapJobRunner).
+        The setup map has no spend cap: `budget_usd` is accepted and ignored (never a 400), the argv has no `--max-budget-usd`."""
+        self.log.info("map_requested", project=context.project.id)
         try:
-            return self.project_progress_service.git_client.get_short_head(repo_path) or None
-        except Exception as failure:  # the marker is a nicety: never fail the map for it
-            self.log.warn("map_head_unreadable", message=str(failure)[:200])
-            return None
+            self.ensure_repo_free_for_job(context)
+        except Exception as refusal:
+            self.log.info("map_refused", project=context.project.id, reason=type(refusal).__name__, message=str(refusal)[:200])
+            raise
+        return self.map_job_runner.start(context.repo_path, context.project.id, None)
 
     # ------------------------------------------------ support
     def ensure_repo_free_for_job(self, context):

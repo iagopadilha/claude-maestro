@@ -1,4 +1,4 @@
-"""Readiness guard of the extra repos (Conformance + map), the planning gate "repos" and commit-and-push of the user's folder."""
+"""Readiness guard of the extra repos (Conformance + map) and the planning gate "repos". Commit-and-push: test_workspace_commit_push_guard."""
 import os
 
 from harness_backend.domain.project_errors import InvalidRepoError, LoopRunningError, RepoConflictError
@@ -51,6 +51,11 @@ class TestRepoReadiness(MultiRepoTestCase):
         self.assertEqual(api["missing"], ["conformance", "map"])
         self.assertIn(api["suggestion"]["suggestion"], ("STANDARD", "LEGACY"))
         self.assertEqual([item["name"] for item in self.readiness.list_unready(self.context)], ["api"])
+
+    def test_reference_repo_needs_no_setup(self):
+        self.registry.set_role(self.context, "api", "reference")
+        self.assertEqual(self.by_name()["api"]["role"], "reference")
+        self.assertEqual(self.readiness.list_unready(self.context), [])
 
     def test_conformance_written_in_the_repo_claude_md_then_only_the_map_is_missing(self):
         written = self.readiness.set_conformance(self.context, "api", "LEGACY")
@@ -116,52 +121,3 @@ class TestRepoReadiness(MultiRepoTestCase):
         return {"structure": {"ok": True, "missing": []}, "has_code": True, "project_text": "x", "features": {}, "roadmap_parse_errors": [],
                 "roadmap_field_errors": [], "open_questions": [], "flow_coverage": {"missing": [], "orphans": []}, "map_files": ["STACK.md"],
                 "is_git": True, "conformance": "STANDARD", "roadmap_exists": False, "flows_exists": False, "repos_unready": unready}
-
-
-class TestCommitAndPush(MultiRepoTestCase):
-    def setUp(self):
-        super().setUp()
-        self.primary = self.make_repo("app")
-        self.context = self.make_context(self.primary)
-        self.remote = os.path.join(self.temporary_dir, "remote.git")
-        os.makedirs(self.remote)
-        run_git(self.remote, "init", "--bare", "-q")
-        run_git(self.primary, "remote", "add", "origin", self.remote)
-        self.workspace = WorkspaceService(self.registry, self.loop_status_service, LoopFileRepository(), self.git_client,
-                                          InlineJobService(), FakeEngineAdapter(), self.log)
-
-    def remote_log(self):
-        return run_git(self.remote, "log", "--oneline", "--all").stdout
-
-    def test_commits_and_pushes_the_current_branch_and_clears_the_uncommitted_note(self):
-        write_file(os.path.join(self.primary, "pending.txt"), "uncommitted\n")
-        self.assertTrue(self.workspace.get_workspace(self.context)["repos"][0]["dirty"])
-        result = self.workspace.commit_and_push(self.context, "app", "wip: save")
-        self.assertEqual((result["committed"], result["pushed"]), (True, True))
-        self.assertIn("wip: save", self.remote_log())
-        self.assertFalse(self.workspace.get_workspace(self.context)["repos"][0]["dirty"])
-
-    def test_commit_only_when_push_is_off(self):
-        write_file(os.path.join(self.primary, "pending.txt"), "uncommitted\n")
-        result = self.workspace.commit_and_push(self.context, "app", None, push=False)
-        self.assertEqual((result["committed"], result["pushed"]), (True, False))
-        self.assertEqual(self.remote_log().count("save work"), 0)
-
-    def test_failed_push_keeps_the_commit_and_says_so(self):
-        write_file(os.path.join(self.primary, "pending.txt"), "uncommitted\n")
-        run_git(self.primary, "remote", "set-url", "origin", os.path.join(self.temporary_dir, "does-not-exist.git"))
-        with self.assertRaises(RepoConflictError) as raised:
-            self.workspace.commit_and_push(self.context, "app", "wip: save")
-        self.assertTrue(raised.exception.extras["committed"])
-        self.assertFalse(self.git_client.has_uncommitted_changes(self.primary))
-
-    def test_refuses_when_the_worktree_exists_the_loop_runs_or_the_message_is_bad(self):
-        run_git(self.primary, "worktree", "add", "-q", "-b", "loop/test", self.primary + "-worktree-loop")
-        with self.assertRaises(RepoConflictError):
-            self.workspace.commit_and_push(self.context, "app")
-        run_git(self.primary, "worktree", "remove", "--force", self.primary + "-worktree-loop")
-        with self.assertRaises(InvalidRepoError):
-            self.workspace.commit_and_push(self.context, "app", "two\nlines")
-        self.write_live_loop_lock(self.primary)
-        with self.assertRaises(RepoConflictError):
-            self.workspace.commit_and_push(self.context, "app")

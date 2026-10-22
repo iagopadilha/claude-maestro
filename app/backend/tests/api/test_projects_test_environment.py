@@ -53,9 +53,8 @@ class TestEnvironmentRoutesTest(ProjectsTestCase):
         self.assertEqual(status, 400, body)
         self.assertNotIn(SECRET_VALUE, str(body))
 
-    def test_put_access_is_stored_in_the_project(self):
-        status, body = self.request("PUT", self.route("/access"), {"grafana_read": True})
-        self.assertEqual(status, 200, body)
-        self.assertTrue(body["access"]["grafana_read"])
+    def test_get_returns_the_computed_access_and_there_is_no_put_access(self):
         _, listed = self.request("GET", self.route())
-        self.assertTrue(listed["access"]["grafana_read"])
+        self.assertEqual(set(listed["access"]), {"credential_layers", "mcp"})
+        status, _ = self.request("PUT", self.route("/access"), {"grafana_read": True})
+        self.assertIn(status, (404, 405))

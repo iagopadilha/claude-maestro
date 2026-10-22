@@ -69,15 +69,16 @@ class TestBareWorktree(ProjectsTestCase):
         write_file(loop_file_path(worktree, "json", "LOOP.json"), json.dumps({"status": "continue", "turn": 1}))
         self.assertFalse(self.planning_required(project_id))
 
-    def test_reset_specs_acts_on_the_primary_specs_the_panel_reads(self):
+    def test_reset_specs_acts_on_the_primary_specs_the_panel_reads_and_deletes_the_bare_worktree(self):
         repo, project_id = self.create_planning_project()
         worktree = self.add_bare_worktree(repo)
         status, body = self.request("POST", "/api/app/projects/%s/reset-specs" % project_id, {"confirm": os.path.basename(repo)})
         self.assertEqual(status, 200, body)
         self.assertIn(".specs/project/ROADMAP.md", body["moved"])
         self.assertTrue(os.path.isdir(os.path.join(repo, ".specs", ".trash")))
-        self.assertEqual(read_file(os.path.join(worktree, ".specs", "project", "ROADMAP.md")), "# stale copy made at creation\n")  # untouched
-        self.assertFalse(os.path.isdir(os.path.join(worktree, ".specs", ".trash")))
+        self.assertNotIn("# stale copy made at creation", read_file(os.path.join(repo, ".specs", "project", "ROADMAP.md")))
+        self.assertEqual([item["path"] for item in body["worktrees_removed"]], [os.path.normpath(worktree)])  # the bare worktree goes away too
+        self.assertFalse(os.path.exists(worktree))
 
 
 if __name__ == "__main__":

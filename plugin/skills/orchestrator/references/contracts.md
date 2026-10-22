@@ -1,6 +1,6 @@
 # Return contracts
 
-Every subagent returns structured text with fixed fields. The orchestrator reads those fields and nothing else. If a return comes in the wrong format, treat it as a failure of that dispatch and resend once, citing the expected format; the second time, quarantine.
+Every subagent returns structured text with fixed fields. The orchestrator reads those fields and nothing else. **One return = one feature**: every agent is dispatched for exactly one feature (one `FEATURE: <slug>` line in its prompt) and its return has one `FEATURE:`; a return that covers several features is a failed dispatch (resend one agent per feature). If a return comes in the wrong format, treat it as a failure of that dispatch and resend once, citing the expected format; the second time, quarantine.
 
 No contract includes file content. Specs, diffs and logs stay on disk; the return carries a pointer.
 
@@ -20,7 +20,7 @@ A filled `GAPS` blocks nothing. Note it in `STATE.md` as a known mapping gap.
 ```
 FEATURE: <slug>
 SCOPE: Small|Medium|Large|Complex
-FILES: .specs/features/<slug>/spec.md[, design.md][, tasks.md]
+FILES: .specs/features/<slug>/spec.md[, design.md], .specs/features/<slug>/tasks.md
 PATHS: <dir or glob>, <dir or glob>
 DEPS: <slug|dir:folder>, ... | none
 KIND: back|front|both|generic
@@ -77,6 +77,8 @@ What to do with each status:
 
 `CHANGED` feeds the commit message and the report. Check that the listed paths are inside the spec's `PATHS`; if any falls outside, treat it as `NEEDS_CONFIRM`.
 
+**One task per executor.** In a task wave each executor returns for ONE task (`FEATURE: <slug>`, and `NOTES` may name the `<Tn>`); `CHANGED` must stay inside that task's `Files` (SCOPE.json `tasks`), otherwise `NEEDS_CONFIRM`. After each return the orchestrator runs `harness.py tasks set <slug> <Tn> done|failed` (`DONE` = done; any other status or a failure = failed, resent to the same executor up to 2 times, then quarantine). An executor may add `DECISION: [<slug>] level=<important|critical> <doubt> | chose: <choice> | revert: <how>` lines (no `turn`); the orchestrator consolidates them into `VALIDATE.md` and stamps the turn. The `spec-writer` `FILES:` line always lists `tasks.md`.
+
 ## `verifier`
 
 ```
@@ -111,4 +113,4 @@ LAYERS_NOT_COVERED: <e.g. "UI e2e">, or "-"
 
 ## `Plan` (native agent, phase 2)
 
-No fixed contract. The orchestrator reads the output and converts it to the `ROADMAP.md` format defined in `state.md`, plus one flow per feature in `FLOWS.md` (same reference). Every feature is born `pending`, without `PATHS` — the `spec-writer` fills `PATHS`.
+No fixed contract. The orchestrator reads the output and converts it to the `ROADMAP.md` format defined in `state.md`, plus one flow per feature in `FLOWS.md` (same reference). Every feature is born `pending`, without `PATHS` — the `spec-writer` fills `PATHS` — with a descriptive slug (kebab case, 3 to 6 meaningful words) and a `title="..."` (a short sentence of what the user gets); see `state.md`, "Names".

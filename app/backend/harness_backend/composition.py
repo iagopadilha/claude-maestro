@@ -18,10 +18,12 @@ from .infrastructure.structured_log import StructuredLog
 from .infrastructure.activity_monitor import ActivityMonitor
 from .api.controllers.app_controller import AppController
 from .services.app_diagnostics_service import build_app_diagnostics_service
+from .services.decisions_service import DecisionsService
 from .services.projects_module import build_projects_module
 from .services.loop_read_module import build_loop_read_module
 from .services.loop_commands_module import build_loop_commands_module
 from .services.multi_repo_module import build_multi_repo_module
+from .services.quarantine_module import build_quarantine_module
 
 
 class AssembledApplication:
@@ -56,8 +58,9 @@ def build_application(config=None, **config_overrides):
         return server.url or ""
 
     projects_module = build_projects_module(config, log, get_app_url)
+    decisions_service = DecisionsService()  # one instance: the loop panel, the decisions routes and the wrap-up share it
     loop_read_module = build_loop_read_module(config, log, projects_module.project_service, activity_monitor,
-                                              projects_module.planning_requirement_service)
+                                              projects_module.planning_requirement_service, decisions_service=decisions_service)
     loop_commands_module = build_loop_commands_module(config, log, projects_module.project_service,
                                                       loop_read_module.loop_status_service, activity_monitor, get_app_url,
                                                       projects_module.planning_requirement_service)
@@ -67,11 +70,21 @@ def build_application(config=None, **config_overrides):
                                                 specs_structure_service=projects_module.project_progress_service.specs_structure_service,
                                                 roadmap_service=projects_module.roadmap_service,
                                                 project_progress_service=projects_module.project_progress_service,
-                                                planning_requirement_service=projects_module.planning_requirement_service)
+                                                planning_requirement_service=projects_module.planning_requirement_service,
+                                                planning_repos_service=projects_module.planning_repos_service,
+                                                on_plan_changed=projects_module.on_plan_changed,
+                                                subprojects_service=projects_module.subprojects_service,
+                                                context_block_service=projects_module.context_block_service,
+                                                decisions_service=decisions_service)
+    # the validation service resolves a secondary repository (`?repo=`) through the registry the multi-repo module built
+    # (subprojects_service gets it from build_multi_repo_module)
+    projects_module.subproject_validation_service.repo_registry_service = multi_repo_module.repo_registry_service
+    quarantine_module = build_quarantine_module(config, log, projects_module.project_service, loop_read_module, loop_commands_module,
+                                                projects_module.planning_requirement_service)
     app_controller = AppController(config, log, server, activity_monitor, projects_module.project_service,
                                    app_diagnostics_service=build_app_diagnostics_service(config))
 
-    for module in (projects_module, loop_read_module, loop_commands_module, multi_repo_module):
+    for module in (projects_module, loop_read_module, loop_commands_module, multi_repo_module, quarantine_module):
         for controller in module.controllers:
             controller.register_routes(router)
         for provider in module.busy_providers:

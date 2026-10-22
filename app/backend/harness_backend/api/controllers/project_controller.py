@@ -23,6 +23,7 @@ class ProjectController:
         router.add("POST", "/api/app/projects/pick-folder", self.pick_folder)
         router.add("POST", "/api/app/projects/{project_id}/forget", self.forget_project)
         router.add("POST", "/api/app/projects/{project_id}/reset-specs", self.reset_specs)
+        router.add("GET", "/api/app/projects/{project_id}/reset-specs/preview", self.preview_reset_specs)
         router.add("GET", "/api/app/system/folders", self.list_folders)
         router.add("GET", "/p/{project_id}/api/progress", self.get_progress)
         router.add("POST", "/p/{project_id}/api/structure/initialize", self.initialize_structure)
@@ -57,7 +58,8 @@ class ProjectController:
         return Response.json(200, {"ok": True, "project": data, "url": data["url"]})
 
     def pick_folder(self, request):
-        return Response.json(200, self.folder_picker_service.pick_folder_with_dialog())
+        body = request.body if isinstance(request.body, dict) else {}
+        return Response.json(200, self.folder_picker_service.pick_folder_with_dialog(initial=body.get("initial")))
 
     def forget_project(self, request):
         def forget():
@@ -66,11 +68,18 @@ class ProjectController:
         return respond_converting_errors(forget)
 
     def reset_specs(self, request):
-        """Moves the planning/loop state to `.specs/.trash/<stamp>/`; the body must carry `confirm` = the project name."""
+        """Moves the planning/loop state to `.specs/.trash/<stamp>/` and deletes the loop worktrees; the body must carry `confirm` = the project name."""
         def reset():
             context = self.project_service.get_project_context(request.route_params["project_id"])
             return Response.json(200, self.specs_reset_service.reset_specs(context, request.body.get("confirm")))
         return respond_converting_errors(reset)
+
+    def preview_reset_specs(self, request):
+        """Read only: the loop worktrees (path, branch, unpushed commits) that Reset specs would delete, for the confirmation text."""
+        def preview():
+            context = self.project_service.get_project_context(request.route_params["project_id"])
+            return Response.json(200, self.specs_reset_service.preview_reset(context))
+        return respond_converting_errors(preview)
 
     def list_folders(self, request):
         return respond_converting_errors(lambda: Response.json(200, self.folder_picker_service.list_subfolders(

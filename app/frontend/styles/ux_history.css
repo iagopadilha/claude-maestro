@@ -1,0 +1,25 @@
+/* ux pass: history (loaded last, overrides the older rules) */
+.hsumbar{border:1px solid var(--line2);border-radius:8px;background:var(--panel);padding:8px 12px;display:flex;flex-direction:column;gap:6px;}
+.hsumbar-top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+.hsumbar-t{font:600 13px var(--sans);}
+.hstats{display:flex;gap:14px;flex-wrap:wrap;}
+.hstat{display:flex;align-items:baseline;gap:4px;font:400 11px var(--mono);}
+.hstat b{font-weight:600;color:var(--text);}
+.hstat i{font-style:normal;color:var(--muted);}
+.hfilters{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.hf{font:500 11px var(--sans);padding:2px 10px;border:1px solid var(--line2);border-radius:999px;background:transparent;color:var(--text2);cursor:pointer;}
+.hf:hover{background:var(--panel2);}
+.hf.on{border-color:var(--amber-line);color:var(--text);background:var(--amber-bg);}
+.hf-sel{font:400 11px var(--sans);padding:2px 6px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);color:var(--text2);max-width:220px;}
+.hcaption{font-size:11px;color:var(--muted);}
+.hhead{min-width:0;}
+.hchips{display:flex;gap:4px;min-width:0;overflow:hidden;flex:none;max-width:40%;}
+.hchip{font:400 10px var(--mono);padding:0 6px;border-radius:4px;background:var(--panel2);color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;line-height:16px;}
+.hbad{font:600 10px var(--mono);color:#E5484D;white-space:nowrap;}
+.hdec{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;}
+.hsum{background:var(--panel2);border-bottom:1px solid var(--line);}
+.hsum-k{display:block;padding:3px 12px 0;font:600 9px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);}
+.hgroup-h{display:flex;align-items:center;gap:6px;padding:4px 12px;background:var(--panel2);border-bottom:1px solid var(--line);}
+.hgroup-n{font:600 11px var(--mono);color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.hgroup-c{font:400 10px var(--mono);color:var(--muted);}
+.hrow-none{color:var(--muted);font-style:italic;}

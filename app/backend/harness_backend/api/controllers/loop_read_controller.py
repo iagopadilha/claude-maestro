@@ -6,6 +6,7 @@ import os
 
 from ..router import Response
 from ...domain.project import ProjectNotFoundError
+from .project_responses import respond_converting_errors
 
 PROJECT_PREFIX = "/p/{project_id}/api"
 PROJECT_NOT_FOUND_MESSAGE = "project not found"
@@ -21,7 +22,10 @@ def get_header(request, name):
 
 
 class LoopReadController:
-    def __init__(self, project_service, loop_panel_service, agent_history_service, turn_service, log):
+    def __init__(self, project_service, loop_panel_service, agent_history_service, turn_service, log, error_center_service=None,
+                 pipeline_service=None):
+        self.error_center_service = error_center_service
+        self.pipeline_service = pipeline_service
         self.project_service = project_service
         self.loop_panel_service = loop_panel_service
         self.agent_history_service = agent_history_service
@@ -35,6 +39,35 @@ class LoopReadController:
         router.add("GET", PROJECT_PREFIX + "/agent/{agent_id*}/log", self.get_agent_log)  # raw id (may contain ':')
         router.add("GET", PROJECT_PREFIX + "/turn/{number}", self.get_turn)
         router.add("GET", PROJECT_PREFIX + "/graph", self.get_graph)
+        router.add("GET", PROJECT_PREFIX + "/errors", self.get_errors)
+        router.add("GET", PROJECT_PREFIX + "/pipeline", self.get_pipeline)
+        router.add("GET", PROJECT_PREFIX + "/codebase/tree", self.get_codebase_tree)
+        router.add("GET", PROJECT_PREFIX + "/codebase/file", self.get_codebase_file)
+
+    def get_codebase_tree(self, request):
+        context, error = self.get_context(request)
+        if error:
+            return error
+        return Response.json(200, self.loop_panel_service.build_codebase_tree(context))
+
+    def get_codebase_file(self, request):
+        context, error = self.get_context(request)
+        if error:
+            return error
+        path = request.get_query("path")
+        return respond_converting_errors(lambda: Response.json(200, self.loop_panel_service.read_codebase_file(context, path)))
+
+    def get_errors(self, request):
+        context, error = self.get_context(request)
+        if error:
+            return error
+        return Response.json(200, self.error_center_service.build_errors(context))
+
+    def get_pipeline(self, request):
+        context, error = self.get_context(request)
+        if error:
+            return error
+        return Response.json(200, self.pipeline_service.build_pipeline(context))
 
     def get_context(self, request):
         """(context, None) or (None, 404 Response)."""

@@ -1,0 +1,45 @@
+/* ux pass: header (loaded last, overrides the older rules). Planning header only for the brand/repo-line rules; the loop navbar is styled in navbar.css. */
+
+/* header: wraps instead of clipping; the brand block grows and shows repo, worktree and the full branch */
+#app>.header{flex-wrap:wrap;align-items:flex-start;gap:8px 16px;padding:8px 16px;}
+#app>.header>.brand{flex:1 1 440px;max-width:760px;min-width:280px;align-items:flex-start;margin-right:0;}
+#app>.header>.brand>div:last-child{min-width:0;flex:1 1 auto;}
+.brand-name{font-size:14px;}
+.brand-sub{font-size:12px;max-width:none;white-space:normal;overflow:visible;overflow-wrap:anywhere;color:var(--text2);}
+.repo-line{flex-wrap:wrap;align-items:baseline;gap:2px 14px;font-size:12px;white-space:normal;margin-top:2px;}
+.repo-item{display:inline-flex;align-items:baseline;gap:5px;min-width:0;max-width:100%;}
+.repo-tag{flex:none;font-size:10px;text-transform:uppercase;letter-spacing:.05em;}
+.repo-path{overflow:visible;text-overflow:clip;overflow-wrap:anywhere;font-weight:500;}
+.repo-copy{flex:none;font-size:11px;}
+
+/* status pill, limits and actions: never squashed */
+#app>.header>.pill{flex:none;white-space:nowrap;align-self:center;}
+#app>.header>.limits{flex:0 1 auto;flex-wrap:wrap;gap:8px 16px;align-self:center;}
+#app>.header>.spacer{flex:1 1 0;min-width:0;}
+#app>.header>.header-actions{flex:none;flex-wrap:wrap;align-self:center;white-space:nowrap;}
+#app>.header>.header-actions .btn{white-space:nowrap;}
+#app>.header>.guard-badge{align-self:center;}
+
+/* top zone: planning mode only (the Workspace line); the loop mode has no zone above its content */
+.chrome-zones{display:block;}
+.chrome-zones:not(.is-open){display:none;}
+.chrome-zones>.alert-zone:empty{display:none;}
+.chrome-zones.is-open>.alert-zone,.chrome-zones.is-open>.newloop-zone,.chrome-zones.is-open>.workspace-zone{display:block;}
+.chrome-zones.is-open>.newloop-zone[hidden],.chrome-zones.is-open>.workspace-zone[hidden]{display:none;}
+
+/* workspace: one slim line */
+.workspace-zone{padding:2px 16px;}
+.workspace-zone .ws{border-radius:6px;border-color:var(--line);background:transparent;}
+.workspace-zone .ws-line .ws-head{min-height:26px;padding:2px 10px;gap:8px;flex-wrap:nowrap;}
+.workspace-zone .ws-line .ws-title{font:600 11px var(--sans);color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
+.workspace-zone .ws-line .ws-sum{font-size:11px;}
+.workspace-zone .ws-line .btn-sm{padding:0 6px;height:20px;min-height:0;font-size:11px;}
+.workspace-zone .ws-line .ws-link{background:none;border:0;color:var(--muted);text-decoration:underline;}
+.workspace-zone .ws-line .ws-link:hover{color:var(--text);}
+
+/* SCROLL FIX: the loop view is exactly as tall as the window. The columns (roadmap list, canvas, inspector) scroll inside themselves;
+   they never stretch the page (before, `flex:1 0 auto` made <main> as tall as the longest roadmap list). */
+#app:not([data-mode="planning"]){height:100vh;}
+#app:not([data-mode="planning"])>.main{flex:1 1 0;min-height:420px;grid-template-rows:minmax(0,1fr);}
+#app:not([data-mode="planning"]) .main>.left,#app:not([data-mode="planning"]) .main>.center,#app:not([data-mode="planning"]) .main>.right{min-height:0;max-height:100%;overflow:auto;}
+#app:not([data-mode="planning"]) .main>.center{overflow:hidden;}

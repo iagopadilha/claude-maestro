@@ -1,4 +1,4 @@
-/* Act mode: concrete actions on the current version (back-end whitelist), always with an explicit confirmation. */
+/* Actions (inside the composer's Chat mode): concrete actions on the current version (back-end whitelist), always with an explicit confirmation. */
 import { html, useState } from '../../util/preact.js';
 import { num, txt, list, httpUrl, shortPath, fmtHour } from '../../util/format.js';
 import { toast } from '../../components/toast.js';
@@ -153,7 +153,7 @@ function ConfirmCard({ c }) {
         <input type="text" class="ac-type" placeholder=${w.branch} aria-label=${'type ' + w.branch} autocomplete="off" spellcheck=${false}
           value=${c.typed[w.path] || ''} onInput=${(e) => { c.typed[w.path] = e.currentTarget.value; changed(); }} /></label>`),
     ] : null}</div>` : null}
-    ${off ? html`<div class="ac-expl ac-off">${'Unavailable now: ' + txt(a.unavailable_reason)}</div>` : html`<div class="ac-expl">This runs now. Nothing happens before your click.</div>`}
+    ${off ? html`<div class="ac-expl ac-off">${'Unavailable now: ' + txt(a.unavailable_reason)}</div>` : html`<div class="ac-expl">Runs now, only on your click.</div>`}
     <div class="ac-btns">
       <button type="button" class=${'btn btn-sm ' + (danger ? 'btn-danger' : 'btn-go')} id="ac-go" disabled=${!ok} onClick=${runAction}>${danger ? 'Delete selected worktrees' : a.id === 'push' ? 'Push selected branches' : 'Confirm and run'}</button>
       <button type="button" class="btn btn-sm" onClick=${cancelAction}>Cancel</button>
@@ -189,22 +189,23 @@ function ActionCard({ c }) {
 }
 
 /** Content of #cp-act: quick actions, the current card and the recent actions. */
-export function ActPanel() {
-  const acts = list(actState.actions), rec = list(ctx.state && ctx.state.recent_actions).slice(0, 5);
-  return html`<div class="ac-head">Immediate action: runs now, with confirmation</div>
+export function ActPanel({ onPropose }) {
+  const acts = list(actState.actions), rec = list(ctx.state && ctx.state.recent_actions).slice(0, 5), available = acts.filter((a) => a.available !== false);
+  return html`<details class="ac-wrap" open=${actState.card ? true : undefined}>
+    <summary class="ac-sum">${`Actions${actState.actions ? ` (${available.length})` : ''}`}</summary>
     <div class="ac-quick">
       ${actState.loading && !actState.actions ? html`<div class="ac-msg"><${Spinner} /><span>checking what can be done…</span></div>` : null}
       ${actState.err ? html`<div class="ac-expl ac-off">${actState.err}</div>` : null}
-      ${acts.map((a) => {
-        const off = a.available === false;
-        return html`<div key=${a.id} class="ac-act"><button type="button" class=${'btn btn-sm ac-btn' + (a.id === 'clean_worktrees' ? ' danger' : '')} disabled=${off}
-            title=${off ? txt(a.unavailable_reason) : 'opens the confirmation card'} onClick=${() => openAction(a)}>${a.title || a.id}</button>
-          ${off ? html`<div class="ac-why">${'unavailable: ' + txt(a.unavailable_reason)}</div>` : null}</div>`;
-      })}
+      ${available.map((a) => html`<div key=${a.id} class="ac-act"><button type="button" class=${'btn btn-sm ac-btn' + (a.id === 'clean_worktrees' ? ' danger' : '')}
+          title="opens the confirmation card" onClick=${() => openAction(a)}>${a.title || a.id}</button></div>`)}
+      ${onPropose ? html`<button type="button" class="btn btn-sm btn-ghost ac-btn" title="the AI turns the text of the message box into an action, which you confirm" onClick=${onPropose}>Propose from message</button>` : null}
+      ${acts.some((a) => a.available === false) ? html`<details class="ac-off-list"><summary>${acts.filter((a) => a.available === false).length} unavailable now</summary>
+        ${acts.filter((a) => a.available === false).map((a) => html`<div key=${a.id} class="ac-why"><strong>${a.title || a.id}</strong>: ${txt(a.unavailable_reason)}</div>`)}</details>` : null}
       ${actState.actions && !actState.actions.length ? html`<div class="empty-note">No action available.</div>` : null}
     </div>
     <${ActionCard} key=${actState.seq} c=${actState.card} />
     ${rec.length ? html`<div class="ac-rec"><div class="ac-k">Recent actions</div>${rec.map((x, i) => html`<div key=${i} class="ac-rec-row">
       <span class=${'ac-rec-ok ' + (x.ok ? 'ok' : 'bad')}>${x.ok ? '✓' : '✗'}</span><span class="ac-rec-a">${txt(x.action)}</span>
-      <span class="ac-rec-t">${fmtHour(x.t)}</span><span class="ac-rec-r">${txt(x.summary)}</span></div>`)}</div>` : null}`;
+      <span class="ac-rec-t">${fmtHour(x.t)}</span><span class="ac-rec-r">${txt(x.summary)}</span></div>`)}</div>` : null}
+  </details>`;
 }

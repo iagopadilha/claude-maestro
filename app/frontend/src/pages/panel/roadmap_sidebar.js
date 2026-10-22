@@ -1,10 +1,14 @@
-/* Left column: roadmap by stage, quarantine, VALIDATE.md and ANSWERS.md. Also the selection. */
+/* Plan & files tab of the GLOBAL zone (the summary part): stages with their counts by status, the count of AI decisions to review,
+   quarantine pointers and ANSWERS.md. Also the selection helpers (selectStage / selectFeature / selectAgent) other views use.
+   The full plan and its files are read in plan_files_dialog.js; the decisions in decisions.js. */
 import { html } from '../../util/preact.js';
 import { isNum, num, txt, list } from '../../util/format.js';
-import { toast } from '../../components/toast.js';
-import { ctx, ui, pal, status, live, features, focusFeatureId } from './context.js';
+import { ctx, ui, live, features } from './context.js';
 import { renderAll } from '../project_panel.js';
 import { fetchAgentLog } from './inspector.js';
+import { DecisionsCount } from './decisions.js';
+import { openPauseDialog } from './dialogs/index.js';
+import { loadHist } from './history.js';
 
 /** One VALIDATE.md line: `- [<slug|general>] <doubt> | chose: <what was done> | revert: <how>`. */
 export function parseValidate(raw) {
@@ -31,67 +35,59 @@ export function groupStages() {
 }
 
 export function selectStage(n) { ui.sel = { kind: 'stage', n }; ui.tab = 'info'; ui.chatGeneral = false; renderAll(); }
-export function selectFeature(id) { ui.sel = { kind: 'feature', id }; ui.tab = 'info'; ui.chatGeneral = false; renderAll(); }
+export function selectFeature(id) { ui.sel = { kind: 'feature', id }; ui.tab = 'info'; ui.chatGeneral = false; renderAll(); loadHist(); }
 export function selectAgent(id) { ui.sel = { kind: 'agent', id }; ui.tab = 'chat'; ui.chatGeneral = false; ui.agentLog = null; ui.logLoading = id; renderAll(); fetchAgentLog(id); }
 
-async function sendQuarantine(q, opt) {
-  const s = status(), text = `Quarantine ${q.id}: ${opt}`;
-  const k = q.id + '|' + opt;
-  if (ui.busy[k]) return;
-  ui.busy[k] = true; renderAll();
-  try {
-    if (s === 'awaiting_user') await ctx.api.post('answer', { text });
-    else await ctx.api.post('note', { text });
-    ui.qSent[q.id] = opt; toast('Sent: ' + text, 'ok');
-  } catch (e) { toast('Not sent: ' + e.message, 'err'); }
-  finally { ui.busy[k] = false; renderAll(); }
+/** Short reader-facing status of a feature: [label, legend]. */
+const FEATURE_STATUS = {
+  pending: ['pending', 'waiting its turn'], speccing: ['spec', 'spec being written'], specced: ['spec ok', 'spec written, awaiting approval'],
+  approved: ['ready', 'spec approved, ready to run'], building: ['running', 'being implemented'], verified: ['done', 'implemented and verified'],
+  blocked: ['failed', 'blocked or failed, needs attention'],
+};
+/** Status of a feature for the sidebar: a building feature with a running verifier agent shows as "verifying". */
+export function featureStatusInfo(feature) {
+  const verifying = feature.status === 'building' && list(ctx.state && ctx.state.agents).some((a) => a.feature === feature.id && /verifier/.test(a.role || '') && a.state === 'running');
+  if (verifying) return { label: 'verifying', legend: 'being verified (tests, build)', key: 'queued' };
+  const [label, legend] = FEATURE_STATUS[feature.status] || [txt(feature.status), ''];
+  return { label, legend, key: feature.status };
 }
 
+/** "2 done · 1 running · 3 pending" for the header of a stage. */
+function stageCounts(items) {
+  const tally = new Map();
+  for (const f of items) { const label = featureStatusInfo(f).label; tally.set(label, (tally.get(label) || 0) + 1); }
+  return [...tally.entries()].map(([label, n]) => `${n} ${label}`).join(' · ');
+}
+
+/** Short summary of the plan for the Plan & files tab (PLAN-01): feature counts by status, one row per stage and the button that opens the dialog. */
 function Roadmap({ fs, groups, c }) {
-  const focusF = focusFeatureId();
   const verified = ui.past ? fs.filter((f) => f.status === 'verified').length : c.verified;
   const total = ui.past ? fs.length : c.total;
   const stageSel = (g) => !!(ui.sel && ui.sel.kind === 'stage' && ui.sel.n === g.n);
   return html`<div>
-    <div class="sec-head"><h2 class="sec-title">Roadmap</h2><div class="dim-mono">${`${num(verified)}/${num(total)} verified`}</div></div>
-    ${groups.length ? html`<div class="stages">${groups.map((g) => html`<div key=${String(g.n)}>
-      ${g.n == null ? html`<div class="small-label">${g.title}</div>`
-        : html`<button type="button" class=${'stage-h' + (stageSel(g) ? ' sel' : '')} aria-expanded=${String(stageSel(g))} title="opens the summary of this stage in the inspector"
-            onClick=${() => selectStage(g.n)}><span>${g.title}</span><span class="stage-chev" aria-hidden="true">›</span></button>`}
-      <div class="frows">${g.items.map((f) => {
-        const [col, bg] = pal(f.status);
-        return html`<button key=${f.id} type="button" class=${'frow' + (focusF === f.id ? ' sel' : '')} title=${f.id} aria-pressed=${focusF === f.id ? 'true' : 'false'} onClick=${() => selectFeature(f.id)}>
-          <span class="nm">${txt(f.name || f.id)}</span><span class="chip" style=${{ color: col || null, background: bg || null }}>${txt(f.status)}</span></button>`;
-      })}</div>
-    </div>`)}</div>`
-      : html`<div class="empty-note">No feature in the roadmap. Use the trail at the top to generate the roadmap.</div>`}
+    <div class="sec-head"><h2 class="sec-title">Plan</h2><div class="dim-mono">${`${num(verified)}/${num(total)} verified`}</div></div>
+    ${groups.length ? html`<div class="stages">${groups.map((g) => g.n == null
+      ? html`<div class="small-label" key="none">${g.title}<span class="rm-stage-n">${' ' + stageCounts(g.items)}</span></div>`
+      : html`<button key=${String(g.n)} type="button" class=${'stage-h rm-stage' + (stageSel(g) ? ' sel' : '')} aria-expanded=${String(stageSel(g))} title="opens the summary of this stage in the inspector"
+          onClick=${() => selectStage(g.n)}><span class="rm-stage-t"><span class="rm-stage-name">${g.title}</span>
+            <span class="rm-stage-n">${stageCounts(g.items)}</span></span><span class="stage-chev" aria-hidden="true">›</span></button>`)}</div>`
+      : html`<div class="empty-note">No feature in the plan yet.</div>`}
   </div>`;
 }
 
-function QuarantineCard({ qq, canQ }) {
-  const sent = ui.qSent[qq.id];
+/** A feature in quarantine: a pointer to the pause dialog (the decision and its context live there, not here). */
+function QuarantineCard({ qq }) {
   return html`<div class="qcard">
     <div class="qtitle"><span class="dot dot-red"></span><span>${`${qq.id} in quarantine`}</span></div>
     <div class="qtext">${txt(qq.reason)}</div>
     ${list(qq.stuck).length ? html`<div class="qtext">Holds back: <span class="mono">${list(qq.stuck).join(', ')}</span></div>` : html`<div class="qtext">Nothing depends on it, the loop carries on.</div>`}
-    <div class="qopts">${list(qq.options).map((o, i) => html`<button key=${i} type="button" class="qopt" disabled=${!canQ || !!ui.busy[qq.id + '|' + o]}
-      title=${canQ ? '' : 'only with the loop running or waiting for an answer'} onClick=${() => sendQuarantine(qq, o)}><span class="n">${String(i + 1)}</span><span>${String(o)}</span></button>`)}</div>
-    ${sent ? html`<div class="qsent">${`→ sent: ${sent} · the next turn applies it`}</div>` : null}
+    <button type="button" class="btn btn-sm" onClick=${() => openPauseDialog(qq.id)}>Understand and resolve</button>
   </div>`;
 }
 
-function Validate({ vals }) {
-  return html`<div>
-    <div class="sec-title" style="margin-bottom:8px">For you to validate <span class="dim-mono">VALIDATE.md</span></div>
-    ${vals.length ? html`<div class="vlist">${vals.map((v) => {
-      const p = parseValidate(v);
-      return html`<div class="vitem">
-        <div>${p.slug ? html`<span class="dim-mono">${p.slug + ' '}</span>` : null}${p.text}</div>
-        ${p.chose ? html`<div class="vrev">${'chose: ' + p.chose}</div>` : null}
-        ${p.revert ? html`<div class="vrev">${'revert: ' + p.revert}</div>` : null}
-      </div>`;
-    })}</div>` : html`<div class="empty-note">Nothing to validate for now.</div>`}
-  </div>`;
+/** Decisions the AI took alone that wait for your review: the count and the link to the dialog (decisions.js). */
+function DecisionsToReview() {
+  return html`<div class="pf-sum-row" id="plan-decisions"><${DecisionsCount} project=${ctx.projectId} state=${ctx.state} /></div>`;
 }
 
 function Answers({ answers }) {
@@ -106,13 +102,12 @@ function Answers({ answers }) {
 export function RoadmapSidebar() {
   const state = ctx.state;
   if (!state) return null;
-  const fs = features(), groups = groupStages(), s = status();
+  const fs = features(), groups = groupStages();
   const q = live() ? list(state.quarantine) : [];
-  const canQ = s === 'running' || s === 'awaiting_user';
   const answers = list(state.answers).slice(-5).reverse();
   return html`
     <${Roadmap} fs=${fs} groups=${groups} c=${state.counts || {}} />
-    ${q.map((qq) => html`<${QuarantineCard} key=${'q:' + qq.id} qq=${qq} canQ=${canQ} />`)}
-    <${Validate} vals=${list(state.validate)} />
+    ${q.map((qq) => html`<${QuarantineCard} key=${'q:' + qq.id} qq=${qq} />`)}
+    <${DecisionsToReview} />
     ${answers.length ? html`<${Answers} answers=${answers} />` : null}`;
 }

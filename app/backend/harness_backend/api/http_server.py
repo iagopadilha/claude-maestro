@@ -100,6 +100,9 @@ def create_http_handler(app):
         def do_PUT(self):
             self.serve_request("PUT")
 
+        def do_PATCH(self):
+            self.serve_request("PATCH")
+
         def do_DELETE(self):
             self.serve_request("DELETE")
 

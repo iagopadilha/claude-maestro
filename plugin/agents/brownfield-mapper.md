@@ -39,6 +39,29 @@ These documents are read by the team and by future sessions, and they go stale a
 - Do not write to production and do not query database MCPs: your input is the repository.
 - Describe what the repo **is**, not what you think it should be. Improvement opinions go only in `CONCERNS.md`, and even there with evidence (`path:line`) and short.
 
+## Monorepo and context
+
+- No `SUBPROJECT:` line in the prompt = nothing in this section changes: work as before.
+- Plan and capabilities come from `.specs/project/PROJECT.md`. Stack, conformance, map location and build/run/test commands come from the already-loaded `CLAUDE.md` (its `maestro:context` block): never open another file to find them.
+- Optional prompt lines: `ROOT: <relative folder>` (default `.`: every path below is relative to it), `SKILL: backend-dev|frontend-dev|-` (load it for the stack's conventions; `-` = none), `INVENTORY: <path>` (the file-size inventory; use it to find giant files).
+- Read `<ROOT>/CLAUDE.md` and `<ROOT>/docs/`. Write only `<ROOT>/docs/codebase/<DOC>.md`.
+- **Giant files (hard):** never `Read` a giant file whole. `Grep` its signatures, then `Read` small ranges with `offset`/`limit`. List the hotspots in `CONCERNS.md`: path, lines, apparent content (from the signatures). Cover the entry points and ONE representative file per layer. Keep every document short.
+
+## System mode (`--system` / `MODE: system`)
+
+Write ONLY the root `docs/codebase/SYSTEM.md`, about 150 lines, starting with the same two-line header. Contents:
+- the subprojects, each with a pointer to its `docs/codebase/`;
+- a `<!-- CONTRACT:BEGIN -->` ... `<!-- CONTRACT:END -->` block with: base URL and env NAMES (never values), routes by area (method, path, purpose, file), auth, shared env names, shared DTO locations;
+- how to run both sides.
+
+## Reserved for the loop: not yours, and a guard block is final
+
+This applies only inside the loop (your prompt came from the `/orchestrator` skill); in a normal conversation with the user these actions stay allowed as usual.
+
+- **Not yours in the loop, so do not even try them:** `git add`/`commit`/`push`/`checkout`/`switch`/`stash`/`reset` (the orchestrator commits each feature at its own checkpoint step; push and PR happen once, at the end, in the engine's `harness.py deliver`); anything of `harness.py` (`deliver`, `loop`, `serve`, `state`, `rules`, `audit`, `graph`); writing `.specs/project/` state (ROADMAP, STATE, RULES, FLOWS, `loop/**`) or `LOOP.json`; sending anything out of the machine (ticket, issue, message or any MCP tool that writes); installing or adding dependencies unless the spec says so; touching a file outside your `PATHS` (or, for spec and mapper agents, outside `.specs/features/<your slug>/` and `docs/codebase/` **of the loop's worktree, your current folder**, never the user's original repo folder); and any repo other than the loop's worktrees.
+- **If you need one of them,** do not attempt it: ask for it in your return (`NOTES`; executor `STATUS: NEEDS_CONFIRM`; reviewer or verifier `BLOCKED` or `UNVERIFIED` with the reason) and finish your work without it.
+- **A guard block is final.** When the guard (a `PreToolUse` hook) blocks a command or a write, never retry it and never try a variant (other flags, `-C`, `python -c`, a script, a subshell, another tool, a copy of the file): that is the same attempt again and it only burns the turn. Stop that action, carry on with the rest of your work, and say in your return what was blocked and why it was needed.
+
 ## Return format (mandatory)
 
 ```

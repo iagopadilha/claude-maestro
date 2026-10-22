@@ -2,7 +2,7 @@
 """Unsupervised /orchestrator loop: runs `claude -p` in turns until it finishes or gets stuck.
 
 Usage:
-  python run_loop.py <repo> [--wave 1] [--e2e] [--push] [--budget 5] [--timeout 60] [--max-stall 10]
+  python run_loop.py <repo> [--wave 3] [--e2e] [--push] [--budget 5] [--timeout 60] [--max-stall 10]
                      [--branch NAME] [--setup "npm ci"] [--permission-mode auto] [--answer "text"] [--check] [--dry-run] [--no-monitor]
   (or `python harness.py loop <repo> ...`, which forwards here)
 
@@ -23,6 +23,9 @@ Default: ON (--no-push turns it off). Require a git identity with --git-user or 
 How each turn works:
   claude -p "/orchestrator continue --headless --turn N --wave W ..." --output-format json
          --permission-mode <mode> --permission-prompts none --max-budget-usd <value>
+  Each turn carries the LANES the scheduler chose (`--lanes slug:step,...`): one per feature, each at its own step, up to --wave of them.
+  Every lane has its own agent at every step (spec-writer, spec-reviewer, executor, verifier) and advances by itself; no feature waits for
+  another one to reach the same phase, and a quarantined feature only holds its dependents.
   The process ends by itself when the model gives its final answer. If it "would wait for the user", nobody is there:
   the turn ends and the orchestrator writes .specs/project/loop/json/LOOP.json {status: awaiting_user, ...}.
 
@@ -34,7 +37,7 @@ Stops (all notify through the LOOP_NOTIFY_CHANNELS channels: console, toast, fil
 No overall turn cap: as long as there is progress, it continues.
 
 Always on stop: writes .specs/project/loop/json/meta.json and generates the summary (loop_summary.py, no Claude) in
---summary-dir (default: loop-summary/ in the current directory; the app passes its output folder).
+--summary-dir (default: the app's output folder, `output_dir` in config.json, ~/Downloads when unset; never the repo).
 """
 import argparse
 import datetime
@@ -54,17 +57,22 @@ sys.path.insert(0, HERE)
 import app_paths  # noqa: E402  (harness_backend package on sys.path; skill and guard: LOOP_SKILL_DIR > app config.json > the plugin)
 import loop_summary  # noqa: E402
 import loop_state  # noqa: E402  (typed state: grammar, legal edges, snapshots)
+import decisions  # noqa: E402  (AI decisions log: the one grammar owner of VALIDATE.md)
 import notify  # noqa: E402  (notices: console, toast, file, email, webhook; variables in the app .env)
 import delivery  # noqa: E402  (push of the feature branch + PR to the integration branch, only at the end)
 import graph_view  # noqa: E402  (progress drawing: text, short, Mermaid)
 import audit_deps  # noqa: E402  (forgotten dependency between features)
 import monitor_proc  # noqa: E402  (loop web panel: starts detached, independent of this process)
-import access_settings  # noqa: E402  (ACCESS.json: grafana_read / shared_fallback of the Test environment tab)
-import grafana_access  # noqa: E402  (read-only Grafana/Loki MCP for the turn, only when the project opted in)
+import mcp_access  # noqa: E402  (read-only MCP servers of the turn, computed from ~/.claude.json: no per-project toggle)
+import test_env_fallback  # noqa: E402  (default .env.test from the machine-level TEST values)
 import credential_check  # noqa: E402  (TEST-ENVIRONMENT.md names only: no plaintext secret, every $NAME defined in an .env)
 import cli_output  # noqa: E402  (one tolerant parser of the `claude -p` JSON output, shared with the app)
 import project_repos  # noqa: E402  (REPOS.json: the project's repos; one primary repo when the file is absent)
 import detect_setup  # noqa: E402  (automatic setup command and local files to copy of a repo)
+import subprojects  # noqa: E402  (monorepo list: owner of a path, confirmed or not)
+import system_map  # noqa: E402  (contract.md deltas of a verified feature -> docs/codebase/SYSTEM.md of a monorepo)
+import readiness_checks  # noqa: E402  (subprojects, giant files, system map, uncommitted context, known commands)
+import setup_files  # noqa: E402  (uncommitted setup files: carried into a new worktree, one readiness block per repo)
 from harness_backend.config import app_config, skill_locator  # noqa: E402
 
 APP_ROOT_DIR = app_paths.APP_ROOT_DIR
@@ -76,7 +84,11 @@ ACTIVE = {}  # run in progress (repo, opts, notify): lets us notify even when th
 RANK = {"pending": 0, "speccing": 1, "specced": 2, "approved": 3, "building": 4, "verified": 6, "blocked": 0}
 STATUS_OK = {"continue", "awaiting_user", "done", "error"}
 LIMIT_RE = re.compile(r"rate.?limit|usage limit|limit reached|too many requests|\b429\b|overloaded|quota", re.I)
-EXIT = {"done": 0, "awaiting_user": 10, "error": 20}
+EXIT = {"done": 0, "awaiting_user": 10, "paused": 10, "error": 20}
+CRITICAL_DECISION_PREFIX = "critical decision: "  # LOOP.json reason of a critical decision stop; the panel and the notice key on it
+COST_CAP_REASON_PREFIX = "cost cap reached: US$ "
+COST_WARNING_RATIO = 0.8
+DEFAULT_ORCHESTRATOR_MODEL = "opus"
 DISABLED_PUSH_URL = "push-disabled-by-loop://use-delivery.py"
 PAUSE_REASON = "paused by the user in the panel; click Resume in the panel or run the command again"
 PAUSE_NEXT = "resume when the user wants"
@@ -115,6 +127,32 @@ def load_json(path):
             return json.load(handle)
     except (OSError, ValueError):
         return {}
+
+
+APP_OWNED_META_KEYS = ("delivery", "max_cost_usd")  # written by the app (start, raise-limit) in the worktree meta: the engine never drops them
+DELIVERY_PENDING_NAME = "delivery-pending.json"
+
+
+def save_meta(path, meta):
+    """Saves meta.json keeping what the app wrote there meanwhile: the disk value of the app-owned keys wins over the in-memory copy."""
+    on_disk = load_json(path)
+    for key in APP_OWNED_META_KEYS:
+        if key in on_disk:
+            meta[key] = on_disk[key]
+    save_json(path, meta)
+
+
+def merge_pending_delivery(repo, meta):
+    """The app wrote the delivery choices before the worktree existed (<repo>/.specs/project/loop/internal/delivery-pending.json): they
+    become meta["delivery"] and the pending file is deleted."""
+    path = os.path.join(loop_state.internal_dir(repo), DELIVERY_PENDING_NAME)
+    pending = load_json(path)
+    if isinstance(pending, dict) and pending:
+        meta["delivery"] = dict(meta.get("delivery") or {}, **pending)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def save_json(path, data):
@@ -186,6 +224,21 @@ def notify_early(reason):
         print("[loop] failed to notify: %s" % error)
 
 
+def notify_wait(subject, body):
+    """Notice for a wait that is not a stop (the loop keeps going): same channels as a stop, never raises."""
+    if not ACTIVE.get("notify"):
+        return
+    repo = ACTIVE["repo"]
+    work = worktree_of(repo)
+    work = work if os.path.isdir(work) else ""
+    ctx = {"event": "custom", "subject": "[loop] %s: %s" % (os.path.basename(repo), subject), "project": os.path.basename(repo),
+           "extra_body": body}
+    try:
+        deliver(ctx, work)
+    except Exception as error:  # a notice never takes anything down
+        print("[loop] failed to notify: %s" % error)
+
+
 def command_flags(opts):
     """Flags for the resume command that goes in the notice (the same as this run)."""
     flags = " --wave %d" % opts.wave
@@ -227,7 +280,7 @@ def start_monitor(repo, work, meta, opts):
         ACTIVE["monitor_url"] = url
     else:
         meta.pop("monitor_url", None)
-    save_json(loop_state.loop_path(work, "meta.json"), meta)
+    save_meta(loop_state.loop_path(work, "meta.json"), meta)
     return url
 
 
@@ -376,7 +429,26 @@ def test_environment_problems(root, opts):
     pending = len(re.findall(r"FILL_IN", text))
     if pending:
         return [".specs/project/TEST-ENVIRONMENT.md still has %d FILL_IN field(s): complete it before running" % pending]
+    fill_env_test_from_fallback(root)
     return credential_check.credential_problems(root, text)
+
+
+def fill_env_test_from_fallback(root):
+    """A project with TEST-ENVIRONMENT.md always gets `.specs/project/.env.test` (missing names only, from the machine-level
+    TEST values). Never takes the preflight down; returns the names added."""
+    try:
+        return test_env_fallback.ensure_env_test(root)["added"]
+    except Exception as error:  # a read-only folder or an odd .env must not turn the check into a crash
+        print("[check] WARNING: could not prepare .specs/project/.env.test: %s" % error)
+        return []
+
+
+def test_environment_warnings(root, opts):
+    """Test environment findings that do not stop the loop (sample data with no value)."""
+    path = os.path.join(root, ".specs", "project", "TEST-ENVIRONMENT.md")
+    if not os.path.exists(path):
+        return []
+    return credential_check.credential_warnings(root, read(path))
 
 
 def test_environment_stop_reason(root, opts, problems):
@@ -423,14 +495,39 @@ def repo_names_of(repos):
     return [item.name for item in repos] if len(repos) > 1 else None
 
 
-def extra_repos_preflight(repos, opts):
+def roadmap_features(root):
+    """{slug: fields} of the ROADMAP of `root` ({} when there is none or it is unreadable)."""
+    path = os.path.join(root, ".specs", "project", "ROADMAP.md")
+    return loop_state.parse_roadmap(read(path))[0] if os.path.exists(path) else {}
+
+
+def worktree_repos(repos, features, only=None):
+    """The repos that get a worktree (D4): the primary always, plus every NON-primary `edit` repo that a ROADMAP feature names in
+    `paths=<repo>:`. `only` (explicit `--repos`) replaces the roadmap filter for the non-primary ones. Reference repos never."""
+    primary = project_repos.primary_of(repos)
+    changed = project_repos.repos_changed_by_roadmap(primary.name, features)
+    return [item for item in project_repos.edit_repos(repos)
+            if item.primary or (item.name in only if only else item.name in changed)]
+
+
+def extra_repos_preflight(repos, opts, features=None):
     """Preflight of the NON-primary repos of a multi-repo project (the primary is checked by preflight itself). Every message names
-    the repo. Returns (problems, warnings); empty for a single-repo project. Creates nothing."""
+    the repo. `features` (the parsed ROADMAP) limits the worktree checks to the edit repos a feature changes; None = every edit repo.
+    A `reference` repo only needs its folder. Returns (problems, warnings); empty for a single-repo project. Creates nothing."""
     problems, warns = [], []
+    targets = None if features is None else {item.name for item in worktree_repos(repos, features)}
     for item in repos:
         if item.primary:
             continue
         tag = "repo %s: " % item.name
+        if item.role == project_repos.ROLE_REFERENCE:
+            if not os.path.isdir(item.path):
+                warns.append(tag + "reference folder %s is missing (moved or deleted); the loop will not be able to read it" % item.path)
+            elif not readiness_checks.folder_has_map(item.path) and any(not name.startswith(".") for name in os.listdir(item.path)):
+                warns.append("reference repo %s has no codebase map: agents will read the raw code; map it from Workspace" % item.name)
+            continue
+        if targets is not None and item.name not in targets:
+            continue
         if not os.path.isdir(item.path):
             problems.append(tag + "folder %s is missing (moved or deleted); remove it from the project or restore it" % item.path)
             continue
@@ -443,56 +540,167 @@ def extra_repos_preflight(repos, opts):
         if not os.path.isdir(worktree):
             if not git(item.path, "branch", "--show-current")[1]:
                 problems.append(tag + "no current branch (detached HEAD)")
-            if git(item.path, "status", "--porcelain", "--untracked-files=no")[1]:
-                warns.append(tag + "the folder has UNcommitted changes; the worktree is born from the last commit and does NOT carry them.")
         if opts.push and not git(item.path, "remote", "get-url", "origin")[1]:
             warns.append(tag + "no `origin` remote: nowhere to push its feature branch")
     return problems, warns
 
 
 def preflight(repo, opts):
-    """Checks everything the loop needs and returns (problems, warnings). Creates nothing."""
-    problems, warns = [], []
+    """Checks everything the loop needs and returns (problems, warnings). Creates nothing. Reads as a table of contents:
+    each step below returns its own (problems, warnings) pair, in the order they are reported."""
     work = worktree_of(repo)
     root = work if os.path.isdir(work) else repo
     repos = project_repos.load_repos(repo)
-    if not (opts.claude or shutil.which("claude")):
-        problems.append("`claude` command not found on PATH")
+    planning = bool(getattr(opts, "planning", False))
+    problems, warns = claude_command_problems(opts)
     if git(repo, "rev-parse", "--is-inside-work-tree")[1] != "true":
         return ["%s is not a git repository" % repo], warns
+    features = roadmap_features(root)
+    steps = (
+        lambda: repo_branch_problems(repo, work),
+        lambda: extra_repos_preflight(repos, opts, features),
+        lambda: (root_conformance_problems(root), []),
+        lambda: (readiness_checks.installer_problems(root, repos) if not os.path.exists(os.path.join(root, ".specs", "project", "ROADMAP.md")) else [], []),
+        lambda: roadmap_problems(repo, root, repos, opts, setup_open=bool(problems)),
+        lambda: ([] if planning else approval_problems_when_roadmap_exists(root, opts), []),  # --planning: the approval is what this check prepares
+        lambda: readiness_checks.subprojects_preflight(root, features, repos),
+        lambda: ([], readiness_checks.uncommitted_warnings(repos, repo)),
+        lambda: ([], base_branch_warnings(repos, base_branch_of(opts))),
+        lambda: (test_environment_problems(root, opts), test_environment_warnings(root, opts)),
+        lambda: (hook_path_problems(), []),
+        lambda: rules_problems(root),
+        lambda: ([], dependency_audit_warnings(root)),
+        lambda: environment_problems(opts, repo),
+        lambda: guard_problems(),
+        lambda: planning_readiness(repo, root, repos, features, opts) if planning else ([], []),
+        lambda: ([], cost_cap_warnings(opts)),
+        lambda: notice_channel_problems(opts),
+        lambda: push_problems(repo, opts),
+        lambda: ([], build_setup_warnings(repo, work, opts)),
+    )
+    for step in steps:
+        step_problems, step_warns = step()
+        problems += [item for item in step_problems if item not in problems]  # two checks may report the same finding: once, in order
+        warns += [item for item in step_warns if item not in warns]
+    return problems, warns
+
+
+CHECK_FIXES = {
+    "missing-roadmap": "Generate and approve the roadmap in Planning",
+    "uncommitted": "Commit these files (the worktree is born from the last commit)",
+    "dotnet-restore": "Add `dotnet restore` as the Setup line in the ROADMAP header (planning)",
+    "node-modules": "Add `npm ci` as the Setup line",
+    "permission-mode": "If the first turn fails, use permission mode acceptEdits",
+}
+
+
+def check_item_kind(text):
+    """RDY-01: the kind of a check line, from its text (the text itself is never changed)."""
+    lowered = text.lower()
+    if lowered.startswith("missing .specs/project/roadmap.md"):
+        return "missing-roadmap"
+    if lowered.startswith("uncommitted changes in "):
+        return "uncommitted"
+    if lowered.startswith(".net detected"):
+        return "dotnet-restore"
+    if lowered.startswith("node project"):
+        return "node-modules"
+    if "`auto` mode" in lowered or "auto mode depends" in lowered:
+        return "permission-mode"
+    return "other"
+
+
+def check_items(problems, warns, repos, repo):
+    """RDY-01: [{kind, repo, files, text, fix}] for the `--json` output of the check. The uncommitted text lines are replaced by the
+    structured one-per-repo items; every other line keeps its text and gets a kind and a fix sentence."""
+    items = []
+    problem_texts = set(problems)
+    for text in list(problems) + list(warns):
+        kind = check_item_kind(text)
+        if kind == "uncommitted":
+            continue
+        items.append({"kind": kind, "level": "problem" if text in problem_texts else "warning", "repo": None, "files": [], "text": text,
+                      "fix": CHECK_FIXES.get(kind, "")})
+    return [dict(item, level=item.get("level") or "warning") for item in readiness_checks.uncommitted_items(repos, repo)] + items
+
+
+def claude_command_problems(opts):
+    problems = []
+    if not (opts.claude or shutil.which("claude")):
+        problems.append("`claude` command not found on PATH")
+    return problems, []
+
+
+def repo_branch_problems(repo, work):
+    """Detached HEAD. The uncommitted changes are ONE block per repo (readiness_checks.uncommitted_warnings, RD-01), not repeated here."""
+    problems = []
     if not git(repo, "branch", "--show-current")[1]:
         problems.append("repo has no current branch (detached HEAD)")
-    if not os.path.isdir(work):
-        _, dirty, _ = git(repo, "status", "--porcelain", "--untracked-files=no")
-        if dirty:
-            warns.append("the repo has UNcommitted changes; the worktree is born from the last commit and does NOT carry them. Commit or stash first if you need them.")
-    extra_problems, extra_warns = extra_repos_preflight(repos, opts)
-    problems += extra_problems
-    warns += extra_warns
-    if not os.path.exists(os.path.join(root, ".specs", "project", "ROADMAP.md")):
+    return problems, []
+
+
+def base_branch_warnings(repos, base_branch=""):
+    """BR-01: a repo whose worktree is not created yet and has no local integration branch starts from its current branch: say which."""
+    warns = []
+    for item in project_repos.edit_repos(repos):
+        if os.path.isdir(item.loop_worktree_path()) or not os.path.isdir(item.path) or git(item.path, "rev-parse", "--is-inside-work-tree")[1] != "true":
+            continue
+        base, warning = choose_base(item.path, base_branch)
+        if base and warning:
+            warns.append(("repo %s: " % item.name if len(repos) > 1 else "") + warning)
+    return warns
+
+
+def roadmap_problems(repo, root, repos, opts, setup_open=False):
+    """ROADMAP.md exists, follows the grammar and still has something to do. `setup_open` (RD-02): a real earlier step (the installer, a
+    missing Conformance, no claude) is still open, so "generate the roadmap" is not said yet: the first problem is that step."""
+    problems = []
+    roadmap_path = os.path.join(root, ".specs", "project", "ROADMAP.md")
+    if not os.path.exists(roadmap_path):
+        if setup_open:
+            return problems, []
         problems.append("missing .specs/project/ROADMAP.md: generate and APPROVE the roadmap first (panel, or a normal /orchestrator conversation)")
+        return problems, []
+    grammar = loop_state.parse_roadmap(read(roadmap_path))
+    problems += ["ROADMAP outside the grammar: " + item for item in grammar[1] + loop_state.check_fields(grammar[0], repo_names_of(repos))]
+    score, total, done = roadmap_score(root)
+    if not total:
+        problems.append("ROADMAP.md has no feature line (`- [slug] status=...`)")
+    elif nothing_left_to_do(done, total, opts, load_json(loop_state.state_file(root, "LOOP.json")),
+                            tiebreak_possible=bool(gate_blocked_features(os.path.join(root, ".specs", "project")))
+                            and getattr(opts, "auto_answer", True) and getattr(opts, "gate_tiebreaks", 1) > 0):
+        problems.append("all %d features are already verified/blocked: nothing to do" % total)
     else:
-        grammar = loop_state.parse_roadmap(read(os.path.join(root, ".specs", "project", "ROADMAP.md")))
-        problems += ["ROADMAP outside the grammar: " + item for item in grammar[1] + loop_state.check_fields(grammar[0], repo_names_of(repos))]
-        score, total, done = roadmap_score(root)
-        if not total:
-            problems.append("ROADMAP.md has no feature line (`- [slug] status=...`)")
-        elif nothing_left_to_do(done, total, opts, load_json(loop_state.state_file(root, "LOOP.json")),
-                                tiebreak_possible=bool(gate_blocked_features(os.path.join(root, ".specs", "project")))
-                                and getattr(opts, "auto_answer", True) and getattr(opts, "gate_tiebreaks", 1) > 0):
-            problems.append("all %d features are already verified/blocked: nothing to do" % total)
-        else:
-            note = " (answering the loop's question: the answer may reopen a quarantined feature)" if done == total else ""
-            print("[check] ROADMAP: %d features, %d closed, %d to do%s" % (total, done, total - done, note))
-    if os.path.exists(os.path.join(root, ".specs", "project", "ROADMAP.md")):
-        problems += approval_problems(root, answering=bool(opts.option or opts.answer))
-    if not re.search(r"^Conformance:\s*(STANDARD|LEGACY)", read(os.path.join(root, "CLAUDE.md")), re.M):
-        problems.append("CLAUDE.md has no `Conformance: STANDARD|LEGACY` line (harness.py classify <repo> --write STANDARD|LEGACY, or the Conformance button in the panel)")
-    problems += test_environment_problems(root, opts)
-    problems += hook_path_problems()
+        note = " (answering the loop's question: the answer may reopen a quarantined feature)" if done == total else ""
+        print("[check] ROADMAP: %d features, %d closed, %d to do%s" % (total, done, total - done, note))
+    return problems, []
+
+
+def approval_problems_when_roadmap_exists(root, opts):
+    if not os.path.exists(os.path.join(root, ".specs", "project", "ROADMAP.md")):
+        return []
+    return approval_problems(root, answering=bool(opts.option or opts.answer))
+
+
+def root_conformance_problems(root):
+    """The root CLAUDE.md must carry a `Conformance: STANDARD|LEGACY` line (a confirmed monorepo has it per subproject instead)."""
+    if subprojects.monorepo_confirmed(root):
+        return []
+    if re.search(r"^Conformance:\s*(STANDARD|LEGACY)", read(os.path.join(root, "CLAUDE.md")), re.M):
+        return []
+    return ["CLAUDE.md has no `Conformance: STANDARD|LEGACY` line (harness.py classify <repo> --write STANDARD|LEGACY, or the Conformance button in the panel)"]
+
+
+def rules_problems(root):
+    problems = []
     rules = subprocess.run([sys.executable, os.path.join(HERE, "rules.py"), "test", root, "--quiet"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if rules.returncode != 0:
         problems.append("a project block rule stopped working (rules.py test): " + " ".join(rules.stdout.splitlines()[-4:])[:300])
+    return problems, []
+
+
+def dependency_audit_warnings(root):
+    warns = []
     try:
         audit = audit_deps.audit(root)
         loose = [s for s in audit["suggestions"] if not s["cycle"]]
@@ -501,9 +709,11 @@ def preflight(repo, opts):
                          % (len(loose), loose[0]["feature"], loose[0]["depends_on"]))
     except Exception as error:  # the audit never takes the preflight down
         warns.append("dependency audit failed: %s" % error)
-    env_problems, env_warns = environment_problems(opts, repo)
-    problems += env_problems
-    warns += env_warns
+    return warns
+
+
+def guard_problems():
+    problems = []
     guard = app_paths.locate_guard()
     if not guard:
         problems.append("the orchestrator skill's guard.py was not found (looked in %s): set LOOP_SKILL_DIR or run `harness.py install`"
@@ -512,8 +722,16 @@ def preflight(repo, opts):
         code = subprocess.run([sys.executable, guard, "--profile", "executor"], input='{"tool_name":"Bash","tool_input":{"command":"git push"}}', capture_output=True, text=True).returncode
         if code != 2:
             problems.append("guard.py did not block `git push` (code %s, expected 2): do not run unsupervised" % code)
-    if not opts.max_cost:
-        warns.append("no total cost cap (--max-cost 0): the loop only stops on progress/error, not on spend")
+    return problems, []
+
+
+def cost_cap_warnings(opts):
+    return [] if opts.max_cost else ["no total cost cap (--max-cost 0): the loop only stops on progress/error, not on spend"]
+
+
+def notice_channel_problems(opts):
+    """Mandatory notice channels present and configured; unknown or half-configured channels only warn."""
+    problems, warns = [], []
     channels = notify.envload.get_list("LOOP_NOTIFY_CHANNELS") or ["console", "toast", "file"]
     if opts.allow_silent:
         warns.append("--allow-silent: mandatory notice turned off (for testing only)")
@@ -529,6 +747,12 @@ def preflight(repo, opts):
             warns.append("unknown notice channel in LOOP_NOTIFY_CHANNELS: %s" % name)
         elif missing:
             warns.append("channel %s is on but is missing %s in the app .env: it will be skipped" % (name, ", ".join(missing)))
+    return problems, warns
+
+
+def push_problems(repo, opts):
+    """`--push`: identity and `origin`; a problem when the push was asked explicitly, else only a warning."""
+    problems, warns = [], []
     if opts.push:
         explicit = getattr(opts, "push_explicit", False)
         problem = identity_problem(repo, opts)
@@ -537,6 +761,12 @@ def preflight(repo, opts):
             (problems if explicit else warns).append(("--push: " if explicit else "the final push/PR will not happen: ") + text)
         if not shutil.which("gh"):
             warns.append("`gh` not found: the end of the loop pushes the branch but only returns the compare LINK (the PR is not created)")
+    return problems, warns
+
+
+def build_setup_warnings(repo, work, opts):
+    """Node / .NET repos: what a fresh worktree is born without."""
+    warns = []
     if os.path.isfile(os.path.join(repo, "package.json")) and not opts.setup and not os.path.isdir(work):
         warns.append("Node project: the worktree is born without node_modules. Use --setup \"npm ci\" (otherwise verify returns UNVERIFIED).")
     dotnet = find_dotnet(repo)
@@ -545,19 +775,132 @@ def preflight(repo, opts):
                      "The executor does not run `dotnet restore` nor `dotnet add package` (guard); to restore beforehand, use --setup with `dotnet restore`." % dotnet)
     if (dotnet or os.path.isfile(os.path.join(repo, "package.json"))) and not os.path.isfile(os.path.join(repo, ".gitignore")):
         warns.append("repo has no .gitignore: bin/obj/node_modules generated by the build dirty the worktree and the loop stops on `dirty tree`.")
+    return warns
+
+
+# ---------------------------------------------------------------- readiness (--check --planning)
+def feature_path_repo_problems(repos, features):
+    """Every feature path must belong to an `edit` repo (D4): a path in a `reference` or unlisted repo cannot be changed by the loop."""
+    primary = project_repos.primary_of(repos)
+    by_name = {item.name: item for item in repos}
+    problems = []
+    for slug, fields in features.items():
+        seen = set()
+        for entry in str(fields.get("paths") or "").split(","):
+            entry = entry.strip()
+            match = project_repos.REPO_PATH_PREFIX.match(entry) if entry else None
+            name = match.group(1) if match else primary.name
+            if not entry or name in seen:
+                continue
+            seen.add(name)
+            target = by_name.get(name)
+            if target is None:
+                problems.append("feature %s: path `%s` is in repo `%s`, which is not listed in the project: add it as an edit repo or change the feature" % (slug, entry, name))
+            elif target.role == project_repos.ROLE_REFERENCE:
+                problems.append("feature %s: path `%s` is in the reference repo `%s` (read only): promote it to edit or change the feature" % (slug, entry, name))
+    return problems
+
+
+def worktree_readiness(repos, features, opts):
+    """Can every edit repo a feature changes get its worktree? (folder is a git repo, current branch, a free branch name, no foreign folder)."""
+    problems, warns = [], []
+    for item in worktree_repos(repos, features):
+        tag = "repo %s: " % item.name
+        if not os.path.isdir(item.path):
+            problems.append(tag + "folder %s is missing: no worktree can be created" % item.path)
+            continue
+        if git(item.path, "rev-parse", "--is-inside-work-tree")[1] != "true":
+            problems.append(tag + "%s is not a git repository: no worktree can be created" % item.path)
+            continue
+        work = item.loop_worktree_path()
+        if os.path.isdir(work):
+            meta = load_json(loop_state.loop_path(work, "meta.json"))
+            if not meta.get("branch") or git(work, "branch", "--show-current")[1] != meta.get("branch"):
+                problems.append(tag + "folder %s already exists but is not this loop's worktree: remove or rename it" % work)
+            continue
+        if not git(item.path, "branch", "--show-current")[1]:
+            problems.append(tag + "no current branch (detached HEAD): the worktree needs a branch to start from")
+        if opts.branch and branch_exists(item.path, opts.branch):
+            problems.append(tag + "branch `%s` already exists: pick another --branch name" % opts.branch)
+    return problems, warns
+
+
+def mentioned_mcp_servers(*texts):
+    """Known MCP servers (mcp_access.SERVER_NAMES) that any of the texts names (`mcp-mysql-dev`, `mcp__grafana__...`, the word grafana)."""
+    text = "\n".join(texts).lower()
+    return [name for name in mcp_access.SERVER_NAMES if re.search(r"(?<![a-z0-9-])%s(?![a-z0-9-])" % re.escape(name), text)]
+
+
+def claude_config_readable():
+    try:
+        with open(mcp_access.claude_config_path(), encoding="utf-8-sig") as handle:
+            return isinstance(json.load(handle), dict)
+    except (OSError, ValueError):
+        return False
+
+
+def mcp_readiness(root, roadmap_text):
+    problems, warns = [], []
+    environment_text = read(os.path.join(root, ".specs", "project", "TEST-ENVIRONMENT.md"))
+    needed = mentioned_mcp_servers(environment_text, roadmap_text)
+    configured = {row["server"] for row in mcp_access.available_servers()}
+    missing = [name for name in needed if name not in configured]
+    if missing:
+        problems.append("MCP server(s) named by TEST-ENVIRONMENT.md or a feature are not configured in %s: %s (add them as user-scope MCP servers: `claude mcp add --scope user`)"
+                        % (mcp_access.claude_config_path(), ", ".join(missing)))
+    elif not needed and not claude_config_readable():
+        warns.append("%s could not be read: the MCP servers (%s) will not be available to the loop" % (mcp_access.claude_config_path(), ", ".join(mcp_access.SERVER_NAMES)))
+    return problems, warns
+
+
+def known_test_command(path):
+    """How an edit repo is built/tested, as far as the repo itself says: docs/codebase/TESTING.md or a project file. '' when unknown.
+    A confirmed monorepo also counts the non-skipped subprojects (their own docs/codebase/TESTING.md or project files)."""
+    known = readiness_checks.known_commands(path)["summary"]
+    if known:
+        return known
+    entry = subprojects.load(path)["entry"]
+    for project in subprojects.entry_projects(entry) if entry and entry.get("confirmed") is True else []:
+        if project.get("skip") is not True:
+            known = readiness_checks.known_commands(os.path.join(path, *subprojects.normalize(project["path"]).split("/")))["summary"]
+            if known:
+                return known
+    return ""
+
+
+def credential_readiness(root):
+    """Names TEST-ENVIRONMENT.md mentions must resolve through the layers (project .env.test, machine .env, shared .env)."""
+    path = os.path.join(root, ".specs", "project", "TEST-ENVIRONMENT.md")
+    if not os.path.exists(path):
+        return [], []
+    text = read(path)
+    return credential_check.credential_problems(root, text), credential_check.credential_warnings(root, text)
+
+
+def planning_readiness(repo, root, repos, features, opts):
+    """The extra checks of `--check --planning` (the rest of the preflight, guard included, already ran). Returns (problems, warnings)."""
+    problems, warns = [], []
+    problems += feature_path_repo_problems(repos, features)
+    new_problems, new_warns = worktree_readiness(repos, features, opts)
+    problems += new_problems
+    warns += new_warns
+    warns += readiness_checks.giant_preflight(root, features, repos)
+    warns += readiness_checks.system_map_warning(root, features, repos)
+    new_problems, new_warns = mcp_readiness(root, read(os.path.join(root, ".specs", "project", "ROADMAP.md")))
+    problems += new_problems
+    warns += new_warns
+    new_problems, new_warns = credential_readiness(root)
+    problems += [item for item in new_problems if item not in problems]
+    warns += [item for item in new_warns if item not in warns]
+    for item in worktree_repos(repos, features):
+        if os.path.isdir(item.path) and not known_test_command(item.path):
+            warns.append("repo %s: no build/test command known (no docs/codebase/TESTING.md, no package.json scripts or project file): the verifier cannot prove its features" % item.name)
     return problems, warns
 
 
 def find_dotnet(repo, max_depth=3):
     """First .sln/.csproj up to `max_depth` folders below the root (ignores bin/obj/node_modules/.git/.specs). Empty if none."""
-    skip = {"bin", "obj", "node_modules", ".git", ".specs", ".vs", "packages"}
-    for depth in range(max_depth + 1):
-        for extension in ("*.sln", "*.slnx", "*.csproj"):
-            hits = sorted(path for path in glob.glob(os.path.join(repo, *(["*"] * depth), extension))
-                          if not skip.intersection(os.path.relpath(path, repo).split(os.sep)[:-1]))
-            if hits:
-                return os.path.relpath(hits[0], repo).replace(os.sep, "/")
-    return ""
+    return readiness_checks.find_dotnet(repo, max_depth)
 
 
 # ---------------------------------------------------------------- worktree (script only)
@@ -571,10 +914,83 @@ def branch_exists(repo, branch):
     return bool(branch) and git(repo, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch)[0] == 0
 
 
+def base_branch_of(opts):
+    """The `--base-branch` option (the ROADMAP `Branch base`); "" when the options carry none."""
+    return getattr(opts, "base_branch", "") or ""
+
+
+def choose_base(repo, base_branch=""):
+    """(base branch, warning) of a NEW worktree (BR-01): the base branch (`base_branch` = the ROADMAP `Branch base`, else LOOP_PR_BASE /
+    LOOP_INTEGRATION_BRANCH, default `developer`) when it exists locally, else the folder's current branch with a warning naming both.
+    ("", "") when the folder has no current branch."""
+    integration = delivery.integration_branch(base_branch)
+    if branch_exists(repo, integration):
+        return integration, ""
+    current = git(repo, "branch", "--show-current")[1]
+    if not current:
+        return "", ""
+    return current, "the integration branch `%s` does not exist locally: the worktree starts from the current branch `%s`" % (integration, current)
+
+
+def base_sha_of(repo, base):
+    return git(repo, "rev-parse", "--short", "refs/heads/" + base)[1] if branch_exists(repo, base) else ""
+
+
+SETUP_COMMIT_MESSAGE = "chore(setup): carry codebase maps and agent context"
+
+
+def commit_carried_setup(work, carried, tag):
+    """The carried setup files become ONE commit on the loop branch right away (`git add` of those paths only, the loop's git identity),
+    so the worktree stays clean for a safe Finish. Gitignored files are not force-added: they stay engine state that Close tolerates."""
+    tracked_candidates = [path for path in carried if git(work, "check-ignore", "-q", "--", path)[0] != 0]
+    ignored = [path for path in carried if path not in tracked_candidates]
+    tracked_candidates = [path for path in tracked_candidates if git(work, "status", "--porcelain", "--", path)[1].strip()]  # unchanged = nothing to commit
+    if ignored:
+        text = "carried setup files ignored by .gitignore (left uncommitted as engine state): " + ", ".join(ignored)
+        step(tag, "warn", text) if tag else print("[loop] warn: %s" % text, flush=True)
+    if not tracked_candidates:
+        return False
+    code, _, err = git(work, "add", "--", *tracked_candidates)
+    if code == 0:
+        code, _, err = git(work, "commit", "-q", "-m", SETUP_COMMIT_MESSAGE, "--", *tracked_candidates)
+    if code != 0:
+        text = "could not commit the carried setup files (%s); they stay uncommitted in the worktree" % (err or "git failed")[:200]
+        step(tag, "warn", text) if tag else print("[loop] warn: %s" % text, flush=True)
+        return False
+    text = "committed %d carried setup file%s: %s" % (len(tracked_candidates), "" if len(tracked_candidates) == 1 else "s", SETUP_COMMIT_MESSAGE)
+    step(tag, "commit", text) if tag else print("[loop] %s" % text, flush=True)
+    return True
+
+
+def carry_setup_into(repo, work, tag, entry=None, include_specs=True, also_commit=()):
+    """BR-02: the uncommitted setup files of `repo` go into the new worktree (never over a file the branch has). Returns the paths copied."""
+    listed = [item["path"] for item in setup_files.list_setup_files(repo, entry)]
+    carried = setup_files.carry_setup_files(repo, work, entry, include_specs)
+    if carried:
+        text = "carried uncommitted setup files: " + ", ".join(carried)
+        step(tag, "copy", text) if tag else print("[loop] %s" % text, flush=True)
+    commit_carried_setup(work, list(carried) + [path for path in also_commit if path not in carried], tag)
+    others = setup_files.list_other_changes(repo, listed)
+    if others:
+        text = "%d other changed file%s in your folder NOT carried: %s" % (len(others), "" if len(others) == 1 else "s", setup_files.shortened(others))
+        step(tag, "warn", text) if tag else print("[loop] warn: %s" % text, flush=True)
+    return carried
+
+
 def last_run_entry(primary_repo, name):
     """What the last Close loop recorded for repo `name` ({"branch", "base", ...}) in the primary repo's last-run.json, or {}."""
     entry = (load_json(loop_state.loop_path(primary_repo, LAST_RUN_NAME)).get("repos") or {}).get(name)
     return entry if isinstance(entry, dict) else {}
+
+
+def reattach_branch_of(primary_repo, name, repo=None):
+    """The branch the next start re-attaches to for repo `name`: the one the last Close loop recorded when it still exists and that run was
+    NOT finished (a wrap-up Finish marks `finished`: the next work starts on a new branch). "" when there is nothing to re-attach."""
+    recorded = last_run_entry(primary_repo, name)
+    if recorded.get("finished"):
+        return ""
+    branch = recorded.get("branch")
+    return branch if branch_exists(repo or primary_repo, branch) else ""
 
 
 def file_sha256(path):
@@ -659,6 +1075,36 @@ def refresh_unused_worktree(repo, work, meta_path):
         shutil.rmtree(keep_folder, ignore_errors=True)
 
 
+SYNCED_INVENTORY_RELATIVE = os.path.join(".specs", "project", "loop", "internal", "inventory")
+SYNCED_SUBPROJECTS_RELATIVE = os.path.join(".specs", "project", "SUBPROJECTS.json")
+
+
+def sync_untracked_map_files(repo, work):
+    """Makes the git-ignored code inventory (`.specs/project/loop/internal/inventory/*.json`) and `SUBPROJECTS.json` visible from the worktree
+    (monorepo-subprojects-map-and-conformance step 13). The inventory is written in the primary repo, usually AFTER the worktree was created
+    or in a worktree that already ran (so the whole-`.specs` copy never carries it): each inventory file is copied when missing in the worktree
+    or older than the repo's copy; `SUBPROJECTS.json` only when missing (a tracked copy is never overwritten, the tree stays clean).
+    Returns the relative paths copied."""
+    copied = []
+    source_folder = os.path.join(repo, SYNCED_INVENTORY_RELATIVE)
+    if os.path.isdir(source_folder):
+        for name in sorted(os.listdir(source_folder)):
+            source, target = os.path.join(source_folder, name), os.path.join(work, SYNCED_INVENTORY_RELATIVE, name)
+            if not name.lower().endswith(".json") or not os.path.isfile(source):
+                continue
+            if os.path.isfile(target) and os.path.getmtime(target) >= os.path.getmtime(source):
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(source, target)
+            copied.append(os.path.join(SYNCED_INVENTORY_RELATIVE, name))
+    source, target = os.path.join(repo, SYNCED_SUBPROJECTS_RELATIVE), os.path.join(work, SYNCED_SUBPROJECTS_RELATIVE)
+    if os.path.isfile(source) and not os.path.exists(target):
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copy2(source, target)
+        copied.append(SYNCED_SUBPROJECTS_RELATIVE)
+    return copied
+
+
 def resolve_setup(item, cli_setup=""):
     """(command, auto): the stored setup always wins, then the CLI one, else what the repo's manifests say (nothing runs to detect)."""
     stored = item.setup or cli_setup
@@ -697,6 +1143,9 @@ def ensure_worktree(repo, opts, tag="", copy_files=(), copy_hashes=None, setup=N
             sys.exit("folder %s already exists but is not this loop's worktree (current branch: %s). Remove or rename it and run again." % (work, current))
         if not opts.dry_run:
             refresh_unused_worktree(repo, work, meta_path)
+            synced = sync_untracked_map_files(repo, work)
+            if synced:
+                print("[loop] copied from the repo into the worktree: %s" % ", ".join(path.replace(os.sep, "/") for path in synced), flush=True)
         if tag:
             step(tag, "reuse", "worktree %s on branch %s" % (work, meta["branch"]))
             step(tag, "ready", "path=%s branch=%s base=%s" % (work, meta["branch"], meta.get("base", "")))
@@ -708,17 +1157,19 @@ def ensure_worktree(repo, opts, tag="", copy_files=(), copy_hashes=None, setup=N
         if problem:
             step(tag, "error", problem)
             sys.exit("repo %s: %s" % (tag, problem))
-    code, base, err = git(repo, "branch", "--show-current")
-    if code != 0 or not base:
+    code, current_branch, err = git(repo, "branch", "--show-current")
+    if code != 0 or not current_branch:
         if tag:
             step(tag, "error", "repo has no current branch (detached HEAD?): %s" % err)
         sys.exit("repo has no current branch (detached HEAD?): %s" % err)
+    base, base_warning = choose_base(repo, base_branch_of(opts))
     if tag:
-        step(tag, "check", "git ok; current branch %s" % base)
-        if git(repo, "status", "--porcelain", "--untracked-files=no")[1]:
-            step(tag, "warn", "your folder has uncommitted changes; the worktree does not carry them")
-    recorded = last_run_entry(repo, tag or project_repos.short_name_of(repo))
-    reattach = "" if opts.branch else (recorded.get("branch") if branch_exists(repo, recorded.get("branch")) else "") or ""
+        step(tag, "check", "git ok; current branch %s; the worktree starts from %s" % (current_branch, base))
+    if base_warning:
+        step(tag, "warn", base_warning) if tag else print("[loop] warn: %s" % base_warning, flush=True)
+    recorded_name = tag or project_repos.short_name_of(repo)
+    recorded = last_run_entry(repo, recorded_name)
+    reattach = "" if opts.branch else reattach_branch_of(repo, recorded_name)
     branch = reattach or opts.branch or "loop/" + datetime.datetime.now().strftime("%Y%m%d-%H%M")
     if reattach:
         base = recorded.get("base") or base
@@ -747,16 +1198,22 @@ def ensure_worktree(repo, opts, tag="", copy_files=(), copy_hashes=None, setup=N
         if os.path.exists(source) and not os.path.exists(target):
             shutil.copytree(source, target) if os.path.isdir(source) else shutil.copy2(source, target)
             copied.append(name)
+    # the root CLAUDE.md copied whole (not "carried") is a setup file too when it holds an app block: it joins the setup commit
+    copied_claude = ["CLAUDE.md"] if "CLAUDE.md" in copied and setup_files.has_app_block(work, "CLAUDE.md") else []
+    carried = carry_setup_into(repo, work, tag, subprojects.load(repo)["entry"], also_commit=copied_claude)
     loop_state.migrate_layout(work)  # .specs copied from a repo still in an older layout
+    sync_untracked_map_files(repo, work)  # a `.specs` that already existed in the worktree (tracked) still gets the ignored inventory
     hashes = copy_local_files(repo, work, copy_files, tag) if copy_files else {}
     if copy_hashes is not None:
         copy_hashes.update(hashes)
     meta = {
-        "branch": branch, "base": base, "worktree": work, "repo": repo, "copied": copied,
+        "branch": branch, "base": base, "base_sha": base_sha_of(repo, base), "worktree": work, "repo": repo, "copied": copied,
+        "carried_setup_files": carried,
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"), "turns": 0, "cost_usd": 0.0,
         "note": "worktree used ONLY by run_loop.py; the orchestrator commits here and never pushes",
     }
-    save_json(meta_path, meta)
+    merge_pending_delivery(repo, meta)
+    save_meta(meta_path, meta)
     if tag:
         step(tag, "copy", ", ".join(copied + list(hashes)) or "nothing")
     else:
@@ -793,16 +1250,17 @@ def ensure_extra_worktree(item, opts, branch, known):
     if problem:
         step(name, "error", problem)
         sys.exit("repo %s: %s" % (name, problem))
-    code, base, err = git(item.path, "branch", "--show-current")
-    if code != 0 or not base:
+    code, current_branch, err = git(item.path, "branch", "--show-current")
+    if code != 0 or not current_branch:
         step(name, "error", "repo has no current branch (detached HEAD?): %s" % err)
         sys.exit("repo %s has no current branch (detached HEAD?): %s" % (name, err))
+    base, base_warning = choose_base(item.path, base_branch_of(opts))
     entry["base"] = base
-    step(name, "check", "git ok; current branch %s" % base)
-    if git(item.path, "status", "--porcelain", "--untracked-files=no")[1]:
-        step(name, "warn", "your folder has uncommitted changes; the worktree does not carry them")
+    step(name, "check", "git ok; current branch %s; the worktree starts from %s" % (current_branch, base))
+    if base_warning:
+        step(name, "warn", base_warning)
     recorded = last_run_entry(opts.repo_path, name)
-    reattach = branch_exists(item.path, branch) and recorded.get("branch") == branch
+    reattach = branch_exists(item.path, branch) and recorded.get("branch") == branch and not recorded.get("finished")
     if reattach:
         entry["base"] = recorded.get("base") or base
     if opts.dry_run:
@@ -820,6 +1278,8 @@ def ensure_extra_worktree(item, opts, branch, known):
         step(name, "error", "failed to create worktree: " + err)
         sys.exit("repo %s: failed to create worktree: %s" % (name, err))
     entry["copied"] = copy_local_files(item.path, work, resolve_copy(item), name)
+    entry["carried_setup_files"] = carry_setup_into(item.path, work, name, subprojects.load(opts.repo_path, name)["entry"], include_specs=False)
+    entry["base_sha"] = base_sha_of(item.path, entry["base"])
     step(name, "copy", ", ".join(entry["copied"]) or "nothing")
     setup, auto = resolve_setup(item)
     if setup:
@@ -835,11 +1295,16 @@ def ensure_extra_worktree(item, opts, branch, known):
 
 
 def ensure_worktrees(repo, opts):
-    """One worktree per repo of the project, all on the same loop branch; returns (primary worktree, meta). A project without
-    REPOS.json (or with one repo) goes through ensure_worktree alone: same lines, same meta.json as before. A multi-repo project adds
-    `meta["repos"] = {name: {path, worktree, branch, base, primary, copied}}`; the top-level fields still describe the primary."""
+    """One worktree for the primary plus one per `edit` repo that a ROADMAP feature changes (`paths=<repo>:`), all on the same loop branch;
+    returns (primary worktree, meta). `reference` repos and edit repos nothing changes get no worktree (D4). A project whose only worktree
+    is the primary's goes through ensure_worktree alone: same lines, same meta.json as before. Otherwise `meta["repos"] = {name: {path,
+    worktree, branch, base, primary, copied}}`; the top-level fields still describe the primary."""
     repos = project_repos.load_repos(repo)
-    if len(repos) == 1:
+    only = getattr(opts, "only_repos", None)
+    work_now = worktree_of(repo)
+    features = roadmap_features(work_now if os.path.isdir(work_now) else repo)
+    targets = {item.name for item in worktree_repos(repos, features, only)}
+    if len(targets) == 1:
         return ensure_worktree(repo, opts)
     primary = project_repos.primary_of(repos)
     hashes = {}
@@ -850,18 +1315,30 @@ def ensure_worktrees(repo, opts):
     entries = {primary.name: {"path": repo, "worktree": work, "branch": meta["branch"], "base": meta.get("base", ""), "primary": True,
                               "copied": hashes or dict((previous.get(primary.name) or {}).get("copied") or {})}}
     opts.repo_path = repo
-    only = getattr(opts, "only_repos", None)
     for item in repos:
-        if not item.primary:
-            if only and item.name not in only:  # --repos: the others keep what meta.repos already recorded
-                if previous.get(item.name):
-                    entries[item.name] = previous[item.name]
-                continue
-            entries[item.name] = ensure_extra_worktree(item, opts, meta["branch"], previous.get(item.name) or {})
+        if item.primary:
+            continue
+        if item.name not in targets:  # a reference repo, an edit repo no feature changes, or one left out by --repos: keep what was recorded
+            if previous.get(item.name):
+                entries[item.name] = previous[item.name]
+            continue
+        entries[item.name] = ensure_extra_worktree(item, opts, meta["branch"], previous.get(item.name) or {})
     meta["repos"] = entries
     if not opts.dry_run:
-        save_json(loop_state.loop_path(work, "meta.json"), meta)
+        save_meta(loop_state.loop_path(work, "meta.json"), meta)
     return work, meta
+
+
+def ensure_worktrees_or_stop(repo, opts):
+    """Start creates the worktrees that are missing (one per repo defined for the project), before the first turn. Idempotent: the ones
+    that exist are reused (`reuse` step). A failure is reported as a clear PROBLEM line and stops the start with it."""
+    try:
+        return ensure_worktrees(repo, opts)
+    except SystemExit as stop:
+        if not isinstance(stop.code, str):
+            raise
+        print("[check] PROBLEM: worktree not created: %s" % stop.code, flush=True)
+        sys.exit("the loop did not start: its worktrees could not be created. Problem: %s" % stop.code)
 
 
 def loop_worktrees(work, meta):
@@ -919,6 +1396,10 @@ def dirty_worktrees(work, meta):
     for name, path in loop_worktrees(work, meta):
         ignore = set(meta.get("copied", []))
         ignore.update((meta.get("repos", {}).get(name) or {}).get("copied") or {})
+        ignore.update(meta.get("carried_setup_files") or [])  # BR-02: carried setup files wait for the first checkpoint commit, they are not leftovers
+        ignore.update((meta.get("repos", {}).get(name) or {}).get("carried_setup_files") or [])
+        if meta.get("system_md_uncommitted") and os.path.normpath(path) == os.path.normpath(work):
+            ignore.add(SYSTEM_DOCUMENT)  # the engine's contract merge left it for the next checkpoint commit
         rows = dirty_outside_specs(path, ignore)
         if rows:
             dirty.append((name, rows))
@@ -929,11 +1410,97 @@ def dirty_outside_specs(work, ignore):
     _, out, _ = git(work, "status", "--porcelain")
     rows = []
     for line in out.splitlines():
-        path = line[3:].strip().strip('"').replace("\\", "/")
+        path = row_path(line)
         if path.startswith(".specs/") or path.rstrip("/") in ignore:
             continue
+        if path.endswith("/") and line.startswith("??"):  # an untracked folder is one collapsed row: expand it when an ignored file may sit inside
+            inside = [name for name in ignore if name.startswith(path)]
+            if inside:
+                _, listing, _ = git(work, "status", "--porcelain", "-uall", "--", path)
+                rows.extend(row for row in listing.splitlines() if row_path(row) not in ignore)
+                continue
         rows.append(line)
     return rows
+
+
+IN_FLIGHT_STATUSES = ("speccing", "approved", "building")  # features whose executors may leave files behind
+PORCELAIN_ROW = re.compile(r"^\s*[A-Z?!]{1,2}\s+(.*)$")  # the helper `run` strips the output, so the first row may have lost its leading space
+
+
+def row_path(row):
+    """Path of a `git status --porcelain` row (the new name of a rename)."""
+    match = PORCELAIN_ROW.match(row)
+    path = (match.group(1) if match else row).strip().strip('"').replace("\\", "/")
+    return path.split(" -> ")[-1].strip('"')
+
+
+def feature_scope_rows(rows, repo_name, features, primary_name):
+    """(inside, outside): the dirty rows that fall under the `paths=` of an in-flight feature, and the rest."""
+    scopes = []
+    for feature in features.values():
+        if feature.get("status") not in IN_FLIGHT_STATUSES:
+            continue
+        for repo, path in loop_state.feature_repo_paths(feature, primary_name):
+            if not repo_name or not repo or repo == repo_name:
+                scopes.append(path.strip("/").replace("\\", "/"))
+    inside, outside = [], []
+    for row in rows:
+        path = row_path(row).rstrip("/")
+        covered = any(scope and (path == scope or path.startswith(scope + "/") or scope.startswith(path + "/")) for scope in scopes)
+        (inside if covered else outside).append(row)
+    return inside, outside
+
+
+def commit_leftovers(path, rows, message):
+    """Commits exactly these rows on the loop branch (the executors never run git, so their work is still loose after the turn)."""
+    names = [row_path(row) for row in rows]
+    code, _, err = git(path, "add", "-A", "--", *names)
+    if code != 0:
+        return False, "git add failed: " + err[-200:]
+    code, _, err = git(path, "commit", "-m", message, "--no-verify")
+    return (True, "") if code == 0 else (False, "git commit failed: " + err[-200:])
+
+
+def discard_leftovers(path, rows):
+    """Throws away exactly these rows: tracked files go back to HEAD, untracked ones are deleted."""
+    for row in rows:
+        name = row_path(row)
+        if row.startswith("??"):
+            full = os.path.join(path, name)
+            if os.path.isdir(full):
+                shutil.rmtree(full, ignore_errors=True)
+            elif os.path.exists(full):
+                os.remove(full)
+        else:
+            git(path, "checkout", "HEAD", "--", name)
+    return True, ""
+
+
+def settle_dirty_worktrees(work, meta, turn, opts):
+    """Runs before every turn. Returns the [(repo name, rows)] that are still dirty (the loop stops on them).
+    Leftovers of the previous turn that sit under the paths of an in-flight feature are committed as a checkpoint (the work is the
+    feature's own); anything else stays and stops the loop. `--leftovers commit|discard` (panel recovery) decides about ALL of it."""
+    mode = getattr(opts, "leftovers", "") or ""
+    features, _ = loop_state.parse_roadmap(read(os.path.join(work, ".specs", "project", "ROADMAP.md")))
+    still_dirty = []
+    for name, rows in dirty_worktrees(work, meta):
+        path = dict(loop_worktrees(work, meta)).get(name, work)
+        if mode == "discard":
+            discard_leftovers(path, rows)
+            print("[loop] --leftovers discard: %d leftover file(s) discarded%s" % (len(rows), " in repo " + name if name else ""))
+            continue
+        inside, outside = (rows, []) if mode == "commit" else feature_scope_rows(rows, name, features, getattr(opts, "primary_name", ""))
+        if inside:
+            saved, problem = commit_leftovers(path, inside, "chore(loop): checkpoint of work left uncommitted by turn %d" % (turn - 1))
+            if saved:
+                print("[loop] checkpoint: %d file(s) left by turn %d committed on the loop branch%s" % (len(inside), turn - 1, " (repo " + name + ")" if name else ""))
+                meta.setdefault("checkpoints", []).append({"turn": turn - 1, "files": len(inside), "repo": name})
+            else:
+                outside = rows
+                print("[loop] checkpoint failed: " + problem)
+        if outside:
+            still_dirty.append((name, outside))
+    return still_dirty
 
 
 def write_answer(work, text):
@@ -981,7 +1548,7 @@ def rewind(repo, opts):
         sys.exit("git reset failed: " + err)
     loop_state.restore(work, opts.rewind)
     meta.update({"turns": opts.rewind, "stopped": "rewind", "reason": "state restored to after turn %d" % opts.rewind})
-    save_json(meta_path, meta)
+    save_meta(meta_path, meta)
     print("[rewind] done. Run the loop command again to continue from turn %d." % (opts.rewind + 1))
     return 0
 
@@ -1004,14 +1571,18 @@ def acquire_lock(work):
 
 # ---------------------------------------------------------------- one turn
 def plan_flags(work, wave, primary_name=""):
-    """Deterministic scheduler: the script computes the turn's phase and features (loop_state.next_work); the orchestrator executes.
+    """Deterministic scheduler: the script computes the turn's lanes (loop_state.next_work); the orchestrator executes them.
+    A lane is ONE feature at ITS OWN step (`--lanes slug:step,...`; step = spec|gate|execute|recover): every lane gets its own agent at every
+    step and advances by itself, so no feature waits for another one to reach the same phase. `--phase` is the common step when all the lanes
+    are at the same one (and `lanes` when they differ); `--ready` lists every lane's slug (kept for older prompts).
     With no readable ROADMAP or nothing to dispatch, returns empty and the orchestrator decides as before."""
     features, _ = loop_state.parse_roadmap(read(os.path.join(work, ".specs", "project", "ROADMAP.md")))
     if not features:
         return ""
     plan = loop_state.next_work(features, wave, headless=True, primary_name=primary_name)
     flags = " --phase %s" % plan["phase"]
-    if plan["slugs"]:
+    if plan["lanes"]:
+        flags += " --lanes %s" % ",".join("%s:%s" % (lane["slug"], lane["step"]) for lane in plan["lanes"])
         flags += " --ready %s" % ",".join(plan["slugs"])
     if plan["stuck_by_blocked"]:
         flags += " --stuck %s" % ",".join(plan["stuck_by_blocked"])
@@ -1041,23 +1612,85 @@ def e2e_unmarked(specs):
     return problems
 
 
+SYSTEM_DOCUMENT = system_map.SYSTEM_RELATIVE_PATH.replace("\\", "/")
+
+
+def missing_backend_contract(work, slug, feature):
+    """True for a back-end (kind back/both) feature whose paths fall in a subproject of a confirmed monorepo and that has no contract.md."""
+    if str(feature.get("kind") or "").lower() not in ("back", "both"):
+        return False
+    if os.path.isfile(system_map.contract_path(work, slug)):
+        return False
+    for path in str(feature.get("paths") or "").split(","):
+        owner = subprojects.owner_of(work, path.strip()) if path.strip() else None
+        if owner and owner.get("skip") is not True:
+            return True
+    return False
+
+
+def merge_verified_contracts(work, meta, state, specs):
+    """Contract merge hook (SYS-04, SYS-09, SYS-10, design D22). Only for a CONFIRMED monorepo; otherwise nothing at all (SYS-07).
+
+    Moment chosen: right after a turn is validated, for every feature the ROADMAP now shows as `verified` that was not handled yet,
+    one feature at a time in ROADMAP order. The orchestrator verifies and makes its checkpoint commit INSIDE its turn, so the
+    engine cannot run before that commit; instead it merges between turns, records `contract_merge: {slug: {changed, warnings}}`
+    in LOOP.json (the next turn's orchestrator reads the status) and leaves SYSTEM.md for the NEXT checkpoint commit, as
+    dispatch.md says. When no next turn will happen (done / everything closed) the engine commits SYSTEM.md itself so it is not lost.
+    Conflict and missing-file warnings go to the loop status, the console and VALIDATE.md. No SCOPE.json change."""
+    if not subprojects.monorepo_confirmed(work):
+        return
+    features, _ = loop_state.parse_roadmap(read(os.path.join(work, ".specs", "project", "ROADMAP.md")))
+    handled = meta.setdefault("contract_merged_slugs", [])
+    recorded = {}
+    for slug, feature in features.items():
+        if feature.get("status") != "verified" or slug in handled:
+            continue
+        result = system_map.merge_contract_deltas(work, [slug])
+        handled.append(slug)
+        recorded[slug] = {"changed": bool(result["changed"]), "warnings": list(result["warnings"])}
+        if missing_backend_contract(work, slug, feature):
+            warning = "back-end feature verified without .specs/features/%s/contract.md: SYSTEM.md was not updated" % loop_state.feature_folder_name(slug)
+            recorded[slug]["warnings"].append(warning)
+            print("[loop] WARNING (contract merge, %s): %s" % (slug, warning))
+            decisions.append(work, slug, state.get("turn"), "important", "WARNING contract: " + warning,
+                             "went on without the contract delta", "write the contract.md (routes, env, events) and merge it into SYSTEM.md")
+        if result["changed"]:
+            meta["system_md_uncommitted"] = True
+        for warning in result["warnings"]:
+            print("[loop] WARNING (contract merge, %s): %s" % (slug, warning))
+            append_validate_line(specs, "WARNING contract merge (%s): %s" % (slug, warning))
+            if system_map.NO_GRAMMAR_MARK in warning:
+                decisions.append(work, slug, state.get("turn"), "important", "WARNING contract: " + warning,
+                                 "went on without merging the contract delta",
+                                 "rewrite contract.md as lines `- [add|change|remove] route|dto|auth|env <identity> — <purpose> (<file>)` (no table) and merge it into SYSTEM.md")
+    if not recorded:
+        return
+    state["contract_merge"] = recorded
+    save_json(loop_state.state_file(work, "LOOP.json"), state)
+    score, total, done = roadmap_score(work)
+    if meta.get("system_md_uncommitted") and (state.get("status") == "done" or (total and done == total)):
+        code, _, err = git(work, "add", "--", SYSTEM_DOCUMENT)
+        if code == 0:
+            code, _, err = git(work, "commit", "-m", "chore(loop): merge feature contracts into docs/codebase/SYSTEM.md", "--no-verify")
+        if code == 0:
+            meta["system_md_uncommitted"] = False
+        else:
+            print("[loop] WARNING: SYSTEM.md contract merge could not be committed: " + err[-200:])
+    save_meta(loop_state.loop_path(work, "meta.json"), meta)
+
+
 def pause_on_quarantine(specs, prev, state, opts):
     """A feature that just entered quarantine (2 failures) PAUSES the loop and notifies the user, instead of carrying on alone.
     Returns the pause text (and rewrites LOOP.json as awaiting_user, so --answer works) or "" if there is nothing to pause.
     Only acts on a turn the orchestrator left as `continue`: `done`/`awaiting_user`/`error` already notify on their own."""
     if opts.continue_on_blocked or not prev or state.get("status") != "continue":
         return ""
-    # Default (user decision): quarantine only PAUSES when it blocks the operation (some feature depends on the blocked one).
-    # A loose blocked feature does not stop the loop: it carries on with the others and goes in the final report. --pause-on-blocked always pauses.
+    # Default (user decision): a feature that gets stuck ALWAYS pauses the loop and notifies the user. --continue-on-blocked opts out.
     old = loop_state.parse_roadmap(read(os.path.join(prev["dir"], "ROADMAP.md")))[0]
     new = loop_state.parse_roadmap(read(os.path.join(specs, "ROADMAP.md")))[0]
     fresh = [slug for slug, f in new.items() if f["status"] == "blocked" and old.get(slug, {}).get("status") != "blocked"]
     if not fresh:
         return ""
-    if not getattr(opts, "pause_on_blocked", False):
-        plan = loop_state.next_work(new, getattr(opts, "wave", 1), headless=True, primary_name=getattr(opts, "primary_name", ""))
-        if not plan.get("stuck_by_blocked"):
-            return ""
     why = str(state.get("reason") or "").strip()
     reason = ("Quarantine after 2 failures: %s. The loop paused for you to decide (try again with guidance from you, "
               "or skip and carry on with the others)." % ", ".join(fresh)) + ((" Orchestrator detail: " + why[:600]) if why else "")
@@ -1065,6 +1698,54 @@ def pause_on_quarantine(specs, prev, state, opts):
                  next="apply the user's decision about: " + ", ".join(fresh))
     save_json(os.path.join(specs, loop_state.LOOP_FOLDER_NAME, loop_state.JSON_FOLDER_NAME, "LOOP.json"), state)
     return reason
+
+
+# ---------------------------------------------------------------- critical decisions
+def pause_on_critical_decision(work, state, mark):
+    """A turn that wrote a `level=critical` line in VALIDATE.md (after line `mark`) stops the loop like an open question: LOOP.json becomes
+    awaiting_user with the decision as the question. `important` lines never stop it. A turn that ended in `error` stays an error.
+    Returns the reason (and rewrites LOOP.json) or "" when there is nothing to stop for."""
+    if state.get("status") == "error":
+        return ""
+    found = decisions.new_critical(work, mark)
+    if not found:
+        return ""
+    first = found[0]
+    reason = "%s%s | chose: %s | revert: %s" % (CRITICAL_DECISION_PREFIX, first["doubt"], first["chose"], first["revert"])
+    if len(found) > 1:
+        reason += " | %d more critical decision(s) in VALIDATE.md" % (len(found) - 1)
+    state.update(status="awaiting_user", reason=reason, feature=first["slug"],
+                 options=["keep as decided", "change it: <write how>"],
+                 next="apply the user's answer about the critical decision, then continue")
+    save_json(loop_state.state_file(work, "LOOP.json"), state)
+    return reason
+
+
+# ---------------------------------------------------------------- spend cap
+def effective_cost_cap(meta, opts):
+    """Cap of US$ of this run: the one raised from the panel (meta max_cost_usd) wins over --max-cost; 0 = no cap."""
+    try:
+        raised = float(meta.get("max_cost_usd") or 0)
+    except (TypeError, ValueError):
+        raised = 0.0
+    return raised if raised > 0 else float(opts.max_cost or 0)
+
+
+def cost_cap_reason(cost, cap):
+    return "%s%.2f of %.2f" % (COST_CAP_REASON_PREFIX, cost, cap)
+
+
+def warn_near_cost_cap(meta, cost, cap):
+    """ONE notice when the spend reaches 80 % of the cap (again only if the cap is raised and 80 % of the new one is reached)."""
+    if not cap or cost < cap * COST_WARNING_RATIO or cost > cap or meta.get("cost_warned_cap") == cap:
+        return False
+    meta["cost_warned_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+    meta["cost_warned_cap"] = cap
+    link = ACTIVE.get("monitor_url")
+    notify_wait("spend at 80 % of the cap",
+                "The loop spent US$ %.2f of the US$ %.2f cap (%d %%). It pauses when the cap is passed; raise the limit in the panel to carry on without a pause.%s"
+                % (cost, cap, round(cost * 100 / cap), (" Panel: " + link) if link else ""))
+    return True
 
 
 # ---------------------------------------------------------------- automatic answer
@@ -1086,8 +1767,8 @@ RECOMMENDED_RE = re.compile(r"recommended", re.I)
 def pick_auto_answer(state):
     """Picks the answer to a question that does not need the user. Returns (number, text, why) or None when it must stop."""
     options = [str(option) for option in (state.get("options") or [])]
-    if len(options) < 2:
-        return None
+    if len(options) < 2 or str(state.get("reason") or "").startswith(CRITICAL_DECISION_PREFIX):
+        return None  # a critical decision needs the user: it is never answered by the script
     if HARD_STOP_RE.search(str(state.get("reason") or "") + " " + " ".join(options)):
         return None
     for number, option in enumerate(options, 1):
@@ -1111,7 +1792,6 @@ def try_auto_answer(work, turn, opts, meta, auto_state):
     """Answers the pending LOOP.json question on its own, when it can. Returns True when it answered (the loop carries on) and False when it must stop."""
     if not getattr(opts, "auto_answer", True):
         return False
-    specs = os.path.join(work, ".specs", "project")
     state = load_json(loop_state.state_file(work, "LOOP.json"))
     if state.get("status") != "awaiting_user":
         return False
@@ -1129,8 +1809,8 @@ def try_auto_answer(work, turn, opts, meta, auto_state):
     auto_state["total"] += 1
     auto_state["per_feature"][key] = used_here + 1
     meta.setdefault("auto_answers", []).append({"turn": turn, "feature": key, "option": number})
-    append_validate_line(specs, "- [%s] question answered automatically on turn %d: \"%s\" | chose: option %d (%s): %s | revert: --answer with another option"
-                         % (key, turn, question[:160], number, why, text[:140]))
+    decisions.append(work, key, turn, "important", "question answered automatically: \"%s\"" % question[:160],
+                     "option %d (%s): %s" % (number, why, text[:140]), "--answer with another option")
     print("[loop] warning: question answered automatically (option %d, %s); noted in .specs/project/loop/VALIDATE.md" % (number, why))
     return True
 
@@ -1177,39 +1857,53 @@ def try_gate_tiebreak(work, turn, opts, meta, auto_state):
     for slug in stuck:
         used[slug] = used.get(slug, 0) + 1
     meta.setdefault("gate_tiebreaks", []).append({"turn": turn, "features": stuck})
-    append_validate_line(specs, "- [%s] gate tiebreak on turn %d: spec approved without a new gate after several rejections | chose: run with the remaining findings as notes; build and regression decide | revert: --answer asking to redo the gate" % (slugs, turn))
+    decisions.append(work, slugs, turn, "important", "gate tiebreak: spec approved without a new gate after several rejections",
+                     "run with the remaining findings as notes; build and regression decide", "--answer asking to redo the gate")
     print("[loop] warning: gate tiebreak for %s (spec approved, findings become notes); noted in .specs/project/loop/VALIDATE.md" % slugs)
     return True
 
 
-def grafana_read_arguments(opts):
-    """(mcp config, allowed tools, denied tools) of the turn. Opt-in per project (ACCESS.json `grafana_read`): the Grafana MCP server
-    alone, and only the read-only Loki tools; every other MCP stays out. Anything unusable keeps the empty config (never a guess)."""
-    root = getattr(opts, "access_root", "")
-    if not root or not access_settings.read_access(root)[access_settings.GRAFANA_READ_KEY]:
+def mcp_read_arguments():
+    """(mcp config, allowed tools, denied tools) of the turn, computed by `mcp_access.build_access`: every known server the user's
+    `~/.claude.json` defines (grafana, mcp-mysql-dev, mcp-mysql-prod) with its read tools only. No server = the empty strict config
+    (every other MCP stays out; a missing server is just absent, never a warning)."""
+    access = mcp_access.build_access(app_config.get_user_data_dir())
+    if not access["config_path"]:
         return EMPTY_MCP_CONFIG, [], []
-    config_path = grafana_access.write_mcp_config(app_config.get_user_data_dir())
-    if not config_path:
-        print("[loop] warn: grafana_read is on in ACCESS.json but the `grafana` MCP server was not found in ~/.claude.json: continuing without it")
-        return EMPTY_MCP_CONFIG, [], []
-    return config_path, list(grafana_access.READ_TOOLS), list(grafana_access.DENIED_WRITE_TOOLS)
+    return access["config_path"], list(access["allowed_tools"]), list(access["denied_tools"])
+
+
+def model_arguments(opts):
+    """`--model <value>` of every orchestrator turn (normal, correction and resume); an empty option sends no flag."""
+    model = str(getattr(opts, "orchestrator_model", DEFAULT_ORCHESTRATOR_MODEL) or "").strip()
+    return ["--model", model] if model else []
 
 
 def claude_command(opts, prompt):
     binary = opts.claude or shutil.which("claude") or "claude"
     base = [sys.executable, binary] if binary.endswith(".py") else [binary]
     # T23: each non-primary worktree is granted as `--add-dir=<path>` (the `=` form: the flag is variadic and would swallow what follows)
-    extra_dirs = ["--add-dir=%s" % path for path in getattr(opts, "extra_worktrees", None) or []]
-    mcp_config, allowed_tools, denied_tools = grafana_read_arguments(opts)
+    # D4: each `reference` repo (read only, no worktree) is granted the same way, as its own folder
+    extra_dirs = ["--add-dir=%s" % path for path in (getattr(opts, "extra_worktrees", None) or []) + (getattr(opts, "reference_dirs", None) or [])]
+    mcp_config, allowed_tools, denied_tools = mcp_read_arguments()
     allowed = ["--allowedTools"] + allowed_tools if allowed_tools else []
     return base + [
         "-p", prompt, "--output-format", "json", "--permission-mode", opts.permission_mode,
         "--permission-prompts", "none", "--max-budget-usd", str(opts.budget),
-    ] + extra_dirs + [
+    ] + model_arguments(opts) + extra_dirs + [
         "--strict-mcp-config", "--mcp-config", mcp_config,
     ] + allowed + [
         "--disallowedTools", ",".join(LOOP_DISALLOWED_TOOLS + denied_tools),  # last and as ONE argument: the option is variadic
     ]
+
+
+def loop_json_correction_prompt(turn, branch):
+    """Prompt of the single correction turn (same session, --resume): only write LOOP.json, never redo or start work."""
+    return ("/orchestrator continue --headless --turn %d --branch %s --finish-only. Your previous reply ended turn %d WITHOUT writing LOOP.json "
+            "(e.g. you stopped to wait for background subagents). Do not start new work and do not wait for background tasks: if a subagent is "
+            "still unfinished, record that in the reason and use status continue. Write STATE.md if needed and, as the last action, run: "
+            "python \"<app>/harness.py\" state loop <root> --status <continue|awaiting_user|done|error> --turn %d --reason \"...\" --next \"...\"."
+            % (turn, branch, turn, turn))
 
 
 def push_lock_env(cwd):
@@ -1217,6 +1911,7 @@ def push_lock_env(cwd):
     for that process only (GIT_CONFIG_*, nothing is written to the repo); the end delivery is done by this script, outside that environment."""
     env = dict(os.environ)
     env["LOOP_HEADLESS"] = "1"
+    env.setdefault("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "0")  # wait for the background subagents (the verifier) instead of killing them 10 min after the last turn; run_turn's timeout still bounds it
     env.setdefault("LOOP_APP_HOME", APP_ROOT_DIR)  # the headless turn finds the app without depending on config.json
     specs_dir = os.path.join(os.path.abspath(cwd), ".specs")  # cwd = the PRIMARY worktree (run_turn is called with `work`)
     if os.path.isdir(specs_dir):
@@ -1315,18 +2010,11 @@ def denial_text(denial):
     return "%s: %s" % (denial.get("tool_name"), text[:140])
 
 
-def note_tolerated_denials(specs, turn, denials, progress):
+def note_tolerated_denials(work, turn, denials, progress):
     """Notes each tolerated denial in VALIDATE.md; the final summary and the PR show that file as 'For you to validate'."""
-    path = os.path.join(specs, loop_state.LOOP_FOLDER_NAME, "VALIDATE.md")
-    current = read(path)
-    lines = [
-        "- [general] permission denied on turn %d (%s) | chose: carried on, the turn advanced (%s) | revert: check whether what was denied was needed"
-        % (turn, denial_text(denial), progress)
-        for denial in denials
-    ]
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as handle:
-        handle.write(("" if not current or current.endswith("\n") else "\n") + "\n".join(lines) + "\n")
+    for denial in denials:
+        decisions.append(work, "general", turn, "important", "permission denied (%s)" % denial_text(denial),
+                         "carried on, the turn advanced (%s)" % progress, "check whether what was denied was needed")
 
 
 def denial_progress(prev, specs, state, new_commits):
@@ -1344,6 +2032,12 @@ def denial_progress(prev, specs, state, new_commits):
 # ---------------------------------------------------------------- end
 def finish(work, meta, status, reason, opts):
     meta["stopped"], meta["reason"] = status, reason
+    if status == "paused":  # resumable stop (spend cap): the panel reads the status from LOOP.json
+        paused_state = load_json(loop_state.state_file(work, "LOOP.json"))
+        paused_state.update(status="paused", reason=reason, turn=int(meta.get("turns", 0)), next="raise the limit or resume in the panel",
+                            at=datetime.datetime.now().isoformat(timespec="seconds"))
+        paused_state.pop("options", None)
+        save_json(loop_state.state_file(work, "LOOP.json"), paused_state)
     meta["finished_at"] = datetime.datetime.now().isoformat(timespec="seconds")
     meta_path = loop_state.loop_path(work, "meta.json")
     meta.setdefault("push", "not done")
@@ -1353,20 +2047,19 @@ def finish(work, meta, status, reason, opts):
             meta["push"] = "refused: " + problem
         else:
             try:
-                delivered = delivery.finalize_project(work, meta)
+                delivered = delivery.finalize_project(work, meta, base=base_branch_of(opts))
             except Exception as error:  # the delivery never takes the notice down
                 delivered = {"push": "FAILED: delivery.py: %s" % str(error)[:200], "pr": None, "pr_status": "not created"}
             meta["push"], meta["pr"], meta["pr_status"] = delivered["push"], delivered["pr"], delivered["pr_status"]
-    save_json(meta_path, meta)
+    save_meta(meta_path, meta)
     try:
         graph_view.write(work)
     except OSError:
         pass
     summary = ""
     try:
-        sys.argv = ["loop_summary.py", work, "--branch", meta.get("branch", ""), "--base", meta.get("base", "")]
-        if opts.summary_dir:
-            sys.argv += ["--out", opts.summary_dir]
+        sys.argv = ["loop_summary.py", work, "--branch", meta.get("branch", ""), "--base", meta.get("base", ""),
+                    "--out", opts.summary_dir or app_paths.default_output_dir(), "--max-cost", str(effective_cost_cap(meta, opts))]
         import io
         from contextlib import redirect_stdout
         buffer = io.StringIO()
@@ -1392,7 +2085,7 @@ def ready_command(repo, opts):
 def main():
     parser = argparse.ArgumentParser(description="Unsupervised /orchestrator loop")
     parser.add_argument("repo")
-    parser.add_argument("--wave", type=int, default=1, help="features per turn (only with disjoint PATHS); default 1")
+    parser.add_argument("--wave", type=int, default=3, help="features (lanes) in parallel per turn, each with its own agents at every step (execution only with disjoint PATHS and met dependencies); default 3")
     parser.add_argument("--e2e", action="store_true", help="authorizes the final flow-validation phase (verifier-flow, headless)")
     parser.add_argument("--push", action="store_true", default=None, help="requires the final push+PR (fails the preflight if there is no remote/identity). Without the flag push+PR is already the DEFAULT (feature branch only)")
     parser.add_argument("--no-push", dest="push", action="store_false", help="do not push the branch nor open a PR at the end")
@@ -1403,21 +2096,26 @@ def main():
     parser.add_argument("--limit-retries", type=int, default=8)
     parser.add_argument("--permission-mode", default="auto", help="auto | acceptEdits | dontAsk")
     parser.add_argument("--branch", default="")
+    parser.add_argument("--base-branch", default="", help="branch new worktrees start from and the PR target (the ROADMAP `Branch base`); default: LOOP_PR_BASE / LOOP_INTEGRATION_BRANCH, else developer")
     parser.add_argument("--git-user", default="", help="requires this git user.name on push (or LOOP_GIT_USER in the app .env); default: any configured account")
     parser.add_argument("--setup", default="", help='one-time command after creating the worktree (e.g. "npm ci")')
     parser.add_argument("--claude", default="", help="claude binary (or a test .py)")
     parser.add_argument("--option", type=int, default=0, metavar="N", help="answers the question by the NUMBER of the option listed in the notice (same as --answer with that option's text)")
     parser.add_argument("--answer", default="", help="answers the question that stopped the loop (awaiting_user) and continues; goes to ANSWERS.md")
-    parser.add_argument("--max-cost", type=float, default=30.0, help="cap of US$ summed over all turns (0 turns it off); when exceeded, stops with an error")
+    parser.add_argument("--max-cost", type=float, default=50.0, help="cap of US$ summed over all turns (0 turns it off); a cap raised in the panel (meta max_cost_usd) wins; when exceeded the loop PAUSES (resumable)")
+    parser.add_argument("--orchestrator-model", default=DEFAULT_ORCHESTRATOR_MODEL, help="model of the orchestrator turns (--model of claude); empty = no flag, the CLI default")
     parser.add_argument("--rewind", type=int, default=None, metavar="N", help="go back to the state right after turn N (state files + git reset --hard of the loop branch). Without --yes it only shows the plan")
     parser.add_argument("--yes", action="store_true", help="confirms --rewind")
-    parser.add_argument("--summary-dir", default="", help="folder of the final summary (default: loop-summary/ in the current directory)")
+    parser.add_argument("--leftovers", choices=["commit", "discard"], default="", help="uncommitted files outside .specs/ left in the worktree: commit them all as a checkpoint or discard them, then carry on (the panel's recovery buttons)")
+    parser.add_argument("--summary-dir", default="", help="folder of the final summary (default: the app's output folder, ~/Downloads when unset)")
+    parser.add_argument("--json", action="store_true", help="with --check: after the text lines, print one `[check] JSON: {...}` line with problems, warnings and `items` (kind, repo, files, text, fix)")
     parser.add_argument("--check", action="store_true", help="only checks the preflight, prints the ready command and exits (creates nothing)")
+    parser.add_argument("--planning", action="store_true", help="with --check: readiness of a roadmap NOT yet approved (skips the approval, adds worktree, feature-path, MCP, credential and test-command checks)")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--ensure-worktrees", action="store_true", help="only creates (or re-attaches) the worktrees as the loop start does, prints the `[loop] [<repo>] <kind>: <text>` lines and exits; no preflight, no turn")
     parser.add_argument("--repos", default="", help="with --ensure-worktrees: comma-separated repo names to create (the primary is always ensured)")
     parser.add_argument("--continue-on-blocked", action="store_true", help="a quarantined feature NEVER pauses the loop, not even when another depends on it")
-    parser.add_argument("--pause-on-blocked", action="store_true", help="a quarantined feature ALWAYS pauses and notifies (default: only pauses when another feature depends on the blocked one)")
+    parser.add_argument("--pause-on-blocked", action="store_true", help="a quarantined feature ALWAYS pauses and notifies (this is now the default; kept for compatibility; formerly: only pauses when another feature depends on the blocked one)")
     parser.add_argument("--allow-silent", action="store_true", help="testing only: waives the mandatory notice channels (LOOP_NOTIFY_REQUIRED)")
     parser.add_argument("--no-auto-answer", dest="auto_answer", action="store_false", default=True,
                         help="turns the automatic answer off: every orchestrator question stops the loop and waits for you (default: the script answers on its own the ones that do not need you)")
@@ -1454,6 +2152,9 @@ def main():
     if opts.check:
         if not problems:
             print("[check] READY. Command:\n  %s" % ready_command(repo, opts))
+        if opts.json:
+            print("[check] JSON: " + json.dumps({"ready": not problems, "problems": problems, "warnings": warns,
+                                                  "items": check_items(problems, warns, project_repos.load_repos(repo), repo)}, ensure_ascii=False))
         return 1 if problems else 0
     if problems:
         work_now = worktree_of(repo)
@@ -1465,8 +2166,8 @@ def main():
                  + ("Problems: " + "; ".join(others) if others else ("Problems: " + "; ".join(problems) if not env_reason else "")))
     repos = project_repos.load_repos(repo)
     opts.repo_names, opts.primary_name = repo_names_of(repos), (project_repos.primary_of(repos).name if len(repos) > 1 else "")
-    work, meta = ensure_worktrees(repo, opts)
-    opts.access_root = work  # ACCESS.json of the project, read at every turn (the user may toggle it between turns)
+    work, meta = ensure_worktrees_or_stop(repo, opts)
+    opts.reference_dirs = [item.path for item in project_repos.reference_repos(repos)]
     opts.extra_worktrees = [item["worktree"] for item in (meta.get("repos") or {}).values()
                             if isinstance(item, dict) and not item.get("primary") and item.get("worktree")]
     if opts.dry_run:
@@ -1500,10 +2201,17 @@ def main():
             if paused:
                 print("[loop] PAUSE found: stopping before turn %d" % (turn + 1))
                 return finish(work, meta, "awaiting_user", paused, opts)
+            cap = effective_cost_cap(meta, opts)
+            if cap and cost > cap:  # resumed over the cap without raising it: pause again before spending anything
+                return finish(work, meta, "paused", cost_cap_reason(cost, cap), opts)
             turn += 1
-            for dirty_name, rows in dirty_worktrees(work, meta):
+            for dirty_name, rows in settle_dirty_worktrees(work, meta, turn, opts):
                 where = "in repo %s " % dirty_name if dirty_name else ""
-                return finish(work, meta, "error", "dirty tree outside .specs/ %sbefore turn %d (no automatic reset): %s" % (where, turn, "; ".join(rows[:5])), opts)
+                return finish(work, meta, "error", "dirty tree outside .specs/ %sbefore turn %d (no automatic reset; these files are outside the paths of the features in progress): %s. "
+                              "In the panel use \"Commit leftovers and try again\" or \"Discard leftovers and try again\"." % (where, turn, "; ".join(rows[:5])), opts)
+            opts.leftovers = ""  # the recovery choice applies to the first turn of this run only
+            meta["decisions_mark"] = decisions.line_count(work)  # critical decisions written after this line stop the loop at the end of the turn
+            save_meta(loop_state.loop_path(work, "meta.json"), meta)
             _, current, _ = git(work, "branch", "--show-current")
             if current != meta["branch"]:
                 code, _, err = git(work, "checkout", meta["branch"])
@@ -1525,10 +2233,13 @@ def main():
             save_json(os.path.join(logs, "%03d.json" % turn), log)
             cost += float(data.get("total_cost_usd") or 0)
             meta.update({"turns": turn, "cost_usd": round(cost, 4)})
-            save_json(loop_state.loop_path(work, "meta.json"), meta)
+            save_meta(loop_state.loop_path(work, "meta.json"), meta)
 
-            if opts.max_cost and cost > opts.max_cost:
-                return finish(work, meta, "error", "total cost cap exceeded: US$ %.2f > %.2f (--max-cost); see the summary and decide whether to continue" % (cost, opts.max_cost), opts)
+            cap = effective_cost_cap(meta, opts)
+            if cap and cost > cap:
+                return finish(work, meta, "paused", cost_cap_reason(cost, cap), opts)
+            if warn_near_cost_cap(meta, cost, cap):
+                save_meta(loop_state.loop_path(work, "meta.json"), meta)
             if timed_out:
                 return finish(work, meta, "error", "turn %d exceeded %d min (process terminated)" % (turn, opts.timeout), opts)
             unreadable = unrecognized_output(data)
@@ -1538,6 +2249,9 @@ def main():
                 if limit_hits > opts.limit_retries:
                     return finish(work, meta, "error", "account usage limit persisted after %d waits" % opts.limit_retries, opts)
                 print("[loop] usage limit; waiting %d min (%d/%d)" % (opts.limit_wait, limit_hits, opts.limit_retries))
+                notify_wait("usage limit, waiting %d min" % opts.limit_wait,
+                            "The account usage limit was hit on turn %d. The loop is waiting %d min and will retry by itself (wait %d of %d)."
+                            % (turn, opts.limit_wait, limit_hits, opts.limit_retries))
                 time.sleep(opts.limit_wait * 60)
                 turn -= 1
                 continue
@@ -1555,6 +2269,17 @@ def main():
                               % (turn, "; ".join(denial_text(d) for d in risky)[:400]), opts)
 
             state = load_json(loop_state.state_file(work, "LOOP.json"))
+            if (state.get("turn") != turn or state.get("status") not in STATUS_OK) and data.get("session_id"):
+                # the model finished the turn (e.g. while waiting on background subagents) without writing LOOP.json: ONE correction turn in the
+                # same session, only asking for the file (no new work), before failing the loop
+                print("[loop] LOOP.json not written on turn %d; one correction turn in the same session" % turn)
+                fix_code, fix_out, fix_err, fix_timeout = run_turn(
+                    claude_command(opts, loop_json_correction_prompt(turn, meta["branch"])) + ["--resume", data["session_id"]], work, opts.timeout)
+                fix_data = parse_result(fix_out)
+                cost += float(fix_data.get("total_cost_usd") or 0)
+                meta.update({"cost_usd": round(cost, 4), "loop_json_corrections": int(meta.get("loop_json_corrections", 0)) + 1})
+                save_meta(loop_state.loop_path(work, "meta.json"), meta)
+                state = load_json(loop_state.state_file(work, "LOOP.json"))
             if state.get("turn") != turn or state.get("status") not in STATUS_OK:
                 loop_state.snapshot(work, turn, git(work, "rev-parse", "HEAD")[1], heads_of(work, meta))  # the turn ran: the return point exists even with a bad LOOP.json
                 return finish(work, meta, "error", "LOOP.json missing, stale or invalid after turn %d (got status=%r turn=%r; expected turn=%d and status in %s). "
@@ -1579,9 +2304,13 @@ def main():
                 if not progress:
                     return finish(work, meta, "error", "permission denied on turn %d and the turn did not advance (no new commit, no ROADMAP change): %s"
                                   % (turn, "; ".join(denial_text(d) for d in denials)[:400]), opts)
-                note_tolerated_denials(specs, turn, denials, progress)
+                note_tolerated_denials(work, turn, denials, progress)
                 meta.setdefault("tolerated_denials", []).append({"turn": turn, "count": len(denials)})
                 print("[loop] warning: %d permission denial(s) on turn %d, tolerated (%s); noted in .specs/project/loop/VALIDATE.md" % (len(denials), turn, progress))
+            merge_verified_contracts(work, meta, state, specs)
+            critical = pause_on_critical_decision(work, state, meta.get("decisions_mark", 0))
+            if critical:
+                return finish(work, meta, "awaiting_user", critical, opts)
             paused = pause_on_quarantine(specs, prev, state, opts)
             if paused:
                 if try_auto_answer(work, turn, opts, meta, auto_state):

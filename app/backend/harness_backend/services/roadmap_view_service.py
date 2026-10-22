@@ -168,7 +168,7 @@ class RoadmapViewService:
             slugs, folders = loop_state.split_deps(fields)
             tries = fields.get("tries", "")
             features.append({
-                "id": slug, "name": self.read_feature_name(work_dir, slug), "status": fields.get("status"),
+                "id": slug, "name": self.read_feature_name(work_dir, slug, fields), "status": fields.get("status"),
                 "stage": number_by_label.get(fields.get("stage", "")),
                 "deps": slugs + [loop_state.DIR_PREFIX + folder for folder in folders],
                 "paths": [path for path in (fields.get("paths") or "").split(",") if path],
@@ -187,7 +187,12 @@ class RoadmapViewService:
         edges = [[dependency, slug] for slug, fields in parsed.items() for dependency in loop_state.split_deps(fields)[0] if dependency in parsed]
         return stages, features, counts, {"nodes": list(parsed), "edges": edges}
 
-    def read_feature_name(self, work_dir, slug):
+    def read_feature_name(self, work_dir, slug, fields=None):
+        """Readable name of a feature: the `title="..."` of its ROADMAP line (what the user approved), else the first heading of its spec.md
+        (without the `Spec:` / slug prefix), else the slug."""
+        title = " ".join(str((fields or {}).get("title") or "").split())
+        if title:
+            return title[:FEATURE_NAME_LIMIT]
         for line in self.loop_file_repository.read_feature_spec_head(work_dir, slug, SPEC_TITLE_LINES):
             if line.startswith("# "):
                 title = re.sub(r"^(Spec(ification)?\s*[:\-—]\s*)?(%s\s*[:\-—]\s*)?" % re.escape(slug), "", line[2:].strip(), flags=re.I)
@@ -232,7 +237,7 @@ class RoadmapViewService:
         for raw in roadmap_text.splitlines():
             line = loop_state.FEATURE_LINE.match(raw.strip())
             if line and line.group(1) == slug:
-                description = re.sub(r"\b\w+=\S+", "", line.group(2)).strip(" -:;|") or None
+                description = re.sub(r"\b\w+=\S+", "", loop_state.TITLE_FIELD.sub("", line.group(2))).strip(" -:;|") or None
         return {"goal": clip_redacted_text(description, GOAL_LIMIT) if description else None, "size": size, "requirements": None,
                 "source": SOURCE_ROADMAP if (description or size) else SOURCE_NONE}
 

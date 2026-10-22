@@ -1,0 +1,35 @@
+/* Compact top of the panel: thin trail line (planning) and the workspace zone (planning). The alert and new-loop zones are retired (navbar + dialogs).
+   Expanded zones scroll with the page (#app), never inside. Loaded last. Tokens only. */
+.chrome-zones{flex:none;display:block;}
+.chrome-zones[hidden]{display:none;}
+.chrome-bar{display:flex;align-items:center;gap:12px;width:calc(100% - 32px);height:34px;margin:4px 16px;padding:0 12px;box-sizing:border-box;border:1px solid var(--line2);border-radius:8px;background:var(--panel);color:var(--text2);font:500 12px var(--sans);cursor:pointer;text-align:left;overflow:hidden;white-space:nowrap;}
+.chrome-bar:hover{border-color:var(--line4);}
+.chrome-caret{flex:none;color:var(--dim);font:600 11px var(--mono);}
+.chrome-status{flex:none;font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--text);}
+.chrome-awaiting_user,.chrome-error{background:var(--amber-bg);border-color:var(--amber);}
+.chrome-error{background:var(--red-bg);border-color:var(--red);}
+.chrome-awaiting_user .chrome-status{color:var(--amber);}
+.chrome-error .chrome-status{color:var(--red);}
+.chrome-reason{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--text);}
+.chrome-part{flex:none;color:var(--text2);}
+.chrome-part::before{content:"\00b7";margin-right:12px;color:var(--dim);}
+.chrome-hint{margin-left:auto;flex:none;font:400 10px var(--mono);color:var(--dim);}
+.chrome-zones:not(.is-open)>.alert-zone,.chrome-zones:not(.is-open)>.newloop-zone,.chrome-zones:not(.is-open)>.workspace-zone{display:none;}
+.chrome-zones.is-open>.alert-zone{padding-top:2px;}
+
+/* trail: one thin line when compact */
+.trail:has(.tr-line.is-compact){padding:3px 16px;}
+.tr-line.is-compact{flex-wrap:nowrap;min-height:24px;gap:8px;overflow:hidden;}
+.tr-line.is-compact .tr-title,.tr-line.is-compact .tr-next,.tr-line.is-compact .tr-note,.tr-line.is-compact .ck-line{display:none;}
+.tr-line.is-compact .ck{flex:1 1 auto;min-width:0;overflow:hidden;}
+.tr-line.is-compact .ck-list{flex-wrap:nowrap;row-gap:0;gap:3px;}
+.tr-line.is-compact .ck-step{padding:0 6px;font-size:10px;line-height:18px;gap:3px;}
+.tr-line.is-compact .ck-ic{font-size:10px;}
+.tr-line.is-compact .tr-action{margin-left:0;flex:none;flex-wrap:nowrap;gap:6px;}
+.tr-line.is-compact .tr-action .btn{padding:1px 8px;font-size:11px;}
+.tr-line.is-compact .tr-ai-sep{margin-left:6px;padding-left:8px;}
+.tr-line.is-compact .ck-detail{position:absolute;z-index:5;margin-top:26px;padding:4px 8px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);}
+.tr-toggle{flex:none;margin-left:auto;border:1px solid var(--line2);background:transparent;color:var(--dim);border-radius:6px;font:600 10px var(--mono);padding:0 6px;line-height:18px;cursor:pointer;}
+.tr-toggle:hover{color:var(--text);border-color:var(--line4);}
+.tr-line.is-compact .tr-action+.tr-toggle{margin-left:0;}
+.trail{position:relative;}

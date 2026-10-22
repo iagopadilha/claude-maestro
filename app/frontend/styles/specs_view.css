@@ -1,0 +1,48 @@
+/* "Roadmap & specs" (read and validate) and the explained "Files" tab. Only classes sv-* / files-guide-* / files-main live here. */
+.sec-title-link{all:unset;cursor:pointer;font-weight:600;font-size:13px;color:var(--text);border-bottom:1px dashed var(--line4);}
+.sec-title-link:hover,.sec-title-link:focus-visible{color:var(--amber-soft);border-bottom-color:var(--amber);}
+.sv{display:flex;flex-direction:column;gap:8px;min-height:0;min-width:0;}
+.sv-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.sv-hint{margin-left:auto;}
+.sv-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(190px,270px) minmax(0,1fr);grid-template-rows:minmax(0,1fr);gap:10px;}
+.sv-body>.rc{grid-column:1/-1;min-height:0;}
+.sv-side{display:flex;flex-direction:column;gap:6px;min-height:0;overflow:auto;border:1px solid var(--line2);border-radius:8px;background:var(--panel);padding:8px;}
+.sv-side .files-side-h{position:sticky;top:-8px;background:var(--panel);padding:2px 0;}
+.sv-side .frow{min-width:0;}
+.sv-side .frow .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sv-side .frow.sel{box-shadow:inset 2px 0 0 var(--amber);}
+.sv-side .rc-stage .small-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sv-main{min-height:0;min-width:0;overflow:auto;border:1px solid var(--line2);border-radius:8px;background:var(--panel);padding:12px 14px;}
+.sv-detail{display:flex;flex-direction:column;gap:12px;min-width:0;}
+.sv-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.sv-head .spacer{flex:1;}
+.sv-sum{border:1px solid var(--line2);border-radius:8px;background:var(--panel2);padding:10px 12px;display:flex;flex-direction:column;gap:4px;}
+.sv-sum p{margin:0;line-height:1.55;overflow-wrap:anywhere;}
+.sv-sum .chip,.sv-sum code{margin:0 4px 2px 0;display:inline-block;max-width:100%;overflow-wrap:anywhere;}
+.sv-count{display:inline-flex;align-items:center;gap:4px;margin-right:12px;}
+.sv-note{border-left:2px solid var(--blue-line);background:var(--blue-bg);border-radius:0 6px 6px 0;padding:8px 10px;font-size:12px;line-height:1.5;color:var(--text2);margin-bottom:10px;}
+.sv-note b{color:var(--blue);font-weight:600;margin-right:4px;}
+.sv-tabs{display:flex;gap:4px;flex-wrap:wrap;}
+.sv-tab{font:inherit;font-size:12px;color:var(--muted);background:transparent;border:1px solid var(--line3);border-radius:6px;padding:3px 10px;cursor:pointer;}
+.sv-tab:hover{color:var(--text);border-color:var(--line4);}
+.sv-tab[aria-selected="true"]{color:var(--amber-soft);border-color:var(--amber-line);background:var(--amber-bg);}
+.sv-doc{min-width:0;border-top:1px solid var(--line);padding-top:10px;}
+.sv-doc .md-doc{overflow-x:auto;}
+.sv-sec{display:flex;flex-direction:column;gap:6px;}
+.sv-val{display:flex;flex-direction:column;gap:8px;}
+.sv-val-item{border:1px solid var(--line2);border-radius:8px;background:var(--panel2);padding:8px 10px;line-height:1.5;overflow-wrap:anywhere;}
+.sv-val-doubt{font-weight:600;}
+.sv-val-item b{color:var(--muted);font-weight:500;margin-right:4px;}
+.files{grid-template-columns:minmax(200px,300px) minmax(0,1fr);}
+.files-side-actions{display:flex;gap:4px;}
+.files-main{display:flex;flex-direction:column;min-width:0;min-height:0;}
+.files-main>.sv-note{margin:0 0 8px;flex:none;}
+.files-main>.ed{flex:1;min-height:0;}
+.files-guide{display:flex;flex-direction:column;gap:4px;min-height:0;overflow:auto;}
+.files-guide-row{all:unset;box-sizing:border-box;display:flex;flex-direction:column;gap:2px;padding:6px 8px;border:1px solid var(--line2);border-radius:6px;cursor:pointer;min-width:0;}
+.files-guide-row:hover,.files-guide-row:focus-visible{border-color:var(--line4);background:var(--hover-wash2);}
+.files-guide-row.static{cursor:default;}.files-guide-row.static:hover{border-color:var(--line2);background:none;}
+.files-guide-name{font-size:11.5px;color:var(--amber-soft);overflow-wrap:anywhere;}
+.files-guide-what{font-size:11.5px;color:var(--text2);line-height:1.45;}
+.files-guide-out{margin-top:8px;}
+@media (max-width:900px){.sv-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);}.sv-side{max-height:30vh;}}

@@ -14,6 +14,7 @@ import shutil
 from typing import Protocol
 
 from ..config import envload
+from ..domain.roadmap_settings import read_roadmap_base_branch
 from ..domain.project_errors import LOOP_RUNNING_CODE, InvalidRequestError, LoopRunningError, RepoConflictError
 from ..infrastructure.claude_client import redact_secrets
 from ..infrastructure.git_client import DEFAULT_INTEGRATION_BRANCH, INTEGRATION_BRANCH_VARIABLE, OTHER_COMPARISON_BASES
@@ -57,13 +58,28 @@ def read_env_file_value(name):
     return ""
 
 
-def get_integration_branch():
-    """PR target of a delivery: LOOP_PR_BASE / LOOP_INTEGRATION_BRANCH (environment, then the app .env), else the default."""
+def get_environment_integration_branch():
+    """LOOP_PR_BASE / LOOP_INTEGRATION_BRANCH (environment, then the app .env), else the default."""
     for name in INTEGRATION_BRANCH_VARIABLES:
         value = (os.environ.get(name) or "").strip() or read_env_file_value(name)
         if value:
             return value
     return DEFAULT_INTEGRATION_BRANCH
+
+
+def get_integration_branch(roadmap_text=""):
+    """Base/integration branch (where new worktrees start and the PR target): the ROADMAP `**Branch base:**` first, then LOOP_PR_BASE /
+    LOOP_INTEGRATION_BRANCH, then `developer`. The one helper every payload uses (same order as engine/delivery.py)."""
+    return read_roadmap_base_branch(roadmap_text) or get_environment_integration_branch()
+
+
+def get_context_integration_branch(context):
+    """`get_integration_branch` for the ROADMAP of this project's work folder (a missing ROADMAP = the environment, then the default)."""
+    try:
+        with open(os.path.join(context.specs_dir, "project", "ROADMAP.md"), encoding="utf-8", errors="replace") as handle:
+            return get_integration_branch(handle.read())
+    except OSError:
+        return get_integration_branch()
 
 
 def extract_last_json(text):
@@ -244,13 +260,25 @@ class LoopWorktreeService:
         """`POST .../close-loop`: one failing repo never stops the others; the per-repo outcome is in the body."""
         confirm = body.get("confirm_compare_link", False)
         names = body.get("repos")
+        force_remove = body.get("force_remove", False)
+        allow_missing_pr = body.get("allow_missing_pr", False)
+        finished = body.get("finished", False)  # set by wrap-up Finish only (the plain route strips it): the next start begins on a new branch
+        if not isinstance(finished, bool):
+            raise InvalidRequestError("finished must be true or false")
+        if not isinstance(allow_missing_pr, bool):
+            raise InvalidRequestError("allow_missing_pr must be true or false")
         if not isinstance(confirm, bool):
             raise InvalidRequestError("confirm_compare_link must be true or false")
+        if not isinstance(force_remove, bool):
+            raise InvalidRequestError("force_remove must be true or false")
         if names is not None and (not isinstance(names, list) or not all(isinstance(name, str) and name.strip() for name in names)):
             raise InvalidRequestError("repos must be a list of repo names")
         if self.is_loop_running(context):
             raise LoopRunningError("the loop is running: stop it before closing", code=LOOP_RUNNING_CODE)
         arguments = ["--close", "--out", self.get_output_dir()] + (["--confirm-compare-link"] if confirm else [])
+        arguments += ["--allow-missing-pr"] if allow_missing_pr else []
+        arguments += ["--finished"] if finished else []
+        arguments += ["--force-remove"] if force_remove else []  # the engine still backs up first (typed confirmation is the caller's job)
         arguments += ["--repos", ",".join(name.strip() for name in names)] if names else []
         returned = self.run_close_loop_routine(context, arguments)
         repos = returned.get("repos") if isinstance(returned.get("repos"), dict) else {}

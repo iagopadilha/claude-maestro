@@ -423,7 +423,7 @@ body.resizing-y,body.resizing-y *{cursor:row-resize !important;}
 /* ===== unified composer + chat ===== */
 .note{display:none;}
 .composer{border-top:1px solid var(--line);padding:8px 14px 10px;display:flex;flex-direction:column;gap:6px;flex:none;--cpc:var(--amber);--cpb:var(--amber-bg);}
-.composer.m-ask{--cpc:var(--blue);--cpb:var(--blue-bg);}
+
 .composer.m-old{--cpc:var(--line4);--cpb:var(--panel0);}
 .cp-band{display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:6px;background:var(--cpb);border:1px solid var(--cpc);font:500 11px var(--mono);color:var(--cpc);letter-spacing:.03em;}
 .composer.m-old .cp-band{color:var(--text2);border-style:dashed;}
@@ -449,7 +449,7 @@ body.resizing-y,body.resizing-y *{cursor:row-resize !important;}
 .cp-box textarea{flex:1;resize:none;border:0;background:transparent;color:var(--text);font:400 12px var(--sans);line-height:1.45;min-height:34px;}
 .cp-box textarea:focus-visible{outline:none;}
 .composer.m-instruct .cp-box .btn-primary{background:var(--amber);border-color:var(--amber);}
-.composer.m-ask .cp-box .btn-primary,.composer.m-old .cp-box .btn-primary{background:var(--cpc);border-color:var(--cpc);color:var(--bg);}
+.composer.m-old .cp-box .btn-primary{background:var(--cpc);border-color:var(--cpc);color:var(--bg);}
 .cp-hint{font-size:10px;color:var(--dim);line-height:1.4;}
 .cp-status{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 8px;border-radius:6px;font-size:12px;}
 .cp-status[hidden]{display:none;}
@@ -500,11 +500,8 @@ body.resizing-y,body.resizing-y *{cursor:row-resize !important;}
 .newloop-zone .nl-field{position:relative;}
 
 /* ===== Act mode ===== */
-.composer.m-act{--cpc:var(--green);--cpb:var(--green-bg);}
-.composer.m-act .cp-box .btn-primary{background:var(--green);border-color:var(--green);color:var(--green-ink);}
 .cp-act{display:flex;flex-direction:column;gap:6px;max-height:42vh;overflow:auto;}
 .cp-act[hidden]{display:none;}
-.ac-head{font:500 11px var(--mono);color:var(--green);letter-spacing:.03em;}
 .ac-quick{display:flex;flex-direction:column;gap:4px;}
 .ac-act{display:flex;flex-direction:column;gap:2px;}
 .ac-btn{text-align:left;white-space:normal;border-color:var(--green-line);color:var(--text);background:var(--green-bg);}
@@ -595,33 +592,13 @@ body.resizing-y,body.resizing-y *{cursor:row-resize !important;}
 .guard-badge[hidden]{display:none;}
 .guard-badge:hover{border-color:var(--red);}
 .gb-dot{width:7px;height:7px;border-radius:50%;background:var(--red);box-shadow:0 0 0 3px var(--red-glow);}
-.guard-feed{flex:none;border-top:1px solid var(--line);display:flex;flex-direction:column;min-height:0;}
-.guard-feed.has-blocks{border-top-color:var(--red-line);}
-.gf-head{display:flex;align-items:center;gap:8px;width:100%;padding:7px 14px;background:transparent;border:0;color:var(--text2);font:500 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;cursor:pointer;text-align:left;}
-.gf-head:hover{background:var(--panel);}
-.guard-feed.has-blocks .gf-title{color:var(--red);}
-.gf-chev{width:10px;color:var(--dim);}
-.gf-count{margin-left:auto;font-size:10px;text-transform:none;letter-spacing:0;color:var(--dim);}
-.gf-count.on{color:var(--red);border:1px solid var(--red-line);background:var(--red-bg);border-radius:4px;padding:1px 6px;}
-.gf-body{max-height:190px;overflow:auto;padding:0 14px 8px;display:flex;flex-direction:column;gap:6px;}
-.gf-rules{display:flex;flex-wrap:wrap;gap:4px;}
-.gf-rule-chip{font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid var(--red-line);color:var(--red-text);background:var(--red-bg);}
-.gf-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;}
-.gf-item{border:1px solid var(--red-line);border-left:3px solid var(--red);background:var(--red-bg);border-radius:6px;padding:5px 8px;display:flex;flex-direction:column;gap:2px;}
-.gf-top{display:flex;align-items:center;gap:6px;font-size:10px;}
-.gf-time{color:var(--muted);}
-.gf-profile{color:var(--text2);background:var(--line);border-radius:3px;padding:0 4px;}
-.gf-rule{color:var(--red);font-weight:500;}
-.gf-exit{margin-left:auto;color:var(--red-ink);background:var(--red);border-radius:3px;padding:0 4px;font-weight:600;}
-.gf-detail{font-size:11px;line-height:1.35;color:var(--red-soft);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;}
-
 /* ===== planning mode (state.planning_required): checklist | chat | documents ===== */
 #app[data-mode="planning"]{min-width:0;}
 .planning-zone{flex:1 1 0;min-height:0;display:flex;flex-direction:column;}
 .plan{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px;padding:8px 16px 12px;}
 .plan-intro{flex:none;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:7px 12px;border-radius:8px;border:1px solid var(--violet-line);background:var(--violet-bg);font-size:12px;line-height:1.45;color:var(--text2);}
 .plan-kick{flex:none;font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--amber);}
-.plan-grid{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1.5fr) minmax(300px,1fr);gap:12px;}
+.plan-grid{flex:1;min-height:0;display:grid;grid-template-columns:minmax(300px,1fr) minmax(0,1.5fr);gap:12px;}
 .plan-wizard{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px 0;}
 .plan-step{width:min(520px,100%);display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:22px 24px;border:1px solid var(--line2);border-radius:10px;background:var(--panel);}
 .plan-step-n{font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--amber);}
@@ -867,11 +844,9 @@ html:has(#app),body:has(#app){height:100%;overflow:hidden;}
 #app:not([data-mode="planning"]) .workspace-zone:has(.ws-body){min-height:min(240px,42vh);}
 #app[data-mode="planning"] .workspace-zone{max-height:none;}
 #app[data-mode="planning"] .ws-body{max-height:none;overflow:visible;}
-.planning-zone{flex:none;overflow:visible;}
-.plan{flex:none;min-height:auto;overflow:visible;}
-/* one fixed row: chat and side panel always have the same height, the content scrolls inside each */
-.plan-grid{flex:none;height:max(460px,calc(100vh - 150px));min-height:460px;grid-template-rows:minmax(0,1fr);}
-@media (max-width:1000px){.plan-grid{height:auto;min-height:0;grid-template-rows:none;}}
+/* planning fit: see planning_layout.css (the grid fills what is left of the window; each column scrolls inside itself) */
+.plan-grid{grid-template-rows:minmax(0,1fr);}
+@media (max-width:1000px){.plan-grid{min-height:0;grid-template-rows:none;}}
 
 /* test environment tab (short version) */
 .plan-env .md-doc h1{display:none;}
@@ -900,3 +875,56 @@ html:has(#app),body:has(#app){height:100%;overflow:hidden;}
 /* planning: the open Workspace band keeps its full height (never shrinks over the planning area); #app scrolls instead */
 #app[data-mode="planning"] .workspace-zone{flex:none;}
 #app[data-mode="planning"] .workspace-zone .ws{min-height:auto;}
+
+/* ===== v5: the panes keep a usable height; stacked top zones scroll away instead of squeezing them ===== */
+#app{overflow-x:hidden;overflow-y:auto;}
+#app>.main{flex:1 0 auto;min-height:max(460px,calc(100vh - 150px));}
+
+/* inspector: the log keeps room; the composer scrolls inside itself instead of taking the column */
+.right>.insp-body{flex:1 1 0;min-height:150px;}
+.right>.composer{flex:0 1 auto;max-height:48%;overflow:auto;}
+.cp-act{max-height:none;overflow:visible;}
+.ac-quick{flex-direction:row;flex-wrap:wrap;gap:6px;}
+.ac-quick .ac-btn{padding:3px 9px;}
+.ac-off-list{font-size:11px;color:var(--muted);}
+.ac-off-list summary{cursor:pointer;}
+.ac-off-list .ac-why{padding:2px 0 0 8px;}
+.ac-quote{max-height:84px;overflow:auto;}
+
+/* top zones never scroll inside themselves (small nested scrollbars were unusable): the page scrolls instead */
+.band-detail,.newloop-zone .card,.alert-zone .band-detail{max-height:none;overflow:visible;}
+#app:not([data-mode="planning"]) .workspace-zone{max-height:none;}
+.workspace-zone .ws-body{max-height:none;overflow:visible;}
+
+/* Turns footer: always pinned to the bottom of the window, even while the page scrolls */
+#app>.sep-h,#app>.footer{position:sticky;z-index:20;background:var(--bg);}
+#app>.footer{bottom:0;}
+#app>.sep-h{bottom:var(--foot-h);}
+
+/* errors */
+.err-item{border:1px solid var(--line2);border-left:3px solid var(--line2);border-radius:8px;background:var(--panel);overflow:hidden;}
+.err-head{display:flex;align-items:center;gap:10px;width:100%;padding:6px 10px;background:none;border:0;color:var(--text);cursor:pointer;font:500 12px var(--sans);text-align:left;}
+.err-head:hover{background:var(--panel2);}
+.err-kind{font:600 10px var(--mono);text-transform:uppercase;flex:none;}
+.err-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.err-body{border-top:1px solid var(--line);padding:8px 12px;display:flex;flex-direction:column;gap:8px;}
+.err-hint{font-size:12px;color:var(--text2);line-height:1.5;}
+.err-detail{margin:0;padding:8px;border-radius:6px;background:var(--panel2);font:400 11px var(--mono);color:var(--text2);white-space:pre-wrap;word-break:break-word;max-height:200px;overflow:auto;}
+.err-actions{display:flex;gap:8px;flex-wrap:wrap;}
+
+/* feature history (inspector) */
+.fh-turn{border:1px solid var(--line2);border-radius:8px;background:var(--panel);margin-bottom:8px;overflow:hidden;}
+.fh-head{padding:4px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--line);}
+.fh-call{display:flex;flex-direction:column;gap:2px;width:100%;padding:6px 10px;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--text);text-align:left;cursor:pointer;font-family:var(--sans);}
+.fh-call:last-child{border-bottom:0;}
+.fh-call:hover{background:var(--panel2);}
+.fh-top{display:flex;align-items:center;gap:8px;min-width:0;}
+.fh-said{font-size:11px;color:var(--text2);line-height:1.4;white-space:pre-wrap;}
+
+/* center tabs: Live | Project */
+.seg-group-label{align-self:center;padding:0 6px 0 8px;font:600 9px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);}
+.seg-divider{align-self:stretch;width:1px;margin:4px 6px;background:var(--line2);}
+
+/* Workspace bar: one chip per repository (edit / reference) and the rejected suggestions of the planning chat */
+.ws-roles{display:flex;flex-wrap:wrap;gap:4px 6px;padding:0 10px 4px;}
+.ws-roles .ws-chip{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}

@@ -14,7 +14,7 @@ export const STATUS_BG = {
 };
 const color = (s) => STATUS_COLOR[s] || '#7D838C';
 const G = { NW: 184, NH: 66, GX: 46, GY: 14, STAGE_GAP: 30, PAD: 18, HEAD: 34 };
-const MIN_SCALE = 0.2, MAX_SCALE = 2.5;
+const MIN_SCALE = 0.2, MAX_SCALE = 2.5, PORT_STEP = 9;
 
 function clip(t, n) { t = String(t == null ? '' : t); return t.length > n ? t.slice(0, n - 1) + '…' : t; }
 function depsOf(f) {
@@ -35,8 +35,11 @@ export function computeGraphLayout(features, stages) {
   const groups = new Map();
   for (const f of fs) { const n = typeof f.stage === 'number' ? f.stage : null; if (!groups.has(n)) groups.set(n, []); groups.get(n).push(f); }
   const order = [...groups.keys()].sort((a, b) => (a == null) - (b == null) || a - b);
-  const edges = [];
-  for (const f of fs) for (const d of depsOf(f)) if (byId[d] && d !== f.id) edges.push({ from: d, to: f.id });
+  const edges = [], seenEdges = new Set();
+  for (const f of fs) for (const d of depsOf(f)) {
+    const key = d + '>' + f.id;
+    if (byId[d] && d !== f.id && !seenEdges.has(key)) { seenEdges.add(key); edges.push({ from: d, to: f.id }); } // edge A>B only when B depends on A; no duplicates
+  }
   const parents = {};
   for (const a of edges) (parents[a.to] = parents[a.to] || []).push(a.from);
   const nodes = [], headers = [], rowOf = {};
@@ -97,11 +100,19 @@ function graphModel(fs, stages) {
   const parents = {}, children = {};
   for (const a of L.edges) { (parents[a.to] = parents[a.to] || []).push(a.from); (children[a.from] = children[a.from] || []).push(a.to); }
   const pos = Object.fromEntries(L.nodes.map((n) => [n.f.id, n]));
+  // each edge gets its own attachment point on the node borders, so edges that pass behind a box stay tellable apart
+  const outgoing = {}, incoming = {};
+  for (const a of L.edges) { (outgoing[a.from] = outgoing[a.from] || []).push(a); (incoming[a.to] = incoming[a.to] || []).push(a); }
+  const portOffset = (list, edge, otherKey) => {
+    const sorted = [...list].sort((p, q) => pos[p[otherKey]].y - pos[q[otherKey]].y);
+    return (sorted.indexOf(edge) - (sorted.length - 1) / 2) * PORT_STEP;
+  };
   const edges = L.edges.map((a) => {
     const s = byId[a.from].status;
     const kind = s === 'verified' ? 'green' : s === 'blocked' ? 'red' : 'amber';
     const p1 = pos[a.from], p2 = pos[a.to];
-    return { ...a, kind, d: curve(p1.x + G.NW, p1.y + G.NH / 2, p2.x - 4, p2.y + G.NH / 2) };
+    const y1 = p1.y + G.NH / 2 + portOffset(outgoing[a.from], a, 'to'), y2 = p2.y + G.NH / 2 + portOffset(incoming[a.to], a, 'from');
+    return { ...a, kind, x1: p1.x + G.NW, y1, x2: p2.x, y2, d: curve(p1.x + G.NW, y1, p2.x - 4, y2) };
   });
   const nodes = L.nodes.map((n) => {
     const f = n.f, c = color(f.status);
@@ -110,7 +121,7 @@ function graphModel(fs, stages) {
     const line2 = f.status === 'blocked' ? 'blocked' : waiting.length ? 'waiting on: ' + waiting.join(', ') : f.status === 'verified' ? 'verified' : 'can run';
     const label = `${f.name || f.id}, ${f.status || 'no status'}, stage ${f.stage == null ? 'none' : f.stage}` +
       (deps.length ? `, depends on ${deps.join(', ')}` : ', no dependencies') + (unblocks.length ? `, unblocks ${unblocks.join(', ')}` : '');
-    const tip = `${f.id} · ${f.status || '—'}\n${line2}${unblocks.length ? '\nunblocks: ' + unblocks.join(', ') : ''}${dirs.length ? '\nimports: ' + dirs.join(', ') : ''}`;
+    const tip = `${f.name && f.name !== f.id ? f.name + '\n' : ''}${f.id} · ${f.status || '—'}\n${line2}${unblocks.length ? '\nunblocks: ' + unblocks.join(', ') : ''}${dirs.length ? '\nimports: ' + dirs.join(', ') : ''}`;
     return { id: f.id, f, x: n.x, y: n.y, c, waiting, dirs, line2, label, tip };
   });
   return { w: L.w, h: L.h, headers: L.headers, edges, nodes, byId, parents, children };
@@ -226,7 +237,8 @@ export function GraphContent({ host, view, ctl, features, stages, selected = nul
       const hot = ok && (((above.has(a.from) || a.from === focus) && (above.has(a.to) || a.to === focus)) || ((below.has(a.to) || a.to === focus) && (below.has(a.from) || a.from === focus)));
       const dim = (ok && !hot) || (!!status && !(statusOf(a.from) === status || statusOf(a.to) === status));
       return html`<path key=${a.from + '>' + a.to} class=${'gf-edge ' + a.kind + (hot ? ' hot' : '') + (dim ? ' dim' : '')} d=${a.d}
-        marker-end=${`url(#gf-arrow-${a.kind})`} stroke-dasharray=${a.kind !== 'green' ? '5 4' : null} />`;
+        marker-end=${`url(#gf-arrow-${a.kind})`} stroke-dasharray=${a.kind !== 'green' ? '5 4' : null}><title>${`${a.from} → ${a.to}: ${a.to} depends on ${a.from}`}</title></path>
+        <circle key=${a.from + '>' + a.to + ':start'} class=${'gf-port ' + a.kind + (dim ? ' dim' : '')} cx=${a.x1} cy=${a.y1} r="2.5" />`;
     });
     nodes = M.nodes.map((n) => {
       const dim = !onPath(n.id) || (!!status && n.f.status !== status);

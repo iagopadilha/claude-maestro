@@ -1,55 +1,63 @@
-/* "Start a loop" card: one slim bar when collapsed, essentials when open. Loaded after panel.css, so the
-   selectors below carry .nl-card to win over the older .newloop-zone compact rules. Tokens only. */
-.newloop-zone .nl-card{padding:0;gap:0;max-height:min(46vh,420px);overflow:auto;border:1px solid var(--amber-line);border-radius:8px;}
-.nl-card .nl-bar{display:flex;align-items:center;gap:12px;padding:6px 12px;min-height:40px;flex-wrap:wrap;}
-.nl-card .nl-toggle{display:inline-flex;align-items:center;gap:8px;background:none;border:0;padding:4px 6px;margin-left:-6px;border-radius:6px;color:var(--text);font:600 14px var(--sans, inherit);cursor:pointer;}
-.nl-card .nl-toggle:hover{background:var(--shadow);}
-.nl-card .nl-toggle:focus-visible,.nl-card .nl-link:focus-visible,.nl-card .nl-field input:focus-visible,.nl-card .nl-adv summary:focus-visible{outline:2px solid var(--amber);outline-offset:2px;}
-.nl-card .nl-caret{width:12px;color:var(--muted);}
-.nl-card .nl-sum{flex:1 1 160px;min-width:0;font-size:12px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.nl-card .nl-chip-ok{background:var(--green);color:var(--green-ink);}
-.nl-card .nl-chip-bad{background:var(--red);color:var(--red-ink);}
-.nl-card .nl-bar-actions{margin-left:auto;display:flex;gap:8px;}
-.nl-card .nl-body{display:flex;flex-direction:column;gap:10px;padding:10px 12px 12px;border-top:1px solid var(--line2);}
-.nl-card .nl-body[hidden]{display:none;}
-.nl-card .nl-result{padding:0 12px 10px;}
-.nl-card .nl-result:empty{display:none;padding:0;}
-.nl-card .nl-body+.nl-result{padding-top:0;}
-.nl-card:not(.is-open) .nl-result{padding-top:8px;border-top:1px solid var(--line2);}
-.nl-card .nl-result .nl-box{font-size:12px;}
-.nl-card .nl-result .cmd{max-height:96px;overflow:auto;}
-/* fields: hint always BELOW the control, in flow, never over the value */
-.nl-card .nl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 20px;align-items:start;}
-.nl-card .nl-field{position:relative;display:flex;flex-direction:column;justify-content:flex-start;gap:4px;min-width:0;}
-.nl-card .nl-label{font-size:12px;font-weight:600;color:var(--text2);line-height:1.3;}
-.nl-card .nl-field input[type=number],.nl-card .nl-field input[type=text]{box-sizing:border-box;width:100%;height:32px;padding:0 10px;margin:0;border:1px solid var(--line3);border-radius:8px;background:var(--bg);color:var(--text);font:400 13px var(--mono);line-height:30px;overflow:hidden;text-overflow:ellipsis;}
-.nl-card .nl-field input[type=number]{-moz-appearance:textfield;appearance:textfield;}
-.nl-card .nl-field input[type=number]::-webkit-outer-spin-button,.nl-card .nl-field input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
-.nl-card .nl-field input::placeholder{color:var(--muted);}
-.nl-card .nl-field input:focus{border-color:var(--amber);}
-.nl-card .nl-field input[aria-invalid=true],.nl-card .nl-field:has(.nl-err:not(:empty)) input{border-color:var(--red);}
-.nl-card .nl-check{min-height:32px;padding:0 2px;line-height:1.3;}
-.nl-card .nl-hint,.nl-card .nl-field:focus-within .nl-hint{display:block;position:static;margin:0;font-size:11px;line-height:1.4;color:var(--muted);}
-.nl-card .nl-check+.nl-hint{padding-left:26px;margin-top:-2px;}
-.nl-card .nl-err{font-size:11px;color:var(--red);}
-.nl-card .nl-adv{padding:6px 12px;}
-.nl-card .nl-adv[open]{padding-bottom:12px;}
-.nl-card .nl-adv[open] summary{margin-bottom:10px;}
-.nl-card .nl-appr:empty{display:none;}
-/* the one amber note */
-.nl-card .nl-note{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;border:1px solid var(--amber-line);border-radius:8px;background:var(--amber-bg);color:var(--amber-soft);font-size:12px;line-height:1.4;}
-.nl-card .nl-link{background:none;border:0;padding:2px 4px;margin:0;color:inherit;font:inherit;font-weight:600;text-decoration:underline;cursor:pointer;border-radius:4px;}
-.nl-card .nl-details{font-size:12px;line-height:1.5;color:var(--text2);padding:0 4px;}
-.nl-card .nl-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
-/* trail: AI roadmap stays visually apart from the start action */
+/* Start dialog (start_loop_dialog.js, classes sl-) and the Plan & files dialog (plan_files_dialog.js, classes pf-). Tokens of base.css only.
+   The generic nl-box / nl-msg / nl-verdict / cmd-row rules live in panel.css and are reused. */
+
+/* ---- Start dialog ---- */
+.sl-dlg .dlg-body{gap:14px;}
+.sl{display:flex;flex-direction:column;gap:14px;min-width:0;}
+.sl-sec{display:flex;flex-direction:column;gap:8px;min-width:0;}
+.sl-h{margin:0;font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);}
+.sl-kv{display:grid;grid-template-columns:minmax(150px,max-content) 1fr;gap:4px 18px;margin:0;font-size:12px;}
+.sl-kv dt{color:var(--muted);}
+.sl-kv dd{margin:0;color:var(--text);min-width:0;overflow-wrap:anywhere;}
+.sl-note{color:var(--muted);font-size:11px;}
+.sl-bad{color:var(--red-text);}
+.sl-muted{font-size:12px;color:var(--muted);line-height:1.5;}
+.sl-models{font:500 12px var(--mono);color:var(--text2);padding:6px 10px;border:1px solid var(--line2);border-radius:8px;background:var(--panel0);}
+.sl-choice{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border:1px solid var(--line2);border-radius:8px;background:var(--panel0);cursor:pointer;line-height:1.4;}
+.sl-choice input{width:16px;height:16px;margin-top:2px;accent-color:var(--amber);flex:none;}
+.sl-choice b{display:block;font-size:12px;color:var(--text);}
+.sl-explain{display:block;margin-top:2px;font-size:11px;color:var(--muted);line-height:1.5;}
+.sl-repos{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;}
+.sl-repo{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;}
+.sl-repo-name{font-weight:600;color:var(--text);}
+.sl-status{display:flex;flex-direction:column;gap:10px;}
+.sl-status:empty{display:none;}
+.sl-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+
+/* ---- Plan & files dialog ---- */
+.pf{display:flex;height:100%;min-height:0;gap:0;}
+.pf-side{width:340px;flex:none;min-height:0;display:flex;flex-direction:column;gap:6px;padding-right:12px;border-right:1px solid var(--line);overflow:auto;}
+.pf-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:10px;padding-left:16px;min-height:0;}
+.pf-doc{flex:1;min-height:0;overflow:auto;}
+.pf-note{flex:none;border-top:1px solid var(--line);padding-top:8px;font-size:12px;color:var(--muted);line-height:1.5;}
+.pf-status{font-size:11px;color:var(--muted);min-height:16px;}
+.pf-status.is-bad{color:var(--red-text);}
+.pf-empty{color:var(--muted);padding:8px 2px;font-size:12px;line-height:1.5;}
+.pf-sec{margin:8px 0 2px;font:600 10px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);}
+.pf-stage{display:flex;flex-direction:column;gap:2px;}
+.pf-stage-h,.pf-feat-h,.pf-file{display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:none;border:0;border-radius:6px;color:var(--text);font:inherit;padding:4px 6px;cursor:pointer;min-width:0;}
+.pf-stage-h{font-weight:600;font-size:12px;}
+.pf-stage-h:hover,.pf-feat-h:hover,.pf-file:hover{background:var(--hover-wash2);}
+.pf-file.is-sel{background:var(--amber-bg);color:var(--amber-soft);}
+.pf-caret{width:12px;flex:none;color:var(--muted);}
+.pf-stage-n{margin-left:auto;font:400 10px var(--mono);color:var(--muted);white-space:nowrap;}
+.pf-feats{display:flex;flex-direction:column;gap:1px;padding-left:14px;}
+.pf-feat-h{flex-wrap:wrap;font-size:12px;}
+.pf-feat-title{font-weight:500;min-width:0;overflow-wrap:anywhere;}
+.pf-slug{font:400 10px var(--mono);color:var(--muted);}
+.pf-feat-status{margin-left:auto;font-size:10px;color:var(--text2);border:1px solid var(--line3);border-radius:999px;padding:0 7px;white-space:nowrap;}
+.pf-files{display:flex;flex-direction:column;gap:1px;padding-left:18px;}
+.pf-file{font-size:12px;flex-wrap:wrap;color:var(--text2);}
+.pf-file-label{font-weight:500;}
+.pf-file-name{font:400 10px var(--mono);color:var(--muted);}
+.pf-group{display:flex;flex-direction:column;gap:1px;}
+
+/* ---- Plan & files tab (GLOBAL column) ---- */
+.pf-sum{display:flex;flex-direction:column;gap:8px;margin:10px 0;}
+.pf-sum-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--text2);}
+.pf-sum-link{background:none;border:0;padding:0;color:var(--amber);font:inherit;font-weight:600;cursor:pointer;text-decoration:underline;}
+.pf-sum-stage{display:flex;justify-content:space-between;gap:8px;font-size:12px;}
+.pf-sum-stage .pf-stage-n{white-space:normal;text-align:right;}
+
+/* ---- trail: AI roadmap stays visually apart from the start action ---- */
 .tr-action .tr-ai-sep{margin-left:14px;padding-left:14px;border-left:1px solid var(--line3);border-radius:0 6px 6px 0;}
-.nl-card .nl-details{display:flex;flex-direction:column;gap:8px;}
-.nl-card .nl-details .nl-box{font-size:12px;}
-.nl-card .nl-result{max-height:30vh;overflow:auto;}
-/* dispatch: Auto | Custom segmented control */
-.nl-card .nl-seg{display:inline-flex;align-self:flex-start;border:1px solid var(--line3);border-radius:8px;overflow:hidden;}
-.nl-card .nl-seg-btn{background:var(--bg);border:0;padding:0 14px;height:32px;color:var(--text2);font:600 12px var(--sans, inherit);cursor:pointer;}
-.nl-card .nl-seg-btn+.nl-seg-btn{border-left:1px solid var(--line3);}
-.nl-card .nl-seg-btn.is-on{background:var(--amber-bg);color:var(--amber-soft);}
-.nl-card .nl-seg-btn:focus-visible{outline:2px solid var(--amber);outline-offset:-2px;}
-.nl-card .nl-custom{margin-top:4px;}

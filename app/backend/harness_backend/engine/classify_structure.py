@@ -20,7 +20,9 @@ import sys
 
 BEGIN = "<!-- CONFORMANCE:BEGIN -->"
 END = "<!-- CONFORMANCE:END -->"
-SKIP = {"node_modules", "bin", "obj", ".git", "dist", "build", ".next", ".specs", ".vs"}
+# The one shared list of folder names no scan descends into (classify_structure, scale, subprojects and code_inventory import it).
+SKIP_DIR_NAMES = frozenset({"node_modules", "bin", "obj", ".git", "dist", "build", ".next", ".specs", ".vs", "coverage", "__pycache__"})
+SKIP = SKIP_DIR_NAMES
 
 
 def subdirs(path):

@@ -1,5 +1,5 @@
 /* Panel of ONE project (/p/<id>/): port of the loop monitor with URLs relative to the project (/p/<id>/api/...),
-   plus the "Where this project stands" trail, the .specs explorer, the graph and the whiteboard.
+   with a GLOBAL zone (trail, roadmap, dependencies, errors, .specs files) and a LOOP zone (turns, pipeline, inspector).
    The whole page is one Preact tree (<Panel>, panel/app.js): handlers mutate ctx/ui and call renderAll(). */
 import { $, bindTabKeys } from '../util/dom.js';
 import { html, render } from '../util/preact.js';
@@ -10,20 +10,30 @@ import { ctx, ui, askKey, agentById } from './panel/context.js';
 import { Panel } from './panel/app.js';
 import { updateTitle, cancelShutdown } from './panel/header.js';
 import { nlOnLoopRunning } from './panel/new_loop.js';
-import { checkRemoteBoard } from './panel/center.js';
 import { fetchAgentLog } from './panel/inspector.js';
-import { loadHist } from './panel/history.js';
+import { loadErrors } from './panel/errors.js';
 import { initLayout } from './panel/layout.js';
-import { dgScale } from './panel/turn_diagram.js';
+import { maybeReloadPipeline } from './panel/pipeline_model.js';
 import { reloadProgress, maybeReloadProgress } from './panel/progress_trail.js';
 
 let polling = null, pollCount = 0, prevStatus = null, root = null, queued = false;
+const extraRenderers = new Set();
+
+/** Registers a function renderAll() calls after the panel is drawn (a big dialog is a second Preact root that must follow the
+    shared stores). Returns the function that unregisters it. */
+export function registerRenderer(renderer) {
+  extraRenderers.add(renderer);
+  return () => extraRenderers.delete(renderer);
+}
 
 /** Renders the whole panel (Preact only touches what changed). */
 export function renderAll() {
   if (!root) return;
   render(html`<${Panel} />`, root);
   updateTitle();
+  for (const renderer of [...extraRenderers]) {
+    try { renderer(); } catch (_) { extraRenderers.delete(renderer); }
+  }
 }
 
 /** renderAll() after the current task (coalesced): for callers that may run inside a component effect. */
@@ -50,13 +60,13 @@ function applyState(s) {
   if (prev && prev !== cur && cur === 'awaiting_user') toast('The loop needs an answer from you.', 'ok');
   if (prev && prev !== cur) reloadProgress();
   prevStatus = cur;
-  if ((ui.view === 'hist' || ui.pastN != null) && ui.hist.key !== String(s.meta ? s.meta.turns : null)) loadHist();
+  loadErrors(); // cheap: re-reads only when the turn count, the status or the guard total changed
+  maybeReloadPipeline(s); // re-reads GET pipeline when the turns, the status or the turn changed (and every ~10 s while running)
   renderAll();
   if (ui.sel && ui.sel.kind === 'agent' && !ui.past) {
     const a = agentById(ui.sel.id);
     if (a && a.state === 'running' && pollCount % 3 === 0) fetchAgentLog(a.id);
   }
-  if (pollCount % 3 === 0) checkRemoteBoard();
   maybeReloadProgress();
   pollCount += 1;
 }
@@ -73,10 +83,9 @@ export function startPanel(rootEl, projectId) {
   ctx.api = createProjectClient(projectId);
   renderAll();
   // one-time setup on the DOM of the first render (the Panel never re-creates these elements)
-  for (const id of ['center-tabs', 'insp-tabs', 'cp-seg']) bindTabKeys($(id));
+  const intentTabs = $('cp-seg'); // the tab strips of the zones are components that bind their own keys
+  if (intentTabs) bindTabKeys(intentTabs);
   initLayout();
-  const cwrap = document.querySelector('.canvas-wrap');
-  if (cwrap && typeof ResizeObserver === 'function') new ResizeObserver(() => dgScale()).observe(cwrap);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ui.confirmShutdown && !document.querySelector('dialog[open]')) cancelShutdown(); });
 
   polling = createPolling({

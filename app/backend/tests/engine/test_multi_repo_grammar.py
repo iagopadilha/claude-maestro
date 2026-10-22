@@ -105,7 +105,9 @@ class TestProjectRepos(unittest.TestCase):
 
     def test_unchecked_broken_or_empty_files_are_single_repo(self):
         other = os.path.join(self.root, "api")
-        for data in ({"multi": False, "repos": [{"name": "api", "path": other}]}, "{not json", {"multi": True, "repos": []}, {"multi": True}, [1]):
+        self.write_file({"multi": False, "repos": [{"name": "api", "path": other}]})  # a listed repo is listed whatever `multi` says
+        self.assertEqual([repo.name for repo in project_repos.load_repos(self.primary)], ["main-app", "api"])
+        for data in ("{not json", {"multi": True, "repos": []}, {"multi": True}, [1]):
             with self.subTest(data=data):
                 self.write_file(data)
                 self.assertEqual([repo.name for repo in project_repos.load_repos(self.primary)], ["main-app"])
@@ -136,7 +138,7 @@ class TestProjectRepos(unittest.TestCase):
         project_repos.save_repos(self.primary, True, project_repos.single_repo(self.primary) + [api])
         raw = project_repos.read_repos_file(self.primary)
         self.assertTrue(raw["multi"])
-        self.assertEqual(raw["repos"][0], {"name": "main-app", "path": self.primary, "primary": True})
+        self.assertEqual(raw["repos"][0], {"name": "main-app", "path": self.primary, "primary": True, "role": "edit"})
         loaded = project_repos.load_repos(self.primary)
         self.assertEqual((loaded[1].copy, loaded[1].setup), ([".env"], "make"))
 

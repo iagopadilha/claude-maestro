@@ -183,9 +183,9 @@ def spec_text(root, slug):
     """[(file, line, text)] of the feature's specs; only spec/design/tasks."""
     lines = []
     for name in ("spec.md", "design.md", "tasks.md"):
-        path = os.path.join(root, ".specs", "features", slug, name)
+        path = os.path.join(loop_state.feature_dir(root, slug), name)
         for number, line in enumerate(read(path).splitlines(), 1):
-            lines.append((".specs/features/%s/%s" % (slug, name), number, line))
+            lines.append((".specs/features/%s/%s" % (loop_state.feature_folder_name(slug), name), number, line))
     return lines
 
 

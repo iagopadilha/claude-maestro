@@ -1,21 +1,18 @@
-"""Per-project access choices of the Test environment tab: `<project>/.specs/project/ACCESS.json`.
+"""Access of a project is COMPUTED now (see `mcp_access` for the MCP servers and `credential_check` for the `.env` layers): there is
+no per-project toggle any more. `<project>/.specs/project/ACCESS.json` (`{"grafana_read": ..., "shared_fallback": ...}`) is a legacy
+file: its keys are ignored and `migrate_access_file` drops them (an existing `false` is migrated to the new default: always on).
 
-    {"grafana_read": false, "shared_fallback": false}
-
-- `grafana_read`: the planning AI and the loop's spec agents may look up sample data in Grafana/Loki (read only tools).
-- `shared_fallback`: the project accepts the user's SHARED test account (plugin `shared/.env` and the user-level
-  `~/.claude/skills/_shared/.env`) as a fallback for names the project does not define.
-
-Both default to false. Reading is tolerant (missing, broken or odd-typed file = defaults); writing is atomic. Stdlib only.
+`read_access` stays only for the callers that still index the old keys: it returns the effective values, always True (Grafana read and
+the shared `.env` layers are on by default), whatever the file says. Stdlib only.
 """
 import json
 import os
-import tempfile
 
 ACCESS_FILE_PARTS = (".specs", "project", "ACCESS.json")
 GRAFANA_READ_KEY = "grafana_read"
 SHARED_FALLBACK_KEY = "shared_fallback"
-ACCESS_KEYS = (GRAFANA_READ_KEY, SHARED_FALLBACK_KEY)
+LEGACY_KEYS = (GRAFANA_READ_KEY, SHARED_FALLBACK_KEY)
+ACCESS_KEYS = LEGACY_KEYS
 
 
 def access_file_path(root):
@@ -23,39 +20,35 @@ def access_file_path(root):
 
 
 def default_access():
-    return {key: False for key in ACCESS_KEYS}
+    return {key: True for key in ACCESS_KEYS}
 
 
 def read_access(root):
-    """{"grafana_read": bool, "shared_fallback": bool}; only a JSON `true` turns a key on."""
-    access = default_access()
+    """Effective access: every key True (the file is ignored). Kept so old callers keep working."""
+    return default_access()
+
+
+def migrate_access_file(root):
+    """Drops the legacy keys from `ACCESS.json`; the file is removed when nothing else is left. Returns True when it changed anything.
+    Tolerant: a missing, broken or odd file is left alone (it is ignored anyway)."""
+    path = access_file_path(root)
     try:
-        with open(access_file_path(root), encoding="utf-8-sig") as handle:
+        with open(path, encoding="utf-8-sig") as handle:
             content = json.load(handle)
     except (OSError, ValueError):
-        return access
-    if isinstance(content, dict):
-        for key in ACCESS_KEYS:
-            access[key] = content.get(key) is True
-    return access
-
-
-def write_access(root, access):
-    """Atomic write of both keys (anything else is dropped). Returns what was written."""
-    clean = {key: access.get(key) is True for key in ACCESS_KEYS}
-    path = access_file_path(root)
-    folder = os.path.dirname(path)
-    os.makedirs(folder, exist_ok=True)
-    handle, temporary = tempfile.mkstemp(prefix=".ACCESS.", suffix=".tmp", dir=folder)
+        return False
+    if not isinstance(content, dict) or not any(key in content for key in LEGACY_KEYS):
+        return False
+    remaining = {key: value for key, value in content.items() if key not in LEGACY_KEYS}
     try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(clean, stream, indent=2)
-            stream.write("\n")
-        os.replace(temporary, path)
-    except BaseException:
-        try:
-            os.remove(temporary)
-        except OSError:
-            pass
-        raise
-    return clean
+        if remaining:
+            temporary = path + ".tmp"
+            with open(temporary, "w", encoding="utf-8", newline="\n") as stream:
+                json.dump(remaining, stream, indent=2)
+                stream.write("\n")
+            os.replace(temporary, path)
+        else:
+            os.remove(path)
+    except OSError:
+        return False
+    return True

@@ -51,7 +51,7 @@ INSTALL = re.compile(
 # credentials: .secrets/, the plugin's shared .env, a project's .env.test (test VALUES; TEST-ENVIRONMENT.md only holds names), the app's data folder (.env, and app.json with the panel token), SSH keys.
 # `[\\/]+` because a Read/Glob/Grep input is checked as JSON text, where a Windows backslash comes doubled.
 SECRET_HINT = re.compile(
-    r"\.secrets[\\/]|[\\/]shared[\\/]+\.env(?!\.example)|\.env\.test(?!\.example)|\.loop-harness[\\/]+(?:\.env(?!\.example)|app\.json)|\bid_(rsa|ed25519)\b", re.I
+    r"\.secrets[\\/]|[\\/]_?shared[\\/]+\.env(?!\.example)|\.env\.test(?!\.example)|\.loop-harness[\\/]+(?:\.env(?!\.example)|app\.json)|\bid_(rsa|ed25519)\b", re.I
 )
 # state only the orchestrator writes: the project files it owns and the WHOLE loop folder (.specs/project/loop/).
 # The flat names after `loop` are the old plugin layout (read until migrated). PROJECT.md and TEST-ENVIRONMENT.md stay editable.
@@ -107,7 +107,7 @@ def integration_branch():
 # ---- push: text of the whole command (catches `python -c "...git push..."`, `$(git push)`, quotes), besides the segment
 PROTECTED_NAMES = {"developer", "develop", "main", "master", "release", "production", "dev", integration_branch()}
 _PROT = "|".join(re.escape(name) for name in sorted(PROTECTED_NAMES, key=len, reverse=True))
-PUSH_CMD = r"(?:\bgit(?:\.exe)?(?:\s+-[-\w]+(?:[= ]\S+)?)*\s+push\b|['\"]git(?:\.exe)?['\"]\s*,\s*['\"]push['\"])"
+PUSH_CMD = r"(?:\bgit(?:\.exe)?['\"]?(?:\s+-[-\w]+(?:[= ]\S+)?)*\s+push\b|['\"]git(?:\.exe)?['\"]\s*,\s*['\"]push['\"])"
 PUSH_RE = re.compile(PUSH_CMD, re.I)
 PUSH_PROTECTED_RE = re.compile(PUSH_CMD + r"[^\n]*?(?<![\w.-])(?:" + _PROT + r")(?![\w.-])", re.I)
 PUSH_FORCE_RE = re.compile(PUSH_CMD + r"[^\n]*?(?:\s--force\b|\s--force-with-lease\b|\s-f\b|\s\+\S)", re.I)
@@ -132,23 +132,40 @@ NULL_TARGETS = {"/dev/null", "$null", "nul", "null"}
 
 # rules that not even PERMISSIONS.json releases: workflows never push to the integration branch/main nor force, and the
 # roadmap approval and the panel's trigger endpoints are only ever the user's click
-HARD = {"push-protected", "push-force", "approval-write", "panel-trigger", "grafana-write"}
+HARD = {"push-protected", "push-force", "approval-write", "panel-trigger", "grafana-write", "headless-push", "headless-gh", "permissions-write"}
+
+# headless loop (LOOP_HEADLESS=1, exported by the engine): delivery belongs to the engine, so the session only commits;
+# PERMISSIONS.json holds the user's releases, so the session never writes it (any profile, HARD)
+HEADLESS_RULES = ["headless-push", "headless-gh", "permissions-write"]
+PERMISSIONS_FILE = re.compile(r"(?:^|[\\/])PERMISSIONS\.json$", re.I)
+PERMISSIONS_CMD_RE = re.compile(r"\brules\.py\s+(?:write|allow|release)\b|" + HARNESS_CLI + r"rules\s+(?:write|allow|release)\b", re.I)
+PERMISSIONS_MSG = "PERMISSIONS.json holds the user's releases: only the user changes it, never the loop"
+HEADLESS_MSG = "git push / gh: delivery belongs to the engine (harness.py deliver / Finish); in a headless loop you only commit"
+
+
+def is_headless():
+    return os.environ.get("LOOP_HEADLESS") == "1"
 
 PROFILES = {
     # implements code: everything blocked except editing inside the project
-    "executor": ["git-write", "git-push", "pr-release", "prod-write", "dev-write", "outbound-msg", "secrets", "install", "state-write", "project-deny", "path-scope", "repo-only", "delivery", "state-script", "loop-run", "approval-write", "panel-trigger", "grafana-write"],
+    "executor": ["git-write", "git-push", "pr-release", "prod-write", "dev-write", "outbound-msg", "secrets", "install", "state-write", "project-deny", "path-scope", "repo-only", "delivery", "state-script", "loop-run", "approval-write", "panel-trigger", "grafana-write", "sql-write", "migration-target"],
     # only reads and runs checks
-    "verifier": ["git-write", "git-push", "pr-release", "prod-write", "dev-write", "outbound-msg", "secrets", "state-write", "project-deny", "delivery", "state-script", "loop-run", "approval-write", "panel-trigger", "grafana-write"],
+    "verifier": ["git-write", "git-push", "pr-release", "prod-write", "dev-write", "outbound-msg", "secrets", "state-write", "project-deny", "delivery", "state-script", "loop-run", "approval-write", "panel-trigger", "grafana-write", "sql-write", "migration-target"],
     # writes spec/map: only inside .specs/, .regression/ and docs/codebase/ (the map); never code
-    "spec": ["specs-only", "map-docs", "git-write", "git-push", "pr-release", "prod-write", "dev-write", "outbound-msg", "secrets", "state-write", "project-deny", "delivery", "state-script", "loop-run", "approval-write", "panel-trigger", "grafana-write"],
+    "spec": ["specs-only", "map-docs", "git-write", "git-push", "pr-release", "prod-write", "dev-write", "outbound-msg", "secrets", "state-write", "project-deny", "delivery", "state-script", "loop-run", "approval-write", "panel-trigger", "grafana-write", "sql-write"],
     # the orchestrator chat: may commit (one per feature) and write state; does not push (only via `harness.py deliver`), does not
     # touch PROD and does not write to tickets/issues/messages (outbound-msg): the main action is never in the feature's scope.
     # It never approves the roadmap nor clicks for the user in the panel (approval-write, panel-trigger).
     # repo-only: it commits and writes only inside the project's worktrees (SCOPE.json `roots`) and the primary .specs/.
-    "orchestrator": ["git-push", "pr-release", "git-add-all", "prod-write", "secrets", "project-deny", "outbound-msg", "approval-write", "panel-trigger", "repo-only", "grafana-write"],
+    "orchestrator": ["git-push", "pr-release", "git-add-all", "prod-write", "secrets", "project-deny", "outbound-msg", "approval-write", "panel-trigger", "repo-only", "grafana-write", "sql-write"],
     # the app's planning chat (a `claude -p`, not an agent): like spec (only .specs/), but WITHOUT state-write: it writes ROADMAP.md and
     # FLOWS.md itself. ROADMAP-APPROVED.json stays blocked (approval-write): the approval is the user's click in the panel.
-    "planning": ["specs-only", "secrets", "approval-write", "panel-trigger", "git-write", "git-push", "pr-release", "prod-write", "outbound-msg", "grafana-write"],
+    "planning": ["specs-only", "secrets", "approval-write", "panel-trigger", "git-write", "git-push", "pr-release", "prod-write", "outbound-msg", "grafana-write", "sql-write", "capabilities-block"],
+    "roadmapmap": ["specs-only", "map-docs", "secrets", "approval-write", "panel-trigger", "git-write", "git-push", "pr-release", "prod-write", "outbound-msg", "grafana-write", "sql-write", "capabilities-block"],  # roadmap generation with --map-first: planning + docs/codebase
+    # the app's subproject validation job (a `claude -p`): the planning hardening, but it writes ONE file, the suggestion the server validates
+    "subprojects": ["specs-only", "subprojects-only", "secrets", "approval-write", "panel-trigger", "git-write", "git-push", "pr-release", "prod-write", "outbound-msg", "grafana-write", "sql-write", "capabilities-block"],
+    # the app's system map job (a `claude -p`): the planning hardening, but it writes ONE file, docs/codebase/SYSTEM.md of the repository root
+    "systemmap": ["specs-only", "system-only", "secrets", "approval-write", "panel-trigger", "git-write", "git-push", "pr-release", "prod-write", "outbound-msg", "grafana-write", "sql-write", "capabilities-block"],
 }
 
 # hook payload `agent_type` (without the `plugin-name:` prefix) -> profile, used by `--profile auto`
@@ -203,17 +220,61 @@ def load_permissions(specs_dir):
         return empty
 
 
-def log(specs_dir, profile, rule, decision, detail):
+ATTEMPT_LIMIT = 200
+TURN_FILE_RE = re.compile(r"\d+\.json")
+
+
+def current_turn(specs_dir):
+    """Number of the loop turn in progress, or None when unknown. Known only inside the headless loop (the engine exports
+    LOOP_HEADLESS=1 to `claude -p`; LOOP_TURN, when the engine exports it, wins): the turn in progress is the last finished
+    `internal/turns/NNN.json` + 1. Outside the loop (planning chat, interactive session) there is no turn: None, never a guess."""
+    if not specs_dir:
+        return None
+    try:
+        exported = os.environ.get("LOOP_TURN", "").strip()
+        if exported.isdigit() and int(exported) > 0:
+            return int(exported)
+        if os.environ.get("LOOP_HEADLESS") != "1":
+            return None
+        folder = os.path.join(specs_dir, *LOOP_FOLDER, "internal", "turns")
+        if not os.path.isdir(folder):
+            folder = os.path.join(specs_dir, *LEGACY_LOOP_FOLDER, "turns")
+        numbers = [int(name[:-5]) for name in os.listdir(folder) if TURN_FILE_RE.fullmatch(name)]
+        return (max(numbers) if numbers else 0) + 1
+    except Exception:
+        return None
+
+
+def describe_attempt(payload):
+    """What the agent tried, in one short line: the shell command, the file of a write/read, else the tool name."""
+    try:
+        tool = str(payload.get("tool_name") or "")
+        tool_input = payload.get("tool_input") or {}
+        if tool in ("Bash", "PowerShell"):
+            text = tool_input.get("command", "")
+        elif tool in ("Write", "Edit", "NotebookEdit", "Read"):
+            text = "%s %s" % (tool, tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+        else:
+            text = tool
+        return " ".join(str(text).split())[:ATTEMPT_LIMIT]
+    except Exception:
+        return ""
+
+
+def log(specs_dir, profile, rule, decision, detail, attempt=None):
     if not specs_dir:
         return
     try:
         line = {
             "t": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "turn": current_turn(specs_dir),
             "profile": profile,
             "rule": rule,
             "decision": decision,
             "detail": detail[:200],
         }
+        if attempt:
+            line["attempt"] = attempt
         log_path = loop_file(specs_dir, "guard.log")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         with open(log_path, "a", encoding="utf-8") as handle:
@@ -267,7 +328,8 @@ def split_commands(command):
 
 
 def git_subcommand(segment):
-    match = re.match(r"^(?:\S*[\\/])?git(?:\.exe)?\s+(?:-[-\w]+(?:[= ]\S+)?\s+)*([a-z][\w-]*)", segment)
+    # also `"git" push`, `'git' commit` and `& "C:\Program Files\Git\bin\git.exe" push` (quoted executable, PowerShell call operator)
+    match = re.match(r"^(?:&\s*)?['\"]?(?:[^'\"\s]*[\\/]|[^'\"]*[\\/](?=git(?:\.exe)?['\"]))?git(?:\.exe)?['\"]?\s+(?:-[-\w]+(?:[= ]\S+)?\s+)*([a-z][\w-]*)", segment)
     return match.group(1) if match else None
 
 
@@ -348,19 +410,38 @@ def temp_exempt(absolute):
 SLUG_MARK = re.compile(r"SCOPE_FEATURE:\s*([A-Za-z0-9._-]+)")
 
 
-def executor_slug(payload):
+TASK_MARK = re.compile(r"SCOPE_TASK:\s*([A-Za-z0-9._-]+/T\d+)")
+
+
+def executor_task(payload):
+    """Same as executor_slug, for the `SCOPE_TASK: <slug>/T<n>` line of the dispatch prompt. None = no task mark (feature scope applies)."""
+    return executor_slug(payload, TASK_MARK)
+
+
+def long_path(path):
+    """Windows: a transcript under ~/.claude/projects/<long project name>/... easily passes MAX_PATH (260), and plain open() then
+    fails, so the executor identity was silently lost (seen in the real audit loop: 272 chars). The `\\\\?\\` prefix lifts the limit."""
+    if os.name != "nt" or path.startswith("\\\\?\\"):
+        return path
+    absolute = os.path.abspath(path)
+    return "\\\\?\\" + absolute if len(absolute) >= 248 else path
+
+
+def executor_slug(payload, mark=None):
     """Which feature does this executor serve? Best effort: reads the subagent transcript (if the hook brings agent_id) and
     looks for the `SCOPE_FEATURE: <slug>` line of the dispatch prompt. None = could not tell (falls back to the union of the scopes)."""
+    mark = mark or SLUG_MARK
     try:
         agent_id = payload.get("agent_id")
         transcript = payload.get("agent_transcript_path")
         if not transcript and agent_id and payload.get("transcript_path"):
             base = os.path.splitext(payload["transcript_path"])[0]
             transcript = os.path.join(base, "subagents", "agent-%s.jsonl" % agent_id)
+        transcript = long_path(transcript) if transcript else transcript
         if not transcript or not os.path.isfile(transcript):
             return None
         with open(transcript, encoding="utf-8", errors="replace") as handle:
-            match = SLUG_MARK.search(handle.read(40000))
+            match = mark.search(handle.read(40000))
         return match.group(1) if match else None
     except Exception:
         return None
@@ -376,12 +457,17 @@ def read_scope_file(specs_dir):
         return {}
 
 
-def load_scope(specs_dir, slug=None):
-    """Reads .specs/project/loop/json/SCOPE.json: {"roots": [...], "features": {"slug": ["folder/or/file", ...]}} written by the orchestrator.
+def load_scope(specs_dir, slug=None, task=None):
+    """Reads .specs/project/loop/json/SCOPE.json: {"roots": [...], "features": {"slug": ["folder/or/file", ...]}, "tasks": {"slug/T1": [...]}} written by the orchestrator.
     An entry is absolute (a path in any worktree) or relative (to the primary root, the folder holding `.specs/`).
-    With a known `slug` present in the file, only that feature's paths; otherwise the union of all in-flight features."""
-    features = read_scope_file(specs_dir).get("features") or {}
+    With a known `task` present in the "tasks" map, only that task's paths; else with a known `slug` present in the file, only that
+    feature's paths; otherwise the union of all in-flight features."""
+    data = read_scope_file(specs_dir)
+    features = data.get("features") or {}
     try:
+        tasks = data.get("tasks") or {}
+        if task and isinstance(tasks, dict) and task in tasks:
+            return list(tasks[task])
         if slug and slug in features:
             return list(features[slug])
         paths = []
@@ -656,6 +742,33 @@ def note_identity_gap(specs_dir, profile, payload):
 
 SPECS_ONLY_FOLDERS = (".specs/", ".regression/")
 MAP_DOCS_FOLDER = "docs/codebase/"  # the brownfield map (versioned): only profiles carrying the `map-docs` rule may write it
+SUBPROJECTS_FILE = (".specs", "project", "SUBPROJECTS.json")
+SUBPROJECTS_SUGGESTED_PATH = ".specs/project/SUBPROJECTS-SUGGESTED.json"  # the only file of the `subprojects` profile
+SYSTEM_MAP_PATH = "docs/codebase/SYSTEM.md"  # the only file of the `systemmap` profile
+
+
+def confirmed_subproject_map_folders(specs_dir):
+    """Relative `<path>/docs/codebase/` folders of every non-skipped project of a CONFIRMED monorepo entry of `.specs/project/SUBPROJECTS.json`
+    (keyed by repository name). Tiny tolerant read: a missing, unreadable or odd-shaped file means no extra folder, never a crash."""
+    try:
+        with open(os.path.join(os.path.dirname(specs_dir), *SUBPROJECTS_FILE), encoding="utf-8") as handle:
+            data = json.load(handle)
+        folders = []
+        for entry in (data.get("repos") or {}).values():
+            if not (isinstance(entry, dict) and entry.get("monorepo") is True and entry.get("confirmed") is True):
+                continue
+            for project in entry.get("projects") or []:
+                if not isinstance(project, dict) or project.get("skip") is True:
+                    continue
+                path = str(project.get("path") or "").replace("\\", "/")
+                if path.startswith("/"):
+                    continue
+                path = path.strip("/")
+                if path and path != "." and not path.startswith("..") and "/../" not in "/" + path + "/" and ":" not in path:
+                    folders.append(posixpath.normpath(path) + "/" + MAP_DOCS_FOLDER)
+        return folders
+    except Exception:
+        return []
 
 
 def check_specs_only(target, profile_rules, specs_dir, cwd=None):
@@ -670,14 +783,24 @@ def check_specs_only(target, profile_rules, specs_dir, cwd=None):
     if not inside_repo and temp_exempt(absolute):
         return []
     relative = absolute[len(root) + 1:] if inside_repo else absolute
-    if relative.startswith(SPECS_ONLY_FOLDERS):
+    if "subprojects-only" in profile_rules or "system-only" in profile_rules:
+        pass  # narrower than .specs/: handled below
+    elif relative.startswith(SPECS_ONLY_FOLDERS):
         return []
-    if "map-docs" in profile_rules and relative.startswith(MAP_DOCS_FOLDER):
+    if "subprojects-only" in profile_rules:
+        if relative == fold(SUBPROJECTS_SUGGESTED_PATH):
+            return []
+        return [("subprojects-only", "the subproject validation writes only %s: %s" % (SUBPROJECTS_SUGGESTED_PATH, relative[:100]))]
+    if "system-only" in profile_rules:
+        if relative == fold(SYSTEM_MAP_PATH):
+            return []
+        return [("system-only", "the system map writes only %s: %s" % (SYSTEM_MAP_PATH, relative[:100]))]
+    if "map-docs" in profile_rules and (relative.startswith(MAP_DOCS_FOLDER) or relative.startswith(tuple(fold(folder) for folder in confirmed_subproject_map_folders(specs_dir)))):
         return []
     return [("specs-only", "spec and map agents write only inside .specs/ and docs/codebase/ (never code): %s" % relative[:100])]
 
 
-def check_scope(target, profile_rules, specs_dir, slug=None, cwd=None):
+def check_scope(target, profile_rules, specs_dir, slug=None, cwd=None, task=None):
     """Edits only inside the PATHS of the executor's feature (or, without identity, of the in-flight features) and only inside the repo."""
     hits = []
     if not specs_dir or not target:
@@ -692,7 +815,7 @@ def check_scope(target, profile_rules, specs_dir, slug=None, cwd=None):
         return hits
     if absolute.startswith(root + "/.regression/"):
         return hits
-    scope = load_scope(specs_dir, slug)
+    scope = load_scope(specs_dir, slug, task)
     if "path-scope" in profile_rules and scope:
         allowed = [norm(item if os.path.isabs(item) else os.path.join(root, item)) for item in scope]
         if not any(absolute == item or absolute.startswith(item.rstrip("/") + "/") for item in allowed):
@@ -704,6 +827,32 @@ def check_scope(target, profile_rules, specs_dir, slug=None, cwd=None):
 BUILD_OUTPUT_DIRS = {"bin", "obj", "node_modules", ".pytest_cache", "__pycache__", "dist", "coverage", ".next", ".nuxt", ".venv", "venv",
                      ".mypy_cache", ".gradle", ".turbo", "testresults", ".vs"}
 STATEMENT_SPLIT_RE = re.compile(r"&&|\|\||;|\n")
+
+
+def split_statements(command):
+    """Statements of a command, split on `&&`, `||`, `;` and newline OUTSIDE quotes: a `;` inside a quoted sed/awk script (`sed -i 's/a/b/; s/c/d/' f`)
+    belongs to the script, and splitting there made the script's tail look like a file path (false `repo-only` block, and a target hidden after it)."""
+    statements, current, quote, index = [], [], None, 0
+    while index < len(command):
+        char = command[index]
+        if quote:
+            if char == quote:
+                quote = None
+            current.append(char)
+        elif char in "\"'":
+            quote = char
+            current.append(char)
+        elif command.startswith(("&&", "||"), index):
+            statements.append("".join(current))
+            current, index = [], index + 1
+        elif char in ";\n":
+            statements.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    statements.append("".join(current))
+    return statements
 PS_PATH_RE = re.compile(r"-(?:Path|FilePath|LiteralPath)\s+(\"[^\"]+\"|'[^']+'|[^\s;|&<>]+)", re.I)
 
 
@@ -736,7 +885,7 @@ def confined_write_targets(statement):
     return found
 
 
-def check_shell_target(target, cwd, profile_rules, specs_dir, slug):
+def check_shell_target(target, cwd, profile_rules, specs_dir, slug, task=None):
     """A shell write is confined like Write/Edit: inside the feature PATHS (path-scope), inside the project's worktrees (repo-only),
     inside .specs/ and docs/codebase/ (specs-only). Exempt: temp folders, /dev/*, build output folders (bin, obj, node_modules,
     .pytest_cache...) inside a worktree. A target built from a variable ($env:X, %X%, $(...)) cannot be resolved here and is not judged."""
@@ -754,7 +903,7 @@ def check_shell_target(target, cwd, profile_rules, specs_dir, slug):
         if BUILD_OUTPUT_DIRS & {fold(part) for part in relative.split("/")[:-1]}:
             return []
     hits = list(check_specs_only(absolute, profile_rules, specs_dir))
-    hits.extend(check_scope(absolute, profile_rules, specs_dir, slug))
+    hits.extend(check_scope(absolute, profile_rules, specs_dir, slug, None, task))
     return hits
 
 
@@ -808,6 +957,8 @@ def check_bash(command, profile_rules, permissions):
     start_cwd = running_cwd
     # 1) text of the whole command: catches a push hidden in python -c, $(...), quotes
     if PUSH_RE.search(command):
+        if "headless-push" in profile_rules:
+            hits.append(("headless-push", HEADLESS_MSG))
         if "git-push" in profile_rules:
             hits.append(("git-push", "git push: only on the user's explicit request (at the end of the flow, delivery is done by `harness.py deliver`)"))
         if PUSH_PROTECTED_RE.search(command):
@@ -837,6 +988,8 @@ def check_bash(command, profile_rules, permissions):
                 hits.append(("git-add-all", "git add . / -A: add files by name"))
             if sub == "commit" and "git-add-all" in profile_rules and re.search(r"\s-a[m\s]|--all", segment):
                 hits.append(("git-add-all", "git commit -a: add files by name"))
+        if "headless-gh" in profile_rules and re.match(r"^gh(\.exe)?\b", segment):
+            hits.append(("headless-gh", HEADLESS_MSG))
         if re.match(r"^gh\s+(pr|release|repo|gist|workflow)\b", segment) and "pr-release" in profile_rules:
             if not re.match(r"^gh\s+(pr|repo)\s+(view|list|diff|status|checks)\b", segment):
                 hits.append(("pr-release", "gh pr/release/gist: leaves the machine; the end-of-flow PR is made by `harness.py deliver`"))
@@ -855,7 +1008,7 @@ def check_bash(command, profile_rules, permissions):
     # 2b) broad reads that reach a copied config file without naming it (rg --no-ignore, grep -r, find -exec cat, globs...)
     if "secrets" in profile_rules and specs_dir:
         statement_cwd = start_cwd
-        for statement in STATEMENT_SPLIT_RE.split(command):
+        for statement in split_statements(command):
             statement = statement.strip()
             reason = broad_secret_read(statement, statement_cwd, specs_dir) if statement else ""
             if reason:
@@ -866,14 +1019,20 @@ def check_bash(command, profile_rules, permissions):
     # 2c) shell writes are confined like Write/Edit (PATHS, worktrees, .specs/), per statement so a `cd` is followed
     if specs_dir and ({"path-scope", "repo-only", "specs-only"} & set(profile_rules)):
         statement_cwd = start_cwd
-        for statement in STATEMENT_SPLIT_RE.split(command):
+        for statement in split_statements(command):
             statement = statement.strip()
             for target in confined_write_targets(statement):
-                hits.extend(check_shell_target(target, statement_cwd, profile_rules, specs_dir, permissions.get("_slug")))
+                hits.extend(check_shell_target(target, statement_cwd, profile_rules, specs_dir, permissions.get("_slug"), permissions.get("_task")))
             cd_move = CD_RE.match(statement)
             if cd_move:
                 statement_cwd = resolve_dir(cd_move.group(1), statement_cwd)
     # 3) shell write to a file that must never be touched
+    if "permissions-write" in profile_rules:
+        shell_targets = list(shell_write_targets(command))
+        for statement in split_statements(command):
+            shell_targets.extend(confined_write_targets(statement))
+        if any(PERMISSIONS_FILE.search(str(target).strip("\"'")) for target in shell_targets) or PERMISSIONS_CMD_RE.search(command):
+            hits.append(("permissions-write", PERMISSIONS_MSG))
     for target in shell_write_targets(command):
         if APPROVAL_FILE.search(target) and "approval-write" in profile_rules:
             hits.append(("approval-write", "ROADMAP-APPROVED.json is written only by the user's click in the panel"))
@@ -884,6 +1043,10 @@ def check_bash(command, profile_rules, permissions):
         for pattern in permissions.get("deny_path_regex", []):
             if project_pattern_matches(pattern, target):
                 hits.append(("project-deny", "path forbidden by the project: %s" % pattern))
+    if "migration-target" in profile_rules:
+        reason = migration_target_reason(command)
+        if reason:
+            hits.append(("migration-target", reason))
     for pattern in permissions.get("deny_bash_regex", []):
         if project_pattern_matches(pattern, command):
             hits.append(("project-deny", "project rule: %s" % pattern))
@@ -918,6 +1081,137 @@ def grafana_write_reason(tool_name, tool_input):
     return ""
 
 
+# ---- MySQL MCP is read only (planning and loop profiles): the query of mcp__mcp-mysql-dev__* / mcp__mcp-mysql-prod__* is inspected
+SQL_MCP_TOOL = re.compile(r"^mcp__mcp-mysql-(?:dev|prod)__", re.I)
+SQL_WRITE_KEYWORDS = {"insert", "update", "delete", "replace", "merge", "create", "alter", "drop", "truncate", "grant", "revoke",
+                      "call", "load", "rename"}
+SQL_WRITE_REASON = ("read only through MCP: write the change as a .sql script (or a migration) and ask the user "
+                    "(write the script in the feature folder sql/ and return STATUS: NEEDS_CONFIRM: apply <script> on DEV, then answer)")
+SQL_STRING_RE = re.compile(r"'(?:[^'\\]|\\.|'')*'|\"(?:[^\"\\]|\\.|\"\")*\"|`[^`]*`", re.S)
+SQL_EXECUTABLE_COMMENT_RE = re.compile(r"/\*!\d*\s*(.*?)\*/", re.S)
+SQL_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
+SQL_LINE_COMMENT_RE = re.compile(r"(?:--(?=\s|$)|#)[^\n]*")
+
+
+def sql_statements(sql):
+    """Statements of a SQL text, lowercased, with comments and string/identifier literals removed (a MySQL `/*! ... */` is code and stays)."""
+    text = SQL_EXECUTABLE_COMMENT_RE.sub(lambda match: " " + match.group(1) + " ", str(sql))
+    text = SQL_BLOCK_COMMENT_RE.sub(" ", text)
+    text = SQL_STRING_RE.sub("''", text)
+    text = SQL_LINE_COMMENT_RE.sub(" ", text)
+    return [part.strip().lstrip("( \t\r\n").lower() for part in text.split(";") if part.strip().strip("( \t\r\n")]
+
+
+def sql_statement_writes(statement):
+    words = re.findall(r"[a-z_@.]+", statement)
+    first = words[0] if words else ""
+    if first in SQL_WRITE_KEYWORDS:
+        return first.upper()
+    if first == "set" and re.match(r"set\s+(?:global|persist|persist_only|@@global\.|@@persist\.)", statement):
+        return "SET GLOBAL"
+    if first == "with":
+        for word in words:
+            if word in ("insert", "update", "delete", "replace"):
+                return word.upper()
+    if re.search(r"\binto\s+(?:outfile|dumpfile)\b", statement):
+        return "SELECT INTO OUTFILE"
+    return ""
+
+
+def sql_write_reason(tool_name, tool_input):
+    """Reason when the MySQL MCP query writes (first keyword of any `;`-separated statement), else ''."""
+    if not SQL_MCP_TOOL.match(tool_name or ""):
+        return ""
+    if isinstance(tool_input, dict):
+        texts = [tool_input[key] for key in ("query", "sql", "statement") if isinstance(tool_input.get(key), str)]
+        if not texts:
+            texts = [value for value in tool_input.values() if isinstance(value, str)]
+    else:
+        texts = [str(tool_input)]
+    for text in texts:
+        for statement in sql_statements(text):
+            keyword = sql_statement_writes(statement)
+            if keyword:
+                return "%s through %s: %s" % (keyword, tool_name, SQL_WRITE_REASON)
+    return ""
+
+
+# ---- migrations: allowed on DEV for the executor/verifier, blocked when the command or the environment points to production
+MIGRATION_CMD_RE = re.compile(
+    r"(?:^|[\s(;&|])(?:\S*[\\/])?dotnet(?:\.exe)?\s+(?:ef\s+(?:migrations\s+(?:add|remove|list|script|bundle)|database\s+(?:update|drop))\b"
+    r"|run\b[^\n;&|]*?\s--\s+migrate\w*)", re.I)
+PROD_ENV_VALUE = r"[\"']?(?:production|prod)[\"']?"
+PROD_ENV_RE = re.compile(
+    r"(?:ASPNETCORE_ENVIRONMENT|DOTNET_ENVIRONMENT)[\"']?\s*=\s*" + PROD_ENV_VALUE + r"(?![\w-])"
+    r"|--environment(?:\s+|=)" + PROD_ENV_VALUE + r"(?![\w-])", re.I)
+CONNECTION_ARG_RE = re.compile(r"--(?:connection|connection-string|connectionstring)(?:\s+|=)(\"[^\"]*\"|'[^']*'|\S+)", re.I)
+CONNECTION_ENV_RE = re.compile(r"\b(?:ConnectionStrings?[:_]{1,2}\w*|DB_(?:HOST|CONNECTION)\w*|DATABASE_URL)\s*=\s*(\"[^\"]*\"|'[^']*'|\S+)", re.I)
+
+
+def prod_hosts():
+    """Substrings that mark a connection as PRODUCTION: prod_hints() plus GUARD_PROD_HOSTS (comma-separated host names)."""
+    return prod_hints() + [item.strip().lower() for item in os.environ.get("GUARD_PROD_HOSTS", "").split(",") if item.strip()]
+
+
+def migration_target_reason(command):
+    """Reason when a migration command in `command` targets production, else ''."""
+    if not MIGRATION_CMD_RE.search(command):
+        return ""
+    if PROD_ENV_RE.search(command):
+        return "migration against the Production environment: migrations run on DEV only"
+    inherited = " ".join("%s=%s" % (name, os.environ.get(name, "")) for name in ("ASPNETCORE_ENVIRONMENT", "DOTNET_ENVIRONMENT"))
+    if PROD_ENV_RE.search(inherited):
+        return "migration while ASPNETCORE_ENVIRONMENT/DOTNET_ENVIRONMENT is Production: migrations run on DEV only"
+    hosts = prod_hosts()
+    for pattern in (CONNECTION_ARG_RE, CONNECTION_ENV_RE):
+        for match in pattern.finditer(command):
+            value = match.group(1).lower()
+            if any(host in value for host in hosts):
+                return "migration whose connection points to production: migrations run on DEV only"
+    return ""
+
+
+# ---- planning: the capabilities block of PROJECT.md is written by the server between these markers
+CAPABILITIES_OPEN = "<!-- maestro:capabilities -->"
+CAPABILITIES_CLOSE = "<!-- /maestro:capabilities -->"
+CAPABILITIES_FILE_RE = re.compile(r"\.specs[\\/]project[\\/]PROJECT\.md$", re.I)
+CAPABILITIES_BLOCK_RE = re.compile(re.escape(CAPABILITIES_OPEN) + r".*?" + re.escape(CAPABILITIES_CLOSE), re.S)
+
+
+def read_text_file(path):
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace", newline="") as handle:
+            return handle.read().replace("\r\n", "\n")
+    except OSError:
+        return ""
+
+
+def capabilities_edit_reason(tool_name, tool_input, target, cwd):
+    """Reason when a Write/Edit of PROJECT.md would change text inside the capabilities markers, else ''."""
+    if not target or not CAPABILITIES_FILE_RE.search(str(target)) or not isinstance(tool_input, dict):
+        return ""
+    reason = "the capabilities block of PROJECT.md (between maestro:capabilities markers) is written by the server, never by you"
+    path = str(target)
+    if not os.path.isabs(path) and cwd:
+        path = os.path.join(cwd, path)
+    current = read_text_file(path)
+    if tool_name == "Write":
+        content = str(tool_input.get("content") or "").replace("\r\n", "\n")
+        if CAPABILITIES_BLOCK_RE.findall(current) != CAPABILITIES_BLOCK_RE.findall(content):
+            return reason
+        if (CAPABILITIES_OPEN in current) != (CAPABILITIES_OPEN in content) or (CAPABILITIES_CLOSE in current) != (CAPABILITIES_CLOSE in content):
+            return reason
+        return ""
+    if tool_name == "Edit":
+        old = str(tool_input.get("old_string") or "").replace("\r\n", "\n")
+        new = str(tool_input.get("new_string") or "").replace("\r\n", "\n")
+        if "maestro:capabilities" in old or "maestro:capabilities" in new:
+            return reason
+        if old and any(old in block.group(0) for block in CAPABILITIES_BLOCK_RE.finditer(current)):
+            return reason
+    return ""
+
+
 def is_prod_tool(tool_name):
     lowered = tool_name.lower()
     return any(hint in lowered for hint in prod_hints())
@@ -933,7 +1227,18 @@ def check_tool(tool_name, tool_input, profile_rules, permissions):
             hits.append(("grafana-write", reason))
     if tool_name.startswith("mcp__"):
         short_name = tool_name.rsplit("__", 1)[-1]
-        if DB_TOOL.match(tool_name):
+        if SQL_MCP_TOOL.match(tool_name):
+            if "sql-write" in profile_rules:
+                reason = sql_write_reason(tool_name, tool_input)
+                if reason:
+                    hits.append(("sql-write", reason))
+            else:
+                sql = tool_input.get("query") or tool_input.get("sql") or json.dumps(tool_input)
+                if WRITE_SQL.search(sql):
+                    rule = "prod-write" if is_prod_tool(tool_name) else "dev-write"
+                    if rule in profile_rules:
+                        hits.append((rule, "write SQL in %s" % tool_name))
+        elif DB_TOOL.match(tool_name):
             sql = tool_input.get("query") or tool_input.get("sql") or json.dumps(tool_input)
             if WRITE_SQL.search(sql):
                 rule = "prod-write" if is_prod_tool(tool_name) else "dev-write"
@@ -947,14 +1252,20 @@ def check_tool(tool_name, tool_input, profile_rules, permissions):
         target = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
         if APPROVAL_FILE.search(target) and "approval-write" in profile_rules:
             hits.append(("approval-write", "ROADMAP-APPROVED.json is written only by the user's click in the panel"))
+        if PERMISSIONS_FILE.search(target) and "permissions-write" in profile_rules:
+            hits.append(("permissions-write", PERMISSIONS_MSG))
         if STATE_FILE.search(target) and "state-write" in profile_rules:
             hits.append(("state-write", "only the orchestrator writes ROADMAP/STATE/RULES/phases and the loop folder"))
         if "secrets" in profile_rules and (SECRET_HINT.search(target) or mentions_copied_secret(target, permissions.get("_cwd"), permissions.get("_specs_dir"))):
             hits.append(("secrets", "credential path"))
+        if "capabilities-block" in profile_rules and tool_name in ("Write", "Edit"):
+            reason = capabilities_edit_reason(tool_name, tool_input, target, permissions.get("_cwd"))
+            if reason:
+                hits.append(("capabilities-block", reason))
         if tool_name in ("Write", "Edit", "NotebookEdit"):
             hits.extend(check_specs_only(target, profile_rules, permissions.get("_specs_dir"), permissions.get("_cwd")))
         if tool_name in ("Write", "Edit"):
-            hits.extend(check_scope(target, profile_rules, permissions.get("_specs_dir"), permissions.get("_slug"), permissions.get("_cwd")))
+            hits.extend(check_scope(target, profile_rules, permissions.get("_specs_dir"), permissions.get("_slug"), permissions.get("_cwd"), permissions.get("_task")))
         for pattern in permissions.get("deny_path_regex", []):
             if project_pattern_matches(pattern, target):
                 hits.append(("project-deny", "path forbidden by the project: %s" % pattern))
@@ -997,8 +1308,12 @@ def main():
     if profile == "auto":
         profile = profile_for_agent(payload)
         if not profile:
-            return 0
-    profile_rules = PROFILES.get(profile, PROFILES["executor"])
+            if not is_headless():
+                return 0
+            profile = "orchestrator"
+    profile_rules = list(PROFILES.get(profile, PROFILES["executor"]))
+    if is_headless():
+        profile_rules += [rule for rule in HEADLESS_RULES if rule not in profile_rules]
     specs_dir = find_specs_dir(payload.get("cwd"))
     try:
         permissions = load_permissions(specs_dir)
@@ -1006,6 +1321,7 @@ def main():
         permissions["_cwd"] = payload.get("cwd")
         if specs_dir and "path-scope" in profile_rules:
             permissions["_slug"] = executor_slug(payload)
+            permissions["_task"] = executor_task(payload)
             if payload.get("tool_name") in ("Write", "Edit") and load_scope(specs_dir):
                 # trace to check in the real rehearsal: resolved identity and the fields the hook actually receives
                 log(specs_dir, profile, "scope-trace", "info", "slug=%s fields=%s" % (permissions["_slug"], ",".join(sorted(payload.keys()))))
@@ -1027,12 +1343,14 @@ def main():
             log(specs_dir, profile, rule, "allowed-by-user", why)
     if not blocked:
         return 0
+    attempt = describe_attempt(payload)
     for rule, why in blocked:
-        log(specs_dir, profile, rule, "blocked", why)
+        log(specs_dir, profile, rule, "blocked", why, attempt)
     rules = ", ".join(sorted({rule for rule, _ in blocked}))
     sys.stderr.write(
         "BLOCKED by the orchestrator guard [" + rules + "]: " + "; ".join(why for _, why in blocked)
-        + ". Do not try to work around it. Return STATUS: NEEDS_CONFIRM with the reason; the orchestrator takes it to the user.\n"
+        + ". Do not try to work around it. Return STATUS: NEEDS_CONFIRM with the reason; the orchestrator takes it to the user."
+        " This block is final: do not retry this command or a variant of it. Continue without it, or report it in your final return.\n"
     )
     return 2
 

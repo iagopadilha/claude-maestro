@@ -1,0 +1,14 @@
+/* ux pass: deps (loaded last, overrides the older rules) */
+/* the whole tab is one canvas: the graph fills it, the lifecycle layer floats in graph space (transform set by dependencies.js) */
+.canvas > .dep { display: block; }
+.dep-graph { border: 0; background: transparent; }
+.dep-graph .gf { top: 0; bottom: 0; }
+.dep-life { position: absolute; left: 0; top: 0; width: 774px; height: 190px; transform-origin: 0 0; opacity: 0; pointer-events: none; display: flex; flex-direction: column; align-items: stretch; gap: 4px; will-change: transform; }
+.dep-life-t { margin: 0; font-size: 13px; letter-spacing: .06em; }
+.canvas .dep-life .me-svg { position: static; inset: auto; width: 774px; height: 148px; max-width: none; flex: none; overflow: visible; pointer-events: none; }
+.canvas .dep-life .me-node { pointer-events: auto; }
+.dep-life .me-total { font-size: 12px; }
+.dep-note { position: absolute; right: 12px; top: 6px; max-width: 45%; background: var(--panel); padding: 2px 8px; border-radius: 4px; pointer-events: none; z-index: 2; }
+.dep-note:empty { display: none; }
+.dep-legend { top: 6px; right: auto; max-width: 55%; z-index: 2; }
+.dep-mermaid { max-height: 45%; overflow: auto; }

@@ -49,6 +49,7 @@ class RepoRef:
     """One git repository of a project. The PRIMARY repo holds `.specs/` and is where the loop runs.
 
     `worktree_path` empty = the default sibling folder (`../<folder>-worktree-loop`), same as a single-repo project today.
+    `role` is "edit" or "reference" (REPOS.json without `role` = edit).
     `copy` lists git-ignored files (relative to the repo) copied into the worktree when it is created.
     """
 
@@ -59,6 +60,8 @@ class RepoRef:
     copy: list = field(default_factory=list)
     setup: str = ""  # one-time command run in this repo's worktree after it is created (empty = auto-detected by the engine)
     copy_configured: bool = False  # False = REPOS.json had no `copy` key: the engine copies the suggested local files; True with [] = none
+    role: str = "edit"  # "edit" (a feature may change it: gets a worktree) or "reference" (read only, `--add-dir`); the primary is always edit
+    reason: str = ""  # why the planning chat listed it (shown in the panel)
 
     def loop_worktree_path(self):
         return self.worktree_path or os.path.join(os.path.dirname(self.path), os.path.basename(self.path) + LOOP_WORKTREE_SUFFIX)

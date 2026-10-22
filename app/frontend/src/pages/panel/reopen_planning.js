@@ -1,4 +1,4 @@
-/* "Change roadmap or repositories": reopens the planning of a project that already left it.
+/* "Back to planning" (navbar button): reopens the planning of a project that already left it.
    - GET planning/reopen-check lists the worktrees that going back removes, with what is at risk (uncommitted changes, unpushed commits).
    - POST planning/reopen {confirm_remove_worktrees} does it; 409 loop_running / needs_confirm are shown, never guessed.
    The back end decides everything; this dialog only shows it. */
@@ -71,7 +71,7 @@ export function openReopenPlanning() {
     }
   }
 
-  s.api = openDialog({ title: 'Change roadmap or repositories?', content: body(), actions: actions(), width: 560 });
+  s.api = openDialog({ title: 'Back to planning?', content: body(), actions: actions(), width: 560 });
   ctx.api.get('planning/reopen-check', 30000).then((c) => { s.check = c || {}; })
     .catch((e) => { s.error = 'Could not check: ' + errText(e); toast('Could not check: ' + errText(e), 'err'); })
     .finally(draw);

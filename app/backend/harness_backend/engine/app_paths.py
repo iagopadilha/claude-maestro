@@ -25,6 +25,12 @@ def _configured_skill_dir():
     return app_config.read_user_config(app_config.get_user_data_dir()).get("orchestrator_skill_dir", "")
 
 
+def default_output_dir():
+    """The app's output folder (`output_dir` in config.json, default ~/Downloads): where summaries and backups go, never the repo."""
+    configured = app_config.read_user_config(app_config.get_user_data_dir()).get("output_dir", "")
+    return configured or os.path.join(os.path.expanduser("~"), "Downloads")
+
+
 def locate_skill_dir():
     """Orchestrator skill folder (with SKILL.md) or '' when it is not installed."""
     return skill_locator.locate_orchestrator_skill_dir(_configured_skill_dir())
