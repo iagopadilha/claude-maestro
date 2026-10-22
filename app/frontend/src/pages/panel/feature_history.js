@@ -5,6 +5,7 @@ import { tok, dur, txt, list } from '../../util/format.js';
 import { ctx, ui, pal } from './context.js';
 import { selectAgent } from './roadmap_sidebar.js';
 import { retColor } from './turn_diagram.js';
+import { openFeatureDialog } from './dialogs/index.js';
 
 const sameFeature = (a, id) => String(a.feature || '').split(',').map((s) => s.trim()).includes(id);
 
@@ -29,6 +30,7 @@ function Call({ a }) {
 export function FeatureHistory({ id }) {
   const turns = featureCalls(id), total = turns.reduce((n, t) => n + t.agents.length, 0);
   return html`<div class="iblock"><div class="small-label">${`Agent calls (${total})`}</div>
+    <button type="button" class="z-btn-wide" onClick=${() => openFeatureDialog({ feature: id })}>Open feature view (steps, tasks, agents)</button>
     ${!turns.length ? html`<div class="empty-note">${ui.hist.loading ? 'loading…' : 'no agent has worked on this feature yet'}</div>` : turns.map((t) => html`<div key=${t.n} class="fh-turn">
       <div class="fh-head mono">${`turn ${t.n}${t.live ? ' · running' : ''} · ${t.agents.length} call${t.agents.length === 1 ? '' : 's'}`}</div>
       ${t.agents.map((a, i) => html`<${Call} key=${a.id || i} a=${a} />`)}</div>`)}

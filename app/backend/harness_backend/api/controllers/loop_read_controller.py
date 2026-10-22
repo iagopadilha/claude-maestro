@@ -11,6 +11,7 @@ from .project_responses import respond_converting_errors
 PROJECT_PREFIX = "/p/{project_id}/api"
 PROJECT_NOT_FOUND_MESSAGE = "project not found"
 TURN_WITHOUT_SNAPSHOT_MESSAGE = "turn without snapshot"
+FEATURE_NOT_FOUND_MESSAGE = "feature not found"
 HOST_HEADER = "host"
 
 
@@ -23,7 +24,8 @@ def get_header(request, name):
 
 class LoopReadController:
     def __init__(self, project_service, loop_panel_service, agent_history_service, turn_service, log, error_center_service=None,
-                 pipeline_service=None):
+                 pipeline_service=None, feature_detail_service=None):
+        self.feature_detail_service = feature_detail_service
         self.error_center_service = error_center_service
         self.pipeline_service = pipeline_service
         self.project_service = project_service
@@ -41,6 +43,7 @@ class LoopReadController:
         router.add("GET", PROJECT_PREFIX + "/graph", self.get_graph)
         router.add("GET", PROJECT_PREFIX + "/errors", self.get_errors)
         router.add("GET", PROJECT_PREFIX + "/pipeline", self.get_pipeline)
+        router.add("GET", PROJECT_PREFIX + "/feature/{slug}", self.get_feature_detail)
         router.add("GET", PROJECT_PREFIX + "/codebase/tree", self.get_codebase_tree)
         router.add("GET", PROJECT_PREFIX + "/codebase/file", self.get_codebase_file)
 
@@ -68,6 +71,15 @@ class LoopReadController:
         if error:
             return error
         return Response.json(200, self.pipeline_service.build_pipeline(context))
+
+    def get_feature_detail(self, request):
+        context, error = self.get_context(request)
+        if error:
+            return error
+        detail = self.feature_detail_service.build_feature_detail(context, request.route_params.get("slug", ""))
+        if detail is None:
+            return Response.error(404, FEATURE_NOT_FOUND_MESSAGE)
+        return Response.json(200, detail)
 
     def get_context(self, request):
         """(context, None) or (None, 404 Response)."""

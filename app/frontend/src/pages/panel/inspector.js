@@ -7,7 +7,7 @@ import { txt, list } from '../../util/format.js';
 import { ctx, ui, pal, STATUS, ROLE_DESC, status, loop, agentById } from './context.js';
 import { renderAll } from '../project_panel.js';
 import { steps, turnsList, liveN, curN, selectTurn, selectNode, stateAt, activeNode, STEP_COLOR } from './pipeline_model.js';
-import { openAgentDialog, openPauseDialog } from './dialogs/index.js';
+import { openAgentDialog, openPauseDialog, openFeatureDialog } from './dialogs/index.js';
 import { FeatureLabel } from './feature_label.js';
 
 const NEUTRAL_COLOR = '#6b727c';
@@ -100,7 +100,8 @@ function StepSelected({ node, turnNumber }) {
       <${KeyValue} k="CALLS"><span class="z-link">${calls}</span><//><${KeyValue} k="RUNS">${runs.length}<//></div>
     <${OutputField} label=${lastRun ? 'LAST OUTPUT · T' + lastRun.turn : 'LAST OUTPUT'} empty="Not run in this state yet.">${lastRun && lastRun.out ? inlineNodes(String(lastRun.out)) : null}<//>
     ${isQuarantined(node.f) ? html`<button type="button" class="z-btn-wide z-btn-amber" onClick=${() => openPauseDialog(node.f)}>Understand and resolve</button>` : null}
-    <button type="button" class="z-btn-wide" onClick=${() => openAgentDialog({ feature: node.f, step: node.s })}>Open history and ask the agent</button>`;
+    <button type="button" class="z-btn-wide" onClick=${() => openAgentDialog({ feature: node.f, step: node.s })}>Open history and ask the agent</button>
+    <button type="button" class="z-btn-wide" onClick=${() => openFeatureDialog({ feature: node.f })}>Open feature view</button>`;
 }
 
 function SelectedCard() {

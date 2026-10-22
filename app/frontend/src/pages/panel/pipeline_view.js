@@ -11,7 +11,8 @@ import {
   pipe, loadPipeline, steps, curN, liveN, stateAt, featureStatusAt, featuresWithWaves, changedStepsAt, activeNode,
   turnAt, emptyReason, selectNode, featureName, STEP_COLOR, FEATURE_COLOR,
 } from './pipeline_model.js';
-import { openAgentDialog } from './dialogs/index.js';
+import { openAgentDialog, openFeatureDialog } from './dialogs/index.js';
+import { taskGraphOf, waveModeLabel, splitNoteOf } from './feature_dialog_model.js';
 import { FeatureLabel } from './feature_label.js';
 import { ctx } from './context.js';
 import { clampCameraTo, fitCameraTo, sameCamera } from './camera_clamp.js';
@@ -27,6 +28,7 @@ const EDGE_COLOR = { DONE: STEP_COLOR.DONE, RUNNING: STEP_COLOR.RUNNING, QUEUED:
 const ARROW_COLORS = { done: 'var(--green)', running: 'var(--amber)', pending: 'var(--line3)', fail: 'var(--red)' };
 const ZERO = { x: 0, y: 0 };
 const PENDING_STATE = 'PENDING';
+const TASK_ROW_H = 22, TASK_BLOCK_PAD = 8;
 
 /** Module store: survives tab switches and re-renders. offsets = manual displacement over the automatic layout, by feature id / 'orch'. */
 const view = { camera: { x: 0, y: 0, z: 1 }, offsets: {}, dragging: false, auto: true, viewport: null, content: null, waveMembers: {} };
@@ -128,6 +130,17 @@ function featuresInState(state) {
   return [...known, ...extra];
 }
 
+/** The `tasks` payload of a feature in the panel state (null without it). */
+function tasksPayloadOf(slug) {
+  const feature = (ctx.state && Array.isArray(ctx.state.features) ? ctx.state.features : []).find((item) => item && item.id === slug);
+  return feature && feature.tasks ? feature.tasks : null;
+}
+/** Extra lane height for the compact task waves: one row per wave, none for a feature without tasks. */
+function taskBlockHeight(slug) {
+  const waveCount = taskGraphOf(tasksPayloadOf(slug)).waves.length;
+  return waveCount ? waveCount * TASK_ROW_H + TASK_BLOCK_PAD : 0;
+}
+
 /** Everything the diagram and the list draw for turn `turn`: lanes, nodes, edges, wave headers, orchestrator, teaser. */
 function buildGraph(turn) {
   const G = GEOMETRY, stepList = steps(), state = stateAt(turn), changed = changedStepsAt(turn), selected = activeNode();
@@ -146,8 +159,8 @@ function buildGraph(turn) {
     const firstLaneOfWave = lanes.length;
     for (const feature of members) {
       const status = featureStatusAt(feature.id, turn), offset = offsetOf(feature.id), nodeTop = y + G.LANE_TOP;
-      const stepStates = state[feature.id];
-      lanes.push({ id: feature.id, name: feature.name, stage: feature.stage, wave: feature.wave, x: G.LANE_X + offset.x, y: y + offset.y, w: laneWidth, h: G.LANE_H,
+      const stepStates = state[feature.id], laneHeight = G.LANE_H + taskBlockHeight(feature.id);
+      lanes.push({ id: feature.id, name: feature.name, stage: feature.stage, wave: feature.wave, x: G.LANE_X + offset.x, y: y + offset.y, w: laneWidth, h: laneHeight,
         status, color: FEATURE_COLOR[status] || FEATURE_COLOR['IN PROGRESS'], quarantined: status === 'QUARANTINE', steps: [] });
       let previous = null;
       stepStates.forEach((step, index) => {
@@ -162,7 +175,7 @@ function buildGraph(turn) {
         if (previous) edges.push({ key: `${previous.key}>${node.key}`, d: curve(previous.x + G.NODE_W, previous.y + G.NODE_H / 2, x, top + G.NODE_H / 2, 18, 20), st: step.st });
         previous = node;
       });
-      y += G.LANE_H + G.LANE_GAP;
+      y += laneHeight + G.LANE_GAP;
     }
     // the wave header follows its lanes: above the highest one and aligned to the leftmost one, even after a drag
     const waveLanes = lanes.slice(firstLaneOfWave), header = waves[waves.length - 1];
@@ -235,9 +248,10 @@ function Diagram({ graph }) {
       ${graph.waves.map((wave) => html`<div key=${wave.n} class="pl-wave" data-pl-drag=${WAVE_DRAG_PREFIX + wave.n} title="Drag to move the whole wave" style=${{ left: wave.x + 'px', top: wave.y + 'px' }}>
         <span class="pl-wave-name">WAVE ${wave.n}</span><span style=${{ color: wave.color }}>${wave.label}</span></div>`)}
       ${graph.lanes.map((lane) => html`<div key=${lane.id} class=${'pl-lane' + (lane.quarantined ? ' quarantined' : '')} data-pl-drag=${lane.id}
-        style=${{ left: lane.x + 'px', top: lane.y + 'px', width: lane.w + 'px', height: lane.h + 'px' }}>
+        style=${{ left: lane.x + 'px', top: lane.y + 'px', width: lane.w + 'px', height: lane.h + 'px' }} onClick=${() => openFeatureDialog({ feature: lane.id })}>
         <div class="pl-lane-head"><span class="pl-lane-stage">${lane.stage == null ? 'STAGE ?' : 'STAGE ' + lane.stage}</span><${FeatureLabel} slug=${lane.id} className="pl-lane-id" />
-          <span class="pl-badge" style=${{ color: lane.color, borderColor: lane.color }}>${lane.status}</span></div>
+          <span class="pl-badge" style=${{ color: lane.color, borderColor: lane.color }}>${lane.status}</span><${OpenFeatureButton} slug=${lane.id} /></div>
+        <div class="pl-lane-tasks" style=${{ top: GEOMETRY.LANE_H - 2 + 'px' }}><${TaskWaves} slug=${lane.id} className="pl-task-waves" /></div>
       </div>`)}
       <div class=${'pl-orchestrator' + (orchestratorSelected ? ' selected' : '')} data-pl-drag=${ORCHESTRATOR_KEY} role="button" tabindex="0"
         style=${{ left: orchestrator.x + 'px', top: orchestrator.y + 'px' }}
@@ -272,23 +286,28 @@ function Legend({ turn }) {
   </div>`;
 }
 
-/** Task chips of a building feature, one row per wave. Reads `tasks` from the panel state; no tasks = nothing drawn. */
-function TaskWaves({ slug }) {
-  const feature = (ctx.state && Array.isArray(ctx.state.features) ? ctx.state.features : []).find((item) => item && item.id === slug);
-  const tasks = feature && feature.tasks && Array.isArray(feature.tasks.tasks) ? feature.tasks.tasks : [];
-  if (!tasks.length) return null;
-  const waves = [...new Set(tasks.map((task) => task.wave || 1))].sort((a, b) => a - b);
-  return html`<div class="pl-task-waves">${waves.map((wave) => html`<div key=${wave} class="pl-task-wave"><span class="pl-task-wave-name mono">Wave ${wave}</span>
-    ${tasks.filter((task) => (task.wave || 1) === wave).map((task) => html`<span key=${task.id} class=${'pl-task-chip ' + String(task.status || 'pending')}
-      title=${task.status === 'failed' && task.note ? String(task.note) : String(task.title || task.id)}>${task.status === 'running' ? html`<span class="spinner sm"></span>` : null}${task.status === 'done' ? '✓ ' : ''}${task.id}</span>`)}</div>`)}</div>`;
+/** Task chips of a feature, one row per wave ("parallel ×N", "split by the limit of N"). Reads `tasks` from the panel state; no tasks = nothing drawn. */
+function TaskWaves({ slug, className = 'pl-task-waves' }) {
+  const graph = taskGraphOf(tasksPayloadOf(slug));
+  if (!graph.tasks.length) return null;
+  return html`<div class=${className}>${graph.waves.map((wave) => html`<div key=${wave.n} class=${'pl-task-wave' + (wave.parallel ? ' parallel' : '')}><span class="pl-task-wave-name mono">Wave ${wave.n}</span>
+    ${wave.tasks.map((task) => html`<span key=${task.id} class=${'pl-task-chip ' + task.status}
+      title=${task.status === 'failed' && task.note ? task.note : (task.title || task.id)}>${task.status === 'running' ? html`<span class="spinner sm"></span>` : null}${task.status === 'done' ? '✓ ' : ''}${task.id}</span>`)}
+    <span class="pl-task-wave-mode">${waveModeLabel(wave)}</span>${splitNoteOf(wave, graph.maxParallel) ? html`<span class="pl-task-wave-split">${splitNoteOf(wave, graph.maxParallel)}</span>` : null}</div>`)}</div>`;
+}
+
+/** "open" affordance of a feature (diagram lane or list card): opens the Feature dialog. */
+function OpenFeatureButton({ slug }) {
+  return html`<button type="button" class="pl-open" title="Open the feature view: steps, tasks and agents" onPointerDown=${stopPropagation}
+    onClick=${(event) => { event.stopPropagation(); openFeatureDialog({ feature: slug }); }}>open ▸</button>`;
 }
 
 /** List mode: the same information, one card per feature (useful on narrow screens). */
 function ListMode({ graph }) {
   return html`<div class="pl-list">
     ${graph.lanes.map((lane) => html`<div key=${lane.id} class=${'pl-card' + (lane.quarantined ? ' quarantined' : '')}>
-      <div class="pl-card-head"><span class="pl-lane-stage">W${lane.wave} · ${lane.stage == null ? 'STAGE ?' : 'STAGE ' + lane.stage}</span><${FeatureLabel} slug=${lane.id} className="pl-lane-id" />
-        <span class="pl-badge" style=${{ color: lane.color, borderColor: lane.color }}>${lane.status}</span></div>
+      <div class="pl-card-head" onClick=${() => openFeatureDialog({ feature: lane.id })}><span class="pl-lane-stage">W${lane.wave} · ${lane.stage == null ? 'STAGE ?' : 'STAGE ' + lane.stage}</span><${FeatureLabel} slug=${lane.id} className="pl-lane-id" />
+        <span class="pl-badge" style=${{ color: lane.color, borderColor: lane.color }}>${lane.status}</span><${OpenFeatureButton} slug=${lane.id} /></div>
       <div class="pl-card-steps">${lane.steps.map((node) => html`<button type="button" key=${node.key} class=${'pl-step' + (node.tagged ? ' tagged' : '') + (node.selected ? ' selected' : '')}
         style=${{ color: node.color }} title=${node.role} onClick=${() => selectNode({ f: node.feature, s: node.step })} onDblClick=${() => openAgent(node.feature, node.step)}>${node.agent} · ${node.st}${node.attempts ? ' · ' + node.attempts : ''}</button>`)}</div>
       <${TaskWaves} slug=${lane.id} />

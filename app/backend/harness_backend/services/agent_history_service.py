@@ -6,6 +6,7 @@ Never invents a number: tokens/cost per agent only with a transcript or `*.event
 import re
 
 from ..repositories.loop_read_formatting import format_minutes_clock, ms_to_seconds, redact_credentials, sum_usage_tokens, to_number
+from .claude_account_service import build_turn_claude
 from .turn_service import get_turn_status
 
 HISTORY_ID_PATTERN = re.compile(r"^v(\d{1,6}):([A-Za-z0-9_-]{1,80})$")
@@ -100,20 +101,58 @@ class AgentHistoryService:
         main_path, subagents = self.claude_transcript_repository.locate_session_files(work_dir, turn_record.get("session_id"))
         main = self.claude_transcript_repository.read_transcript(main_path) if main_path else None
         agents = [self.build_orchestrator_agent(work_dir, number, turn_record, main)]
-        found = main is not None
+        rows = self.build_subagent_rows(number, subagents)
+        return agents + rows, main is not None or bool(rows)
+
+    def build_subagent_rows(self, number, subagents, live=False):
+        """One row per readable subagent transcript, oldest first. `live` = the session is still running: an unfinished, unfailed
+        transcript is `running` (in a finished turn it stays `done`)."""
         rows = []
         for agent_id, path, meta_path in subagents:
             transcript = self.claude_transcript_repository.read_transcript(path)
             if transcript is None:
                 continue
-            found = True
+            if transcript["failed"]:
+                state = "failed"
+            elif live and not transcript["final"]:
+                state = "running"
+            else:
+                state = "done"
             rows.append({"id": HISTORY_ID_FORMAT % (number, agent_id), "role": self.claude_transcript_repository.read_agent_type(meta_path),
-                         "feature": transcript["feature"], "state": "failed" if transcript["failed"] else "done", "summary": transcript["summary"],
+                         "feature": transcript["feature"], "task": transcript["task"], "state": state, "summary": transcript["summary"],
                          "tokens": transcript["tokens"], "duration_s": transcript["duration_s"], "started_at": transcript["started_at"],
                          "finished_at": transcript["finished_at"], "last_action": transcript["last_action"],
                          "return_status": transcript["return_status"], "decision": transcript["decision"]})
         rows.sort(key=lambda row: (row["started_at"] is None, row["started_at"] or "", row["id"]))
-        return agents + rows, found
+        return rows
+
+    def find_live_session_id(self, work_dir):
+        """Session of the turn in progress (a running turn has no turns/NNN.json yet): the most recent session of the project modified after
+        the turn started (lock file or last turn file, the later one). Best effort: None when it cannot be told, never raises."""
+        try:
+            repository = self.loop_file_repository
+            paths = [repository.get_lock_path(work_dir)]
+            paths += [repository.get_turn_path(work_dir, number) for number in repository.list_turn_numbers(work_dir)[-1:]]
+            moments = [moment for moment in (repository.get_mtime(path) for path in paths) if moment is not None]
+            if not moments:
+                return None
+            return self.claude_transcript_repository.find_live_session_id(work_dir, max(moments))
+        except Exception as failure:
+            self.log.warn("loop_read_live_session_failed", type=type(failure).__name__)
+            return None
+
+    def list_live_subagents(self, work_dir, number, excluded_session_ids=()):
+        """Subagent rows (id `vNNN:...` of the turn in progress, state `running` while unfinished) of the live session; [] when not found
+        or when the session is one that a finished turn already owns (`excluded_session_ids`)."""
+        session_id = self.find_live_session_id(work_dir)
+        if session_id is None or session_id in excluded_session_ids:
+            return []
+        try:
+            _, subagents = self.claude_transcript_repository.locate_session_files(work_dir, session_id)
+            return self.build_subagent_rows(number, subagents, live=True)
+        except Exception as failure:
+            self.log.warn("loop_read_live_subagents_failed", turn=number, type=type(failure).__name__)
+            return []
 
     def build_history(self, context):
         work_dir = context.work_dir
@@ -129,7 +168,8 @@ class AgentHistoryService:
                 agents, found = [self.build_orchestrator_agent(work_dir, number, record, None)], False
             turns.append({"n": number, "session_id": record.get("session_id") if isinstance(record.get("session_id"), str) else None,
                           "cost_usd": to_number(record.get("total_cost_usd")), "duration_s": ms_to_seconds(record.get("duration_ms")),
-                          "status": get_turn_status(record, snapshot_loop), "transcript": found, "agents": agents})
+                          "status": get_turn_status(record, snapshot_loop), "transcript": found,
+                          **build_turn_claude(record), "agents": [dict(agent, **build_turn_claude(record)) for agent in agents]})
         turns.sort(key=lambda turn: turn["n"], reverse=True)
         return {"turns": turns}
 
@@ -140,7 +180,10 @@ class AgentHistoryService:
             return None
         number, name = int(found.group(1)), found.group(2)
         record = self.loop_file_repository.read_turn(work_dir, number)
-        main_path, subagents = self.claude_transcript_repository.locate_session_files(work_dir, record.get("session_id"))
+        session_id = record.get("session_id")
+        if not record and name != ORCHESTRATOR_ID:  # the turn in progress has no record yet: its executors are in the live session
+            session_id = self.find_live_session_id(work_dir)
+        main_path, subagents = self.claude_transcript_repository.locate_session_files(work_dir, session_id)
         path = main_path if name == ORCHESTRATOR_ID else next((item[1] for item in subagents if item[0] == name), None)
         transcript = self.claude_transcript_repository.read_transcript(path) if path else None
         if transcript is not None:
@@ -196,7 +239,7 @@ class AgentHistoryService:
         for agent in agents:
             is_orchestrator = agent["role"] == ORCHESTRATOR_ROLE
             agent_log = (self.get_history_log(work_dir, agent["id"]) or ([], False))[0]
-            converted.append({"id": ORCHESTRATOR_ID if is_orchestrator else agent["id"], "role": agent["role"], "feature": agent["feature"],
+            converted.append({"id": ORCHESTRATOR_ID if is_orchestrator else agent["id"], "role": agent["role"], "feature": agent["feature"], "task": agent.get("task"),
                               "state": "idle" if is_orchestrator else agent["state"], "summary": agent["summary"], "tokens": agent["tokens"],
                               "cost_usd": to_number(record.get("total_cost_usd")) if is_orchestrator else None,
                               "duration_s": agent["duration_s"], "log": agent_log[-LOG_ITEMS_IN_STATE:],
