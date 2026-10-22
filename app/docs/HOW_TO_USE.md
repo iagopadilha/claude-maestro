@@ -392,6 +392,10 @@ Golden rule: **once the worktree exists, the truth of the state is in it.** Chan
 ## Headless guard
 The engine exports `LOOP_HEADLESS=1` to the loop session. In it every `git push` and every `gh` command is blocked by the guard for every caller (rules `headless-push` and `headless-gh`, hard blocks): the session only commits, and delivery belongs to the engine (`harness.py deliver` / Finish). The main session, which has no `agent_type`, gets the `orchestrator` profile instead of the permissive one. Executors dispatched per task (`SCOPE_TASK: <slug>/<Tn>`) may edit only the files of that task (`SCOPE.json` `tasks`), falling back to the feature's files.
 
+**Turn environment.** The engine reads the app `.env` into its own process, but the loop turn does not get the secrets from it: a variable whose value came from the app `.env` and whose name contains `PASSWORD`, `PASSWD`, `SECRET`, `TOKEN`, `API_KEY`, `APIKEY`, `PRIVATE_KEY`, `WEBHOOK` or `CREDENTIAL` is left out (notices are sent by the engine, not by the turn). A real variable you had with a different value, `TEST_USER_*` and any `$NAME` / `${NAME}` written in the project's `TEST-ENVIRONMENT.md` stay. On the first turn of a run the log shows `[loop] turn environment: N secret-looking variable(s) from the app .env left out (NAMES)`: names only, never a value. If the filter fails, the turn gets the full environment and one warning is printed.
+
+**Your own secret paths.** `GUARD_SECRET_PATHS` (a variable or a line in the app `.env`, paths separated by commas) adds files and folders the guard treats like the built-in credential files: reading or changing them from the loop is blocked by the `secrets` rule. Use it for private keys or credential files specific to your machine.
+
 ## Push identity
 The push uses the git identity configured on the machine. To require a specific account: `--git-user <account>` or `LOOP_GIT_USER=<account>` in the `.env`. The check verifies it and also reports a plugin hook that points the guard at a path that does not exist on the machine.
 

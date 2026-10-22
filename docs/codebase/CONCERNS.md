@@ -12,6 +12,11 @@ Short, evidence-based. Not a backlog.
 ## Duplicated logic
 - Credential layers are resolved twice, with the same 5-layer order: `plugin/shared/testenv.py` (stdlib, used by the skills) and `app/backend/harness_backend/engine/credential_check.py` (the app). Nothing enforces that they stay equal (the blank-value rule and the user shared folder lookup were copied by hand): change both together.
 
+## Containment is logical, not a sandbox
+- A loop turn is held by its worktree, the `claude -p` flags (permission mode, push disabled through `GIT_CONFIG_*`) and the text rules of `plugin/skills/orchestrator/hooks/guard.py` (`loop-guard-hardening`: production SQL writes, credential files, HTTP uploads, agent allowlist and model ceiling, shell delete/copy/move targets, unreadable `SCOPE.json`, secret-looking variables of the app `.env` left out of the turn by `engine/turn_environment.py`). It runs as the user, with the user's network and files: anything the text analysis cannot see (a target in a variable, `python -c` opening a file, a symlink) stays possible.
+- The one lock that does not depend on a regex is the database grant: the production MCP user should be SELECT-only in MySQL itself (the user's own setting, outside the repo).
+- Next step when this is not enough: run each turn in a container or as a separate OS user with a network allowlist.
+
 ## Shell execution
 - `app/backend/harness_backend/engine/run_loop.py:767` and `:827` run a setup command with `shell=True`; `plugin/shared/verify.py:130` does the same for verify commands. The command comes from project config/spec, so it is trusted input: unclear whether that is validated anywhere.
 

@@ -78,6 +78,7 @@ import credential_check  # noqa: E402  (TEST-ENVIRONMENT.md names only: no plain
 import cli_output  # noqa: E402  (one tolerant parser of the `claude -p` JSON output, shared with the app)
 import claude_binaries  # noqa: E402  (which `claude` command runs, the fallback on an account limit, prompt via stdin for a .cmd wrapper)
 import usage_windows  # noqa: E402  (5-hour / weekly usage windows read from the rate_limit_event of the turn output)
+import turn_environment  # noqa: E402  (the turn's environment without the secrets that only came from the app .env)
 import project_repos  # noqa: E402  (REPOS.json: the project's repos; one primary repo when the file is absent)
 import detect_setup  # noqa: E402  (automatic setup command and local files to copy of a repo)
 import subprojects  # noqa: E402  (monorepo list: owner of a path, confirmed or not)
@@ -2215,10 +2216,26 @@ def loop_json_correction_prompt(turn, branch):
             % (turn, branch, turn, turn))
 
 
+TURN_ENVIRONMENT_REPORTED = []  # one entry once the run has printed its turn-environment line (first turn only)
+
+
+def turn_environment_for(cwd):
+    """The process environment minus the secret-looking variables that came from the app .env (see turn_environment.py). The first turn of
+    a run prints their NAMES (never a value); an internal error passes the full environment and prints one warning."""
+    result = turn_environment.build(os.environ, cwd, app_paths.envload.candidates())
+    if not TURN_ENVIRONMENT_REPORTED:
+        TURN_ENVIRONMENT_REPORTED.append(True)
+        if result.get("error"):
+            print("[loop] WARNING: turn environment filter failed, the turn gets the full environment (%s)" % result["error"])
+        elif result["removed"]:
+            print("[loop] turn environment: %d secret-looking variable(s) from the app .env left out (%s)" % (len(result["removed"]), ", ".join(result["removed"])))
+    return result["env"]
+
+
 def push_lock_env(cwd):
     """Environment of `claude -p`: push is impossible even through a guard gap (python -c, subshell...). Disables the pushurl of EVERY remote
     for that process only (GIT_CONFIG_*, nothing is written to the repo); the end delivery is done by this script, outside that environment."""
-    env = dict(os.environ)
+    env = turn_environment_for(cwd)
     env["LOOP_HEADLESS"] = "1"
     env.setdefault("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "0")  # wait for the background subagents (the verifier) instead of killing them 10 min after the last turn; run_turn's timeout still bounds it
     env.setdefault("LOOP_APP_HOME", APP_ROOT_DIR)  # the headless turn finds the app without depending on config.json
