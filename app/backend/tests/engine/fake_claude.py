@@ -10,7 +10,9 @@ The behavior of each feature comes from a JSON pointed to by FAKE_SCENARIO:
    "argv_log": "<file>",                # appends the argv (JSON line) of every call
    "contracts": {"slug": "- [add] route GET /x — purpose (File.cs)"},  # contract.md the executor writes for that feature
    "decision_lines": {"2": ["- [a] ..."]},  # lines appended to VALIDATE.md by that turn
-   "output": "json",                    # json | noisy (warning line before the JSON, text after) | garbage (no JSON)
+   "output": "json",                    # json | stream (stream-json: init, assistant, rate_limit_event, result) | noisy (warning line before the JSON, text after) | garbage (no JSON)
+   "rate_limit": {"status": "allowed", "limit_type": "five_hour", "five_hour": 0.6, "seven_day": 0.33,
+                  "five_hour_reset_in": 7200, "seven_day_reset_in": 259200},  # the stream's rate_limit_event (utilization as a fraction, resets in seconds)
    "cheat": {"turn": 2, "type": "illegal|no_commit"},
    "features": {"slug": {"paths": "apps/a", "deps": "x,dir:y", "scope": "Small|Medium", "kind": "back",
                          "exec": "ok|fail", "gate": "ok|block", "ask": false}}}
@@ -21,6 +23,7 @@ import re
 import subprocess
 import sys
 import datetime
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), "harness_backend", "engine"))
@@ -60,13 +63,28 @@ def set_fields(text, slug, **fields):
     return "\n".join(lines) + "\n"
 
 
+def rate_limit_event(settings):
+    """The `rate_limit_event` line of a stream-json output, as claude 2.1.x prints it (utilization is a fraction, resets in epoch seconds)."""
+    now = int(time.time())
+    five_reset = now + int(settings.get("five_hour_reset_in", 7200))
+    seven_reset = now + int(settings.get("seven_day_reset_in", 259200))
+    limit_type = settings.get("limit_type", "five_hour")
+    return {"type": "rate_limit_event", "rate_limit_info": {
+        "status": settings.get("status", "allowed"), "resetsAt": five_reset if limit_type == "five_hour" else seven_reset, "rateLimitType": limit_type,
+        "overageStatus": "rejected", "overageDisabledReason": "org_level_disabled", "isUsingOverage": False,
+        "unifiedWindows": {"five_hour": {"utilization": settings.get("five_hour", 0.6), "resetsAt": five_reset},
+                           "seven_day": {"utilization": settings.get("seven_day", 0.33), "resetsAt": seven_reset}}}}
+
+
 def git(*args):
     return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8")
 
 
 def main():
     argv = sys.argv[1:]
-    prompt = argv[argv.index("-p") + 1] if "-p" in argv else ""
+    prompt = argv[argv.index("-p") + 1] if "-p" in argv and argv.index("-p") + 1 < len(argv) else ""
+    if prompt.startswith("--"):  # no prompt argument: it came through stdin (a .cmd wrapper such as `cc`)
+        prompt = sys.stdin.read()
     tokens = prompt.split()
     turn = int(option(tokens, "--turn", "1"))
     phase = option(tokens, "--phase")
@@ -79,7 +97,13 @@ def main():
         ready = [slug for slug, lane_step in lanes if lane_step == step]
     e2e = "--e2e" in tokens
 
+    if not os.path.isfile(os.path.join(SPECS, "ROADMAP.md")):
+        # not a loop project (a test that runs this fake from its own folder): answer, but never create `.specs/` there
+        print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "no roadmap here", "total_cost_usd": 0}))
+        return 0
     scenario = json.loads(read(os.environ["FAKE_SCENARIO"]) or "{}")
+    if os.environ.get("FAKE_CC_ACCOUNT"):  # plays the `cc` account picker in headless mode: it names the account on stderr
+        print("[cc] conta: %s" % os.environ["FAKE_CC_ACCOUNT"], file=sys.stderr)
     if scenario.get("argv_log"):  # one JSON line per call: the whole argv (tests check --model and friends)
         with open(scenario["argv_log"], "a", encoding="utf-8") as handle:
             handle.write(json.dumps(argv) + "\n")
@@ -192,8 +216,13 @@ def main():
     }))
     result = json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "ok",
                          "total_cost_usd": scenario.get("cost", 0.1), "permission_denials": scenario.get("denials", [])})
-    output = scenario.get("output", "json")  # json | noisy (warning line before, text after) | garbage (no JSON at all)
-    if output == "noisy":
+    output = scenario.get("output", "json")  # json | stream | noisy (warning line before, text after) | garbage (no JSON at all)
+    if output == "stream":
+        print(json.dumps({"type": "system", "subtype": "init", "session_id": "sess-1"}))
+        print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "working on the rate limit and 429 handling"}]}}))
+        print(json.dumps(rate_limit_event(scenario.get("rate_limit") or {})))
+        print(result)
+    elif output == "noisy":
         print("Warning: a newer CLI version is available")
         print(result)
         print("Session saved.")

@@ -13,6 +13,7 @@ from typing import Protocol
 from ..infrastructure.claude_client import redact_secrets
 from ..repositories.chat_repository import THREAD_BUSY_REASON, generate_thread_id
 from ..repositories.loop_command_file_repository import loop_state, now_iso
+from ..infrastructure.claude_client import call_kind
 
 CHAT_TIMEOUT_SECONDS = 180
 MAX_CONCURRENT_JOBS = 3
@@ -225,7 +226,8 @@ class ChatService:
         result = {"state": JOB_STATE_ERROR, "reply": None, "cost_usd": None, "error": UNEXPECTED_FAILURE, "thread": thread_id}
         session_id = None
         try:
-            returned = self.claude_client.run_prompt(argv, run_dir, stdin_text, self.timeout_seconds)
+            with call_kind("chat"):
+                returned = self.claude_client.run_prompt(argv, run_dir, stdin_text, self.timeout_seconds)
             if returned["ok"]:
                 session_id = returned.get("session_id") or None
                 cost = returned["cost_usd"] if is_number(returned.get("cost_usd")) else None

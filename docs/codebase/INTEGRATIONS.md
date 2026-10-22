@@ -7,7 +7,7 @@ No database, no queue, no inbound webhooks. Everything is local files, subproces
 
 ## Claude Code CLI
 
-**Purpose:** executes every loop turn, planning and chat (`claude -p ... --output-format json`).
+**Purpose:** executes every loop turn, planning and chat (`claude -p ... --output-format stream-json --verbose`; its `rate_limit_event` gives the 5-hour and weekly usage).
 **Implementation:** `infrastructure/claude_client.py` (argv builder, no shell, env without secrets), `engine/cli_output.py` (tolerant parser), `services/claude_job_service.py`.
 **Configuration:** binary from app config (`config/app_config.py`); `harness.py doctor` checks it is on PATH.
 **Authentication:** the user's own Claude subscription; no API token.

@@ -19,6 +19,7 @@ from .chat_service import (CHAT_ALLOWED_TOOLS, CHAT_BUDGET_USD, CHAT_DISALLOWED_
 from .failed_test_parser import parse_failed_tests
 from .loop_panel_service import QUARANTINE_OPTIONS
 from .pipeline_service import EVENT_BLOCKED, EVENT_FAIL, STEPS, STEP_GATE, STEP_VERIFY
+from ..infrastructure.claude_client import call_kind
 
 BLOCKED_STATUS = "blocked"
 NOT_QUARANTINED_ERROR = "feature is not in quarantine"
@@ -221,7 +222,8 @@ class QuarantineService:
     def run_summary_job(self, context, job_id, detail, argv, stdin_text, run_dir):
         result = {"state": JOB_STATE_ERROR, "reply": None, "cost_usd": None, "error": UNEXPECTED_FAILURE, "thread": None}
         try:
-            returned = self.claude_client.run_prompt(argv, run_dir, stdin_text, self.timeout_seconds)
+            with call_kind("quarantine"):
+                returned = self.claude_client.run_prompt(argv, run_dir, stdin_text, self.timeout_seconds)
             if returned["ok"]:
                 text = redact_secrets(returned.get("reply"), REPLY_LIMIT).strip()
                 cost = returned["cost_usd"] if is_number(returned.get("cost_usd")) else None

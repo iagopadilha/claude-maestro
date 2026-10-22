@@ -24,6 +24,7 @@ from .loop_control_service import LoopControlService
 from .loop_worktree_service import LoopWorktreeService
 from .planning_requirement_service import PlanningRequirementService
 from .whiteboard_service import WhiteboardService
+from .claude_call_log_service import build_shared_claude_call_log_service
 
 
 @dataclass
@@ -43,7 +44,8 @@ def build_loop_commands_module(config, log, project_service, loop_status_service
     `planning_requirement_service` comes from the projects module (composition); alone (tests) the module builds its own."""
     process_runner = ProcessRunner()
     planning_requirement_service = planning_requirement_service or PlanningRequirementService(SpecsFileRepository(), process_runner)
-    claude_client = ClaudeClient(process_runner, config.claude_binary)
+    claude_client = ClaudeClient(process_runner, config.claude_binary, fallback_binaries=config.claude_fallback_binaries,
+                                 call_recorder=build_shared_claude_call_log_service(config).record_call)
     git_client = GitClient(process_runner)
 
     loop_command_file_repository = LoopCommandFileRepository()

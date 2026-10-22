@@ -270,6 +270,8 @@ class LoopControlService:
         claude_binary = getattr(self.config, "claude_binary", "") or ""
         if claude_binary:  # AUD-36: the engine runs the same `claude` the app runs (a demo/test fake), not always the one on PATH
             flags += ["--claude", claude_binary]
+        for fallback in getattr(self.config, "claude_fallback_binaries", None) or []:  # e.g. `cc`: another account when this one hits its limit
+            flags += ["--claude-fallback", fallback]
         return flags, dispatch, None
 
     @staticmethod

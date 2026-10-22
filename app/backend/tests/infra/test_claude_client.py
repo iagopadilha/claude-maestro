@@ -50,7 +50,7 @@ class TestBuildCommand(ClaudeClientCase):
         argv = self.client.build_command("sonnet", 1, ["Read", "Grep"], ["Bash"], no_mcp=True, resume_session="s-9",
                                          fork_session=True, prompt_argument="/orchestrator roadmap", permission_mode="acceptEdits")
         self.assertEqual(argv[:4], [sys.executable, self.binary, "-p", "/orchestrator roadmap"])
-        self.assertEqual(argv[argv.index("--output-format") + 1], "json")
+        self.assertEqual(argv[argv.index("--output-format") + 1:argv.index("--output-format") + 3], ["stream-json", "--verbose"])
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
         self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "1")
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "acceptEdits")
@@ -66,7 +66,7 @@ class TestBuildCommand(ClaudeClientCase):
 
     def test_without_optionals_adds_no_empty_flags(self):
         argv = self.client.build_command("", 0, no_mcp=False)
-        self.assertEqual(argv, [sys.executable, self.binary, "-p", "--output-format", "json"])
+        self.assertEqual(argv, [sys.executable, self.binary, "-p", "--output-format", "stream-json", "--verbose"])
 
     def test_fork_without_session_is_ignored(self):
         self.assertNotIn("--fork-session", self.client.build_command("sonnet", 1, fork_session=True))
@@ -121,6 +121,81 @@ class TestRunPrompt(ClaudeClientCase):
         self.assertFalse(result["ok"])
         self.assertTrue(result["error"])
         self.assertFalse(client.is_available())
+
+
+LIMITED_CLAUDE = r'''
+import json, sys
+sys.stdin.read()
+print(json.dumps({"type": "result", "is_error": True, "result": "Claude AI usage limit reached|1767225600"}))
+sys.exit(1)
+'''
+
+
+UNAUTHORIZED_CLAUDE = r'''
+import json, sys
+sys.stdin.read()
+print(json.dumps({"type": "result", "is_error": True, "result": "API Error: 403 permission_error (error type oauth_org_not_allowed, HTTP 403)"}))
+sys.exit(1)
+'''
+
+
+class TestFallbackBinaries(ClaudeClientCase):
+    def setUp(self):
+        super().setUp()
+        self.limited = os.path.join(self.folder, "limited_claude.py")
+        with open(self.limited, "w", encoding="utf-8") as handle:
+            handle.write(LIMITED_CLAUDE)
+        self.unauthorized = os.path.join(self.folder, "unauthorized_claude.py")
+        with open(self.unauthorized, "w", encoding="utf-8") as handle:
+            handle.write(UNAUTHORIZED_CLAUDE)
+
+    def test_an_unusable_account_runs_the_same_argv_with_the_fallback(self):
+        client = ClaudeClient(ProcessRunner(), self.unauthorized, fallback_binaries=[self.binary])
+        with self.assertLogs("harness_backend.infrastructure.claude_client", level="WARNING") as logged:
+            result = client.run_prompt(client.build_command("sonnet", 1), self.folder, "question", 60)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["binary"], self.binary)
+        self.assertIn("unusable", logged.output[0])
+
+    def test_every_command_unusable_returns_the_last_error_with_its_binary(self):
+        client = ClaudeClient(ProcessRunner(), self.unauthorized, fallback_binaries=[self.limited])
+        result = client.run_prompt(client.build_command("sonnet", 1), self.folder, "", 60)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["binary"], self.limited)
+        client = ClaudeClient(ProcessRunner(), self.unauthorized, fallback_binaries=[self.unauthorized])
+        result = client.run_prompt(client.build_command("sonnet", 1), self.folder, "", 60)
+        self.assertEqual(result["binary"], self.unauthorized)
+        self.assertIn("oauth_org_not_allowed", result["error"])
+
+    def test_usage_limit_runs_the_same_argv_with_the_fallback(self):
+        client = ClaudeClient(ProcessRunner(), self.limited, fallback_binaries=[self.binary])
+        result = client.run_prompt(client.build_command("sonnet", 1, prompt_argument="/x"), self.folder, "question", 60)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["binary"], self.binary)
+        self.assertEqual(result["raw"]["argv"][:2], ["-p", "/x"])
+        self.assertEqual(result["raw"]["argv"][result["raw"]["argv"].index("--model") + 1], "sonnet")
+
+    def test_other_errors_never_switch(self):
+        self.set_variable("FAKE_CLAUDE_MODE", "text")
+        client = ClaudeClient(ProcessRunner(), self.binary, fallback_binaries=[self.limited])
+        result = client.run_prompt(client.build_command("sonnet", 1), self.folder, "", 60)
+        self.assertEqual((result["ok"], result["binary"]), (False, self.binary))
+
+    def test_every_command_limited_returns_the_last_error(self):
+        client = ClaudeClient(ProcessRunner(), self.limited, fallback_binaries=[self.limited])
+        result = client.run_prompt(client.build_command("sonnet", 1), self.folder, "", 60)
+        self.assertFalse(result["ok"])
+        self.assertIn("usage limit", result["error"])
+
+    @unittest.skipUnless(os.name == "nt", "cmd.exe wrappers exist only on Windows")
+    def test_cmd_wrapper_gets_a_multi_line_prompt_whole_through_stdin(self):
+        wrapper = os.path.join(self.folder, "cc.cmd")
+        with open(wrapper, "w", newline="\r\n") as handle:
+            handle.write('@echo off\n"%s" "%s" %%*\n' % (sys.executable, self.binary))
+        client = ClaudeClient(ProcessRunner(), wrapper)
+        result = client.run_prompt(client.build_command("sonnet", 1, prompt_argument="line 1\nline 2"), self.folder, "", 60)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["reply"], "echo: line 1\nline 2")
 
 
 class TestExtraEnvAndPushDisabled(ClaudeClientCase):

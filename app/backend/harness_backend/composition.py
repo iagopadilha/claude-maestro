@@ -17,7 +17,10 @@ from .config.app_config import load_app_config
 from .infrastructure.structured_log import StructuredLog
 from .infrastructure.activity_monitor import ActivityMonitor
 from .api.controllers.app_controller import AppController
+from .domain.project import ProjectContext
 from .services.app_diagnostics_service import build_app_diagnostics_service
+from .services.claude_account_service import build_shared_claude_account_service
+from .services.claude_call_log_service import build_shared_claude_call_log_service
 from .services.decisions_service import DecisionsService
 from .services.projects_module import build_projects_module
 from .services.loop_read_module import build_loop_read_module
@@ -45,6 +48,15 @@ class AssembledApplication:
         return "%sp/%s/" % (self.get_app_url(), project_id)
 
 
+def list_usage_folders(project_service):
+    """Work folder and repo folder of the most recently opened project: where the loop wrote the usage of each command ([] if none)."""
+    projects = project_service.list_projects()
+    if not projects:
+        return []
+    context = ProjectContext(max(projects, key=lambda project: str(project.last_opened_at or "")))
+    return list(dict.fromkeys([context.work_dir, context.repo_path]))
+
+
 def build_application(config=None, **config_overrides):
     config = config or load_app_config(**config_overrides)
     log = StructuredLog(config.logs_dir)
@@ -60,7 +72,9 @@ def build_application(config=None, **config_overrides):
     projects_module = build_projects_module(config, log, get_app_url)
     decisions_service = DecisionsService()  # one instance: the loop panel, the decisions routes and the wrap-up share it
     loop_read_module = build_loop_read_module(config, log, projects_module.project_service, activity_monitor,
-                                              projects_module.planning_requirement_service, decisions_service=decisions_service)
+                                              projects_module.planning_requirement_service, decisions_service=decisions_service,
+                                              claude_account_service=build_shared_claude_account_service(config),
+                                              claude_call_log_service=build_shared_claude_call_log_service(config))
     loop_commands_module = build_loop_commands_module(config, log, projects_module.project_service,
                                                       loop_read_module.loop_status_service, activity_monitor, get_app_url,
                                                       projects_module.planning_requirement_service)
@@ -82,7 +96,8 @@ def build_application(config=None, **config_overrides):
     quarantine_module = build_quarantine_module(config, log, projects_module.project_service, loop_read_module, loop_commands_module,
                                                 projects_module.planning_requirement_service)
     app_controller = AppController(config, log, server, activity_monitor, projects_module.project_service,
-                                   app_diagnostics_service=build_app_diagnostics_service(config))
+                                   app_diagnostics_service=build_app_diagnostics_service(
+                                       config, lambda: list_usage_folders(projects_module.project_service)))
 
     for module in (projects_module, loop_read_module, loop_commands_module, multi_repo_module, quarantine_module):
         for controller in module.controllers:

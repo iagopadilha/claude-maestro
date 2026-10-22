@@ -88,7 +88,7 @@ class TaskStatusRepositoryTests(unittest.TestCase):
             handle.write(text)
 
     def test_no_tasks_md_returns_an_empty_list(self):
-        self.assertEqual(self.repository.read_feature_tasks(self.work, "feat"), {"tasks": [], "max_parallel": 2})
+        self.assertEqual(self.repository.read_feature_tasks(self.work, "feat"), {"source": "none", "max_parallel": 2, "tasks": [], "waves": []})
 
     def test_a_missing_status_file_returns_every_task_pending_in_wave_order(self):
         self.write_tasks(TASKS)

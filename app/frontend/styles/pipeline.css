@@ -122,3 +122,18 @@
 .pl-task-chip.running{color:var(--pl-amber);border-color:var(--pl-amber);}
 .pl-task-chip.done{color:#3fb950;border-color:#3fb950;}
 .pl-task-chip.failed{color:#f85149;border-color:#f85149;background:var(--pl-red-bg);cursor:help;}
+
+/* Task waves in the lane cards (diagram) and list cards: parallel marker and the "open feature view" button */
+.pl-task-wave-mode{font:9px var(--pl-mono);color:var(--pl-dim);}
+.pl-task-wave.parallel .pl-task-wave-mode{color:var(--pl-blue);}
+.pl-task-wave-split{font:9px var(--pl-mono);color:var(--pl-amber);}
+.pl-lane-tasks{position:absolute;left:12px;right:12px;margin:0;pointer-events:none;}
+.pl-open{background:none;border:1px solid var(--pl-line-strong);color:var(--pl-blue);border-radius:4px;padding:1px 7px;font:500 10px var(--pl-sans);cursor:pointer;white-space:nowrap;}
+.pl-open:hover{border-color:var(--pl-blue);color:#fff;}
+.pl-lane,.pl-card-head{cursor:pointer;}
+.pl-lane{cursor:move;}
+
+/* the turn's command and sign-in on a step node (inherited from its turn) and the "who spawns the agents" note */
+.pl-node-bottom .z-cbadge{flex:0 1 auto;min-width:0;}
+.pl-legend .z-who{margin-left:auto;}
+.pl-list-note{display:flex;justify-content:flex-end;}

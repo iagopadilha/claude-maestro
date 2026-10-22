@@ -118,7 +118,9 @@ function turnDot(turn, isLiveTurn) {
 export function turnsList() {
   const last = liveN();
   return turnsData().map((turn) => ({ n: turn.n, label: turn.label, status: turn.status, cost_usd: turn.cost_usd, duration_s: turn.duration_s,
-    decision: turn.decision, changes: turn.events.length, dot: turnDot(turn, turn.n === last), events: turn.events, files: turn.files }));
+    decision: turn.decision, changes: turn.events.length, dot: turnDot(turn, turn.n === last), events: turn.events, files: turn.files,
+    claude: turn.claude, claude_account: turn.claude_account, auth_method: turn.auth_method, auth_email: turn.auth_email, auth_plan: turn.auth_plan,
+    cc_account: turn.cc_account }));
 }
 
 /** Readable name of a feature (GET pipeline features[].name, else ctx.state.features[].name); the slug itself when there is none. */

@@ -5,9 +5,11 @@ import time
 
 from ..repositories.loop_file_repository import graph_view, loop_state
 from ..repositories.loop_read_formatting import now_iso, to_number, to_text_list
+from ..domain.roadmap_settings import parse_loop_settings
 from ..domain.project_errors import InvalidPathError, SpecFileNotFoundError
 from ..repositories.specs_file_repository import compute_bytes_version, run_hints  # noqa: F401  (also puts the engine folder on sys.path)
 import subprojects as subprojects_engine  # noqa: E402
+from .claude_account_service import build_turn_claude, build_usage_totals, build_usage_view  # noqa: E402
 from .decisions_service import DecisionsService  # noqa: E402
 
 DEFAULT_LIMITS = {"max_cost": 50.0, "max_stall": 10, "timeout": 60}
@@ -110,7 +112,8 @@ def parse_answers(text):
 
 class LoopPanelService:
     def __init__(self, loop_status_service, loop_file_repository, roadmap_view_service, turn_service, agent_history_service, activity_monitor,
-                 guard_event_service, planning_requirement_service, decisions_service=None, task_status_repository=None):
+                 guard_event_service, planning_requirement_service, decisions_service=None, task_status_repository=None, claude_account_service=None,
+                 claude_call_log_service=None):
         self.loop_status_service = loop_status_service
         self.loop_file_repository = loop_file_repository
         self.roadmap_view_service = roadmap_view_service
@@ -121,6 +124,8 @@ class LoopPanelService:
         self.planning_requirement_service = planning_requirement_service
         self.decisions_service = decisions_service or DecisionsService()
         self.task_status_repository = task_status_repository  # None = no `tasks` block in the features
+        self.claude_account_service = claude_account_service  # None = `meta.claude_account_info` only repeats what meta.json has
+        self.claude_call_log_service = claude_call_log_service  # None = the totals count only the loop turns
 
     def build_state(self, context, project_url):
         work_dir = context.work_dir
@@ -132,7 +137,13 @@ class LoopPanelService:
         stages, features, counts, graph = self.roadmap_view_service.build_roadmap_view(work_dir, roadmap_text)
         turn = compute_current_turn(summary["json"], meta, numbers, running)
         guard = self.guard_event_service.build_guard_summary(work_dir)
-        self.attach_tasks_to_building_features(work_dir, features)
+        self.attach_tasks_to_features(work_dir, features)
+        turn_rows = self.turn_service.list_turns(work_dir, turn if running else None)
+        calls = self.list_panel_calls(context)
+        agents = self.agent_history_service.build_state_agents(work_dir, summary, features, numbers)
+        loop_settings = parse_loop_settings(roadmap_text)
+        agent_claude = build_turn_claude(meta)  # every agent runs inside the turn's process: same command and sign-in
+        agents = [dict(agent, **agent_claude) for agent in agents]
 
         return {
             "now": now_iso(), "project": get_project_name(meta, context), "repo": context.repo_path, "work": work_dir,
@@ -141,9 +152,14 @@ class LoopPanelService:
             "loop": self.build_loop_block(work_dir, summary, turn),
             "meta": {"turns": meta.get("turns"), "cost_usd": meta.get("cost_usd"),
                      "max_cost_usd": effective_cost_cap(meta, read_command_limits(self.loop_file_repository.read_loop_command(work_dir))), "branch": meta.get("branch"), "pr": meta.get("pr"),
-                     "pr_status": meta.get("pr_status")},
+                     "pr_status": meta.get("pr_status"), "claude": meta.get("claude"), "claude_account": meta.get("claude_account"),
+                     "claude_switches": meta.get("claude_switches"), "claude_account_info": self.build_claude_account(meta),
+                     "claude_totals": self.build_claude_totals(context, turn_rows, calls),
+                     "claude_usage_view": self.build_claude_usage_view(meta, turn_rows, calls), **build_turn_claude(meta),
+                     "max_parallel_tasks": loop_settings["settings"]["max_parallel_tasks"],
+                     "max_parallel_tasks_in_header": "max_parallel_tasks" not in loop_settings["missing"]},
             "limits": self.build_limits(work_dir, meta, running, numbers), "stages": stages, "features": features, "counts": counts,
-            "graph": graph, "agents": self.agent_history_service.build_state_agents(work_dir, summary, features, numbers),
+            "graph": graph, "agents": agents,
             "validate": [line.strip() for line in self.loop_file_repository.read_state_file(work_dir, "VALIDATE.md").splitlines()
                          if line.strip().startswith(VALIDATE_LINE_PREFIX)],
             "decisions_summary": self.decisions_service.open_counts(context),
@@ -151,19 +167,43 @@ class LoopPanelService:
             "roadmap_approval": self.loop_file_repository.read_roadmap_approval(work_dir, context.repo_path),
             "planning_required": self.planning_requirement_service.is_planning_required(context),
             "answers": parse_answers(self.loop_file_repository.read_state_file(work_dir, "ANSWERS.md")),
-            "turns": self.turn_service.list_turns(work_dir, turn if running else None),
+            "turns": turn_rows,
             "quarantine": self.build_quarantine(features),
             "guard_events": guard["events"], "guard_counts": guard["counts"],
             "monitor": {"url": project_url, "idle_in_s": None, "shutdown_in_s": self.activity_monitor.seconds_until_shutdown()},
         }
 
-    def attach_tasks_to_building_features(self, work_dir, features):
-        """Adds `tasks` ({tasks:[{id,title,status,wave,note}], max_parallel}) to each feature that is being built; others get no key."""
+    def list_panel_calls(self, context):
+        """Every kept panel call (chat, map, roadmap...), newest first; [] when there is no call log service."""
+        if self.claude_call_log_service is None:
+            return []
+        return self.claude_call_log_service.list_all_calls([context.work_dir, context.repo_path])
+
+    def build_claude_totals(self, context, turn_rows, calls=None):
+        """Turns and panel calls (chat, map, roadmap...) with their cost, per sign-in method and per command; see build_usage_totals."""
+        return build_usage_totals(turn_rows, self.list_panel_calls(context) if calls is None else calls)
+
+    def build_claude_usage_view(self, meta, turn_rows, calls):
+        """5-hour and weekly usage per command/account from meta, turn logs and the call log; never waits and never queries Claude."""
+        if self.claude_account_service is None:
+            return build_usage_view(meta, (), turn_rows, calls)
+        return self.claude_account_service.build_usage_view(meta, turn_rows, calls)
+
+    def build_claude_account(self, meta):
+        """Structured account in use ({command, role, method, email, org, plan, cc_account, switches, label}); never waits for `auth status`."""
+        if self.claude_account_service is None:
+            return None
+        return self.claude_account_service.build_current_account(meta)
+
+    def attach_tasks_to_features(self, work_dir, features):
+        """Adds `tasks` ({source, max_parallel, tasks:[{id,title,status,wave,deps,files,parallel,note}], waves}) to each feature that has a
+        tasks.md and to each feature being built (empty list without tasks.md); others get no key."""
         if self.task_status_repository is None:
             return
         for feature in features:
-            if feature.get("status") == BUILDING_STATUS:
-                feature["tasks"] = self.task_status_repository.read_feature_tasks(work_dir, feature["id"])
+            block = self.task_status_repository.read_feature_tasks(work_dir, feature["id"])
+            if block["tasks"] or feature.get("status") == BUILDING_STATUS:
+                feature["tasks"] = block
 
     def build_loop_block(self, work_dir, summary, turn):
         loop_json, running = summary["json"], summary["running"]

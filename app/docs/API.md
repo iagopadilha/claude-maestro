@@ -20,7 +20,7 @@ to `work`:
   `snapshots/NNN/`, `chat/<thread>.json`, `jobs/<job>.json`, `whiteboard.json`, `actions.log`
 - Task waves: `internal/tasks/<slug>.json` is the status of each task of a feature's `tasks.md` (`pending|running|done|failed`, optional note), written only by `harness.py tasks set`:
   `harness.py tasks waves <slug> [--max N]` (JSON waves of the tasks not done yet, at most `Max parallel tasks` per wave), `tasks set <slug> <Tn> <status> [--note TEXT]`, `tasks mirror <slug>` (copies the status into the
-  `**Status**:` lines of `tasks.md`); `--root DIR` = the folder that holds `.specs`. `GET state` adds a `tasks` block (`{tasks: [{id, title, status, wave, note}], max_parallel}`) to each feature being built (`TaskStatusRepository`); the pipeline list view shows it.
+  `**Status**:` lines of `tasks.md`); `--root DIR` = the folder that holds `.specs`. `GET state` adds a `tasks` block (`{source: tasks.md|none, max_parallel, tasks: [{id, title, status, wave, deps, files, parallel, note}], waves: [{n, task_ids, split_by_limit}]}`) to every feature that has a `tasks.md` and to each feature being built (empty without `tasks.md`; `TaskStatusRepository`); the pipeline shows it in both list and diagram modes. `split_by_limit` = without the `Max parallel tasks` limit a task of the next wave would have run in this one (a dependency or a shared file is not a split). Subagent rows (`history`, `state.agents`) carry `task` (`"T5"` from the prompt line `SCOPE_TASK: <slug>/T5`, else `null`).
 - `meta.json` keys added by the loop panel work: `delivery` `{push_pr, remove_worktree_on_finish}` (the two checkboxes of the Start
   dialog, written by the app at start; before the worktree exists they wait in `delivery-pending.json` of the repository and the
   engine merges them), `cost_usd` (total spent by the run, never reset by a start, a resume or a raise), `max_cost_usd` (cap of this
@@ -87,7 +87,18 @@ already ran loops and lost the approval (rows changed) is NOT in planning mode (
     "reason": "text (the question, or the cause of the error)", "next": "text",
     "options": ["a (recommended)", "b"], "to_check": ["x"], "at": "ISO", "pause_requested": false
   },
-  "meta": {"turns": 12, "cost_usd": 6.2, "max_cost_usd": 50, "branch": "...", "pr": null, "pr_status": null},
+  "meta": {"turns": 12, "cost_usd": 6.2, "max_cost_usd": 50, "branch": "...", "pr": null, "pr_status": null,
+           "claude": "cc", "claude_account": "token, cc account claude2", "claude_switches": 2,
+           "claude_account_info": {"command": "cc", "role": "main|fallback|''", "method": "login|token|API key|''", "auth_method": "login|token|api_key|''",
+                                   "email": "...", "org": "...", "plan": "team", "cc_account": "claude2", "switches": 2, "label": "token, cc account claude2"},
+           "auth_method": "token", "auth_email": "", "auth_plan": "", "cc_account": "claude2",
+           "claude_usage_view": [{"key": "claude|cc:claudep", "command": "claude", "cc_account": "", "status": "allowed|allowed_warning|rejected|''",
+                                  "read_at": "ISO", "age_seconds": 720,
+                                  "windows": [{"key": "five_hour|seven_day|<other>", "label": "5-hour|weekly", "pct": 60.0, "reset_at": 1792702800,
+                                               "reset_local": "ISO", "exhausted": false}]}],
+           "claude_totals": {"by_method": [{"method": "login|token|api_key|''", "turns": 3, "calls": 2, "cost_usd": 1.2}],
+                             "by_command": [{"command": "claude|cc|unknown", "turns": 3, "calls": 2, "cost_usd": 1.2}], "turns": 3, "calls": 2, "cost_usd": 1.2},
+           "max_parallel_tasks": 3, "max_parallel_tasks_in_header": false},
   "limits": [
     {"key": "cost", "label": "cost", "value": 6.2, "max": 50, "unit": "US$", "pct": 12.4},
     {"key": "turns_without_progress", "label": "without progress", "value": 0, "max": 10, "unit": "", "pct": 0},
@@ -120,6 +131,11 @@ already ran loops and lost the approval (rows changed) is NOT in planning mode (
   "monitor": {"url": "http://127.0.0.1:47801/p/<id>/", "idle_in_s": null, "shutdown_in_s": null}
 }
 ```
+**Sign-in of every turn and agent.** `run_loop.py` writes, next to `claude_account`, the structured fields `auth_method` (`login` browser login, `token` sign-in token, `api_key`, or `''`), `auth_email`, `auth_plan` and `cc_account` (never a secret) in `turns/NNN.json` and `meta.json`. The same four fields, plus `claude` and `claude_account`, are on `state.turns[]`, `state.meta`, `pipeline.turns[]`, `history.turns[]` and, **inherited from the turn that spawned them** (an agent runs inside its turn's process, so it has the turn's command and sign-in), on `state.agents[]`, `history.turns[].agents[]` and `feature/<slug>` `agents[]` and `tasks.tasks[].executors[]` (`claude`, `auth_method`, `auth_email`, `cc_account`). A turn written before the fields existed is read from its `claude_account` label (so old turns still show a method); an unknown sign-in is `''`. In the panel: `login` = "subscription · browser login", `token` = "subscription · sign-in token", `api_key` = "API key · billed per token" (shown as a warning).
+`meta.claude_totals` sums the loop turns and the panel's own `claude -p` calls (the call log of `GET jobs`) per sign-in method and per command: `{by_method: [{method, turns, calls, cost_usd}], by_command: [{command, turns, calls, cost_usd}], turns, calls, cost_usd}`, biggest cost first. `meta.max_parallel_tasks` is the ROADMAP header `Max parallel tasks` (default 3, 1 to 5; `max_parallel_tasks_in_header` says whether the header has the line): the panel quotes it in the "who spawns the agents" note.
+`meta.claude_account_info` (`ClaudeAccountService`) is the account in use: the per-turn label of `meta.json` wins; the `auth status` rows (cached 5 min, refreshed by a background thread, never awaited by the poll) fill method/e-mail/org/plan and give the main command before turn 1 (empty fields until the first refresh ends). `GET /api/app/info` `claude_commands` reads the same cache and the hub diagnostics lists it.
+
+`meta.claude_usage_view` is the 5-hour and weekly usage per command/account (`build_usage_view`), read only from files the loop already wrote and never waiting: per key (`claude`, or `cc:<account>` when the `cc` picker line exists) `meta.json` `claude_usage` first, else the newest turn log with `usage_windows`, else the newest panel call (`claude_calls.jsonl`). `pct` is 0-100, `reset_at` is epoch seconds, `exhausted` = `pct >= 100`, `age_seconds` = time since `read_at` (`null` when unknown). A configured command never seen has `windows: []` ("usage unknown"). Turn rows of `turns[]` also carry `usage_windows` (`{key: {pct, reset_at, reset_local}}`, `{}` for older turns) and `limit_status`. `GET /api/app/info` adds `claude_usage` (the same rows, taken from the newest opened project's loop files; empty windows without a project) and `usage` on every `claude_commands` row (its usage rows, one per `cc` account). `python harness.py doctor [--project <repo>]` prints one line per command/account, e.g. `5-hour 60 % (reset 14:30) · weekly 33 % (reset Mon 27/10 09:00)`.
 Derivation rules (server):
 - `loop.status`: `LOOP.lock` with a live PID = `running` (even if an old LOOP.json says otherwise); no lock and LOOP.json
   present = the LOOP.json status; no lock with LOOP.json in `continue` = `stopped` (the script died), or `error` when
@@ -178,6 +194,14 @@ The six fixed steps of every feature and what each turn did, for the pipeline vi
 - `files`: `[{path, add, del}]` = `git diff --numstat` between the HEADs of snapshots N-1 and N of the primary work folder (up to 200); `[]` when either HEAD is unknown. A binary file counts 0/0.
 - `live_turn` = the turn in progress while running, else the last turn number, else `null`. `paused` = `loop.status` is `awaiting_user` and nothing runs. `quarantine` = slugs with status `blocked`.
 
+### GET feature/<slug>
+The central view of one feature being executed (the panel's Feature dialog, polled every 3 s while the loop runs). 404 `feature not found` for an unknown project or slug. Read only.
+`{"id", "name", "status", "stage", "wave", "deps": ["slug"], "paths": ["src/x"], "scope": "Small"|null, "kind", "current_step": "spec|gate|build|verify|commit"|null, "steps": [{step, state: done|running|pending|failed}], "claude": {command, account}|null, "tasks": {...the state block..., tasks[].executors: [{agent_id, role, turn, state, return_status, duration_s, tokens, started_at, finished_at}]}, "agents": [{agent_id, role, turn, task, state, return_status, duration_s, tokens, started_at, finished_at, summary}]}`.
+- `deps` leave out `dir:` entries (as in `GET pipeline`); `wave` = the feature's dependency wave from the pipeline; `claude` = command and account of the last turn record.
+- `steps`/`current_step` follow the ROADMAP status (pending/speccing = spec, specced/approved = gate, building = build, verified = commit done) and the agents found: `verify` when the building note mentions the verifier, `build` failed when the newest executor failed and none runs; a blocked feature fails in the step of its last agent (else the step its note shows); a blocked feature with no trace has `current_step: null`.
+- `executors` of a task = every subagent whose prompt names this feature and `SCOPE_TASK: <slug>/<Tn>`, oldest first (one per attempt). A task still `running` whose newest executor is not running and returned nothing is `interrupted` (cut off with its turn).
+- Live: while the loop runs, the running session (the most recent session of the project modified after the LOOP.lock / last turn file) is read too; its unfinished subagents are `running` (duration, tokens and finish `null`), with ids `v<current turn>:<agent>`, and `GET agent/<id>/log` resolves them through that session. Without a session the tasks still show the status file. Never raises.
+
 ### GET quarantine/<slug>
 The pause detail of a blocked feature; 404 `feature is not in quarantine` when the feature is unknown or not blocked. Read only, no token.
 `{"id", "reason", "step": 4|null, "step_agent": "verifier"|null, "failures": 2, "turn": 8|null, "attempts": [{turn, agent, status: FAIL|BLOCKED, out, agent_id}], "failed_tests": [{name, why, expected, got}], "uncommitted": ["src/x.py"], "skip_impact": ["slug"], "summary": {"text", "source": "ai|facts", "at": "ISO|null"}, "options": ["try again", "skip and continue"]}`.
@@ -200,6 +224,10 @@ Token required; planning mode = 409. Throws away the uncommitted changes of the 
 
 ### GET graph
 `{"dependencies_mermaid": "...", "states_mermaid": "...", "text": "..."}` (from `graph_view`).
+
+### GET jobs (project route)
+`{"jobs": [...], "calls": [{"at": "ISO", "kind": "chat|roadmap|roadmap_refine|map|planning|spec_change|follow_up|action|quarantine|catalog|panel", "claude": "claude|cc", "auth_method": "login|token|api_key|''", "auth_email": "...", "auth_plan": "team", "cc_account": "claude2|''", "cost_usd": 0.02|null, "ok": true}]}`.
+`calls` is the call log of every `claude -p` the panel itself runs (not the loop turns): one line per `ClaudeClient.run_prompt`, newest first, up to 50 here. It is stored in `<work>/.specs/project/loop/internal/claude_calls.jsonl`, bounded (trimmed to the newest 400 lines once it passes 500). A line never holds the prompt, the reply or a secret. The sign-in method comes from the account cache of the loop panel (`auth status`); it is `''` until that cache has been read once. Recording never fails a call.
 
 ### Agent history (per turn): source = Claude Code transcripts
 Each `turns/NNN.json` has a `session_id`. Transcripts live in `<claude_transcripts_dir>/<slug>/<session_id>.jsonl`

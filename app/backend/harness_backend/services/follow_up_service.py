@@ -29,6 +29,7 @@ from ..repositories.loop_command_file_repository import now_iso
 from ..repositories.specs_file_repository import loop_state
 from .claude_job_service import JOB_MODEL_CEILING, JOB_STATE_ERROR, ClaudeJobCommand  # noqa: F401
 from .planning_service import GUARD_IGNORED_PATHS, is_number
+from ..infrastructure.claude_client import call_kind
 
 JOB_TYPE_FOLLOW_UP = "follow_up"
 FOLLOW_UP_BUDGET_USD = 1  # per message; the body can no longer change it
@@ -350,7 +351,8 @@ class FollowUpService:
         thread["summary_note"] = SUMMARIZED_NOTE
         thread["session_id"] = None
         self.log.warn("follow_up_resume_failed", project=context.project.id, error=str(failed_result.get("error") or "")[:200])
-        return self.claude_client.run_prompt(self.build_argv(""), context.work_dir, prompt, FOLLOW_UP_TIMEOUT_SECONDS)
+        with call_kind("follow_up"):
+            return self.claude_client.run_prompt(self.build_argv(""), context.work_dir, prompt, FOLLOW_UP_TIMEOUT_SECONDS)
 
     # ------------------------------------------------ run
     def run_follow_up(self, context):

@@ -10,6 +10,7 @@ from ..repositories.task_status_repository import TaskStatusRepository
 from .agent_history_service import AgentHistoryService
 from .decisions_service import DecisionsService
 from .error_center_service import ErrorCenterService
+from .feature_detail_service import FeatureDetailService
 from .guard_event_service import GuardEventService
 from .loop_panel_service import LoopPanelService
 from .loop_status_service import LoopStatusService
@@ -35,8 +36,10 @@ class LoopReadModule:
         self.busy_providers = busy_providers
 
 
-def build_loop_read_module(config, log, project_service, activity_monitor, planning_requirement_service=None, decisions_service=None):
-    """`planning_requirement_service` comes from the projects module (composition); alone (tests) the module builds its own.
+def build_loop_read_module(config, log, project_service, activity_monitor, planning_requirement_service=None, decisions_service=None, claude_account_service=None,
+                           claude_call_log_service=None):
+    """`claude_account_service` (shared with the diagnostics) is injected by the composition; alone (tests) there is none, so no `auth status` runs.
+    `planning_requirement_service` comes from the projects module (composition); alone (tests) the module builds its own.
     `decisions_service` is the ONE instance the composition shares with the wrap-up; alone (tests) the module builds its own."""
     decisions_service = decisions_service or DecisionsService()
     planning_requirement_service = planning_requirement_service or PlanningRequirementService(SpecsFileRepository(), ProcessRunner())
@@ -49,10 +52,13 @@ def build_loop_read_module(config, log, project_service, activity_monitor, plann
     loop_panel_service = LoopPanelService(loop_status_service, loop_file_repository, roadmap_view_service, turn_service,
                                           agent_history_service, activity_monitor, GuardEventService(loop_file_repository),
                                           planning_requirement_service, decisions_service=decisions_service,
-                                          task_status_repository=TaskStatusRepository())
+                                          task_status_repository=TaskStatusRepository(), claude_account_service=claude_account_service,
+                                          claude_call_log_service=claude_call_log_service)
     error_center_service = ErrorCenterService(loop_status_service, loop_file_repository, ErrorEventRepository())
     pipeline_service = PipelineService(loop_status_service, loop_file_repository, roadmap_view_service, agent_history_service, log)
+    feature_detail_service = FeatureDetailService(loop_status_service, loop_file_repository, roadmap_view_service, agent_history_service,
+                                                  TaskStatusRepository(), log)
     controller = LoopReadController(project_service, loop_panel_service, agent_history_service, turn_service, log, error_center_service,
-                                    pipeline_service)
+                                    pipeline_service, feature_detail_service)
     return LoopReadModule(loop_status_service, loop_panel_service, agent_history_service, turn_service, claude_transcript_repository,
                           [controller, DecisionsController(project_service, decisions_service)], [loop_status_service], loop_file_repository, pipeline_service, error_center_service, decisions_service)

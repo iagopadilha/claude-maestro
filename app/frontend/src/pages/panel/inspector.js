@@ -6,8 +6,9 @@ import { Markdown, inlineNodes } from '../../components/markdown.js';
 import { txt, list } from '../../util/format.js';
 import { ctx, ui, pal, STATUS, ROLE_DESC, status, loop, agentById } from './context.js';
 import { renderAll } from '../project_panel.js';
-import { steps, turnsList, liveN, curN, selectTurn, selectNode, stateAt, activeNode, STEP_COLOR } from './pipeline_model.js';
-import { openAgentDialog, openPauseDialog } from './dialogs/index.js';
+import { steps, turnsList, liveN, curN, selectTurn, selectNode, stateAt, activeNode, turnAt, STEP_COLOR } from './pipeline_model.js';
+import { ClaudeBadge } from './claude_badge.js';
+import { openAgentDialog, openPauseDialog, openFeatureDialog } from './dialogs/index.js';
 import { FeatureLabel } from './feature_label.js';
 
 const NEUTRAL_COLOR = '#6b727c';
@@ -82,7 +83,8 @@ function OrchestratorSelected({ turnNumber }) {
   return html`<div class="z-sel-head"><span class="z-sel-name mono"><span class="z-dot" style=${{ background: color }}></span>orchestrator</span><span class="z-sel-state mono" style=${{ color }}>${turn ? txt(turn.status) : '—'}</span></div>
     <div class="z-sel-role">${ROLE_DESC.orchestrator}</div>
     <div class="z-kv-grid"><${KeyValue} k="TURN">${turn ? `${turn.n} · ${txt(turn.label)}` : '—'}<//>
-      <${KeyValue} k="CALLS">${steps().map((step) => step.agent).join(', ') || '—'}<//></div>
+      <${KeyValue} k="CALLS">${steps().map((step) => step.agent).join(', ') || '—'}<//>
+      <${KeyValue} k="RAN WITH">${turn && turn.claude ? html`<${ClaudeBadge} source=${turn} />` : '—'}<//></div>
     <${OutputField} label=${'DECISION · T' + turnNumber}>${turn && turn.decision ? html`<div class="md-doc"><${Markdown} source=${String(turn.decision)} /></div>` : null}<//>
     ${quarantined ? html`<button type="button" class="z-btn-wide z-btn-amber" onClick=${() => openPauseDialog(quarantined.id)}>Understand and resolve</button>` : null}`;
 }
@@ -97,10 +99,12 @@ function StepSelected({ node, turnNumber }) {
   return html`<div class="z-sel-head"><span class="z-sel-name mono"><span class="z-dot" style=${{ background: color }}></span>${step.agent}</span><span class="z-sel-state mono" style=${{ color }}>${cell.st}</span></div>
     <div class="z-sel-role">${txt(step.role)}</div>
     <div class="z-kv-grid"><${KeyValue} k="FEATURE"><${FeatureLabel} slug=${node.f} stacked=${true} block=${true} /><//><${KeyValue} k="CALLED BY"><span class="z-link">${calledBy}</span><//>
-      <${KeyValue} k="CALLS"><span class="z-link">${calls}</span><//><${KeyValue} k="RUNS">${runs.length}<//></div>
+      <${KeyValue} k="CALLS"><span class="z-link">${calls}</span><//><${KeyValue} k="RUNS">${runs.length}<//>
+      ${lastRun && turnAt(lastRun.turn) && turnAt(lastRun.turn).claude ? html`<${KeyValue} k="RAN WITH"><${ClaudeBadge} source=${turnAt(lastRun.turn)} inherited /><//>` : null}</div>
     <${OutputField} label=${lastRun ? 'LAST OUTPUT · T' + lastRun.turn : 'LAST OUTPUT'} empty="Not run in this state yet.">${lastRun && lastRun.out ? inlineNodes(String(lastRun.out)) : null}<//>
     ${isQuarantined(node.f) ? html`<button type="button" class="z-btn-wide z-btn-amber" onClick=${() => openPauseDialog(node.f)}>Understand and resolve</button>` : null}
-    <button type="button" class="z-btn-wide" onClick=${() => openAgentDialog({ feature: node.f, step: node.s })}>Open history and ask the agent</button>`;
+    <button type="button" class="z-btn-wide" onClick=${() => openAgentDialog({ feature: node.f, step: node.s })}>Open history and ask the agent</button>
+    <button type="button" class="z-btn-wide" onClick=${() => openFeatureDialog({ feature: node.f })}>Open feature view</button>`;
 }
 
 function SelectedCard() {

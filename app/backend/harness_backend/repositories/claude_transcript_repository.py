@@ -19,7 +19,8 @@ TRANSCRIPT_CACHE_LIMIT = 256
 SESSION_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 SUBAGENT_FILE_PATTERN = re.compile(r"agent-([A-Za-z0-9_-]{1,80})\.jsonl")
 PROMPT_FEATURE_PATTERN = re.compile(r"\b(?:SCOPE_)?FEATURE:[ \t]*([A-Za-z0-9][A-Za-z0-9._-]*)")
-PATH_FEATURE_PATTERN = re.compile(r"\.specs[/\\]features[/\\]([A-Za-z0-9][A-Za-z0-9._-]*)")
+PROMPT_TASK_PATTERN = re.compile(r"(?i)\bSCOPE_TASK:[ \t]*[A-Za-z0-9][A-Za-z0-9._-]*/(T\d+)\b")
+PATH_FEATURE_PATTERN =re.compile(r"\.specs[/\\]features[/\\]([A-Za-z0-9][A-Za-z0-9._-]*)")
 ANY_CASE_FEATURE_PATTERN = re.compile(r"(?i)\b(?:SCOPE_)?FEATURE:[ \t]*([A-Za-z0-9][A-Za-z0-9._-]*)")
 RETURN_KEYWORDS = ("DONE", "APPROVED", "BLOCKED", "PASS", "FAIL", "UNVERIFIED", "NEEDS_CONFIRM", "TOO_BIG")
 RETURN_STATUS_LINE_PATTERN = re.compile(r"(?im)^\s*(?:STATUS|VERDICT)\s*:\s*\**\s*([A-Za-z_]+)")
@@ -232,12 +233,15 @@ class TranscriptReader:
                            "t": format_elapsed_clock(start, self.last_action["_ts"]) or None}
         lines = [part.strip() for part in (self.final_return or self.last_text or "").splitlines() if part.strip()]
         found = None
+        task_found = None
         if self.prompt:
             found = (PROMPT_FEATURE_PATTERN.search(self.prompt) or ANY_CASE_FEATURE_PATTERN.search(self.prompt)
                      or PATH_FEATURE_PATTERN.search(self.prompt))
+            task_found = PROMPT_TASK_PATTERN.search(self.prompt)
         return {"started_at": self.first_stamp, "finished_at": self.last_stamp,
                 "duration_s": compute_seconds_between(self.first_stamp, self.last_stamp),
                 "tokens": int(sum(totals)) if totals else None, "feature": found.group(1).rstrip(".") if found else None,
+                "task": task_found.group(1).upper() if task_found else None,
                 "summary": redact_credentials(lines[0], SUMMARY_LIMIT) if lines else None, "final": finished,
                 "failed": (self.last_result_was_error or self.had_api_error) and self.final_return is None,
                 "last_action": last_action, "return_status": extract_return_status(final_return),
@@ -263,6 +267,7 @@ def parse_transcript_file(path):
 class IClaudeTranscriptRepository(Protocol):
     def read_transcript(self, path) -> dict | None: ...
     def locate_session_files(self, work_dir, session_id) -> tuple: ...
+    def find_live_session_id(self, work_dir, modified_after) -> str | None: ...
 
 
 class ClaudeTranscriptRepository:
@@ -320,6 +325,43 @@ class ClaudeTranscriptRepository:
                                       os.path.join(subagents_dir, "agent-%s.meta.json" % found.group(1))))
             return (main_path if has_main else None), subagents
         return None, []
+
+    def find_live_session_id(self, work_dir, modified_after):
+        """Id of the most recent session of the project whose orchestrator transcript or subagent transcripts were modified after
+        `modified_after` (epoch seconds); None when there is none. Best effort: any file system problem is "not found"."""
+        newest_id, newest_stamp = None, modified_after
+        for slug in list_project_slug_variants(work_dir):
+            folder = os.path.join(self.transcripts_dir, slug)
+            try:
+                names = os.listdir(folder)
+            except OSError:
+                continue
+            for session_id in dict.fromkeys(name[:-len(".jsonl")] if name.endswith(".jsonl") else name for name in names):
+                if not SESSION_PATTERN.fullmatch(session_id):
+                    continue
+                stamp = self.get_session_modified_time(folder, session_id)
+                if stamp is not None and stamp > newest_stamp:
+                    newest_id, newest_stamp = session_id, stamp
+            if newest_id is not None:
+                return newest_id
+        return None
+
+    @staticmethod
+    def get_session_modified_time(folder, session_id):
+        """Latest modification of a session: its orchestrator transcript and every subagent transcript."""
+        paths = [os.path.join(folder, session_id + ".jsonl")]
+        subagents_dir = os.path.join(folder, session_id, "subagents")
+        try:
+            paths += [os.path.join(subagents_dir, name) for name in os.listdir(subagents_dir)]
+        except OSError:
+            pass
+        stamps = []
+        for path in paths:
+            try:
+                stamps.append(os.path.getmtime(path))
+            except OSError:
+                continue
+        return max(stamps) if stamps else None
 
     def read_agent_type(self, meta_path):
         """`agentType` of the subagent's `.meta.json`; unreadable/missing = None."""

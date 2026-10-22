@@ -27,13 +27,25 @@ class PanelTasksBlockTests(ReadTestCase):
                          [("T1", 1, "pending"), ("T2", 1, "pending"), ("T3", 2, "pending")])
         self.assertEqual(feature["tasks"]["tasks"][2]["title"], "Wire it")
 
-    def test_other_features_carry_no_tasks_key_even_with_a_tasks_md(self):
+    def test_every_feature_with_a_tasks_md_carries_tasks_whatever_its_status(self):
         for slug in ("service-a", "service-b", "service-c", "service-d", "base"):
             self.write_tasks(slug)
         features = self.features()
-        self.assertIn("tasks", features["service-a"])
+        for slug in ("service-a", "base", "service-b", "service-c", "service-d"):
+            self.assertEqual(features[slug]["tasks"]["source"], "tasks.md", slug)
+            self.assertEqual(len(features[slug]["tasks"]["tasks"]), 3, slug)
+
+    def test_features_without_a_tasks_md_carry_no_tasks_key_unless_building(self):
+        features = self.features()
         for slug in ("base", "service-b", "service-c", "service-d"):
             self.assertNotIn("tasks", features[slug], slug)
+        self.assertEqual(features["service-a"]["tasks"]["source"], "none")
+
+    def test_each_task_carries_deps_files_and_the_parallel_mark(self):
+        self.write_tasks("service-a")
+        tasks = {task["id"]: task for task in self.features()["service-a"]["tasks"]["tasks"]}
+        self.assertEqual((tasks["T1"]["deps"], tasks["T1"]["files"], tasks["T1"]["parallel"]), ([], ["src/a/model.py"], True))
+        self.assertEqual((tasks["T3"]["deps"], tasks["T3"]["files"], tasks["T3"]["parallel"]), (["T1", "T2"], ["src/a/wiring.py"], False))
 
     def test_the_status_file_is_joined(self):
         self.write_tasks("service-a")

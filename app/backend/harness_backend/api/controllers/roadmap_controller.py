@@ -7,10 +7,11 @@ JOB_ACCEPTED_STATUS = 202
 
 
 class RoadmapController:
-    def __init__(self, project_service, roadmap_service, claude_job_service):
+    def __init__(self, project_service, roadmap_service, claude_job_service, claude_call_log_service=None):
         self.project_service = project_service
         self.roadmap_service = roadmap_service
         self.claude_job_service = claude_job_service
+        self.claude_call_log_service = claude_call_log_service  # None = `GET /jobs` has no `calls`
 
     def register_routes(self, router):
         router.add("GET", "/p/{project_id}/api/roadmap", self.get_roadmap)
@@ -51,8 +52,11 @@ class RoadmapController:
         return Response.json(JOB_ACCEPTED_STATUS, {"ok": True, "job": job["id"], "detail": job})
 
     def list_jobs(self, request):
-        return respond_converting_errors(lambda: Response.json(200, {"jobs": self.claude_job_service.list_jobs(
-            self.get_context(request).repo_path)}))
+        def body():
+            context = self.get_context(request)
+            calls = self.claude_call_log_service.list_calls([context.repo_path, context.work_dir]) if self.claude_call_log_service else []
+            return Response.json(200, {"jobs": self.claude_job_service.list_jobs(context.repo_path), "calls": calls})
+        return respond_converting_errors(body)
 
     def get_job(self, request):
         return respond_converting_errors(lambda: Response.json(200, self.claude_job_service.get_job(

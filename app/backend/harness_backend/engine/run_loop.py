@@ -21,7 +21,7 @@ Default: ON (--no-push turns it off). Require a git identity with --git-user or 
 (~/.loop-harness/.env or <plugin>/shared/.env).
 
 How each turn works:
-  claude -p "/orchestrator continue --headless --turn N --wave W ..." --output-format json
+  claude -p "/orchestrator continue --headless --turn N --wave W ..." --output-format stream-json --verbose
          --permission-mode <mode> --permission-prompts none --max-budget-usd <value>
   Each turn carries the LANES the scheduler chose (`--lanes slug:step,...`): one per feature, each at its own step, up to --wave of them.
   Every lane has its own agent at every step (spec-writer, spec-reviewer, executor, verifier) and advances by itself; no feature waits for
@@ -33,7 +33,16 @@ Stops (all notify through the LOOP_NOTIFY_CHANNELS channels: console, toast, fil
   done | awaiting_user | error (LOOP.json) | turn timeout | exit!=0 | risky permission denial or one without progress |
   dirty tree outside .specs/ | LOOP.json missing/stale | identical state in 2 turns |
   --max-stall turns WITHOUT PROGRESS (default 10; the counter resets on every status advance in the ROADMAP) |
-  account usage limit (waits --limit-wait min, up to --limit-retries times).
+  account usage limit (first the next --claude-fallback command, e.g. `cc` signed in with another account; when every one is
+  limited, waits until the first known reset (else --limit-wait min), up to --limit-retries times, and starts again from --claude;
+  while on a fallback, it goes back to --claude by itself once that command's remembered reset moment has passed). The usage windows
+  come from the `rate_limit_event` of each turn's stream-json output (engine/usage_windows.py): every limit notice names the window that
+  ran out ("5-hour window, back at 17:05", "weekly window, back on Sun 25/10 12:00"), the reset of that blocking window drives the wait
+  and the return to --claude, each turn log has `usage_windows` + `limit_status`, meta.json `claude_usage` keeps the last reading per
+  command, and the main command running out of its weekly window sends ONE alert per run on every channel |
+  unusable account (logged out, revoked token, organization without access: the turn is run again on the next command with a
+  notice on every channel and no wait; that command is not used again in the run; when none is left, error naming each command,
+  its account and the reason).
 No overall turn cap: as long as there is progress, it continues.
 
 Always on stop: writes .specs/project/loop/json/meta.json and generates the summary (loop_summary.py, no Claude) in
@@ -67,6 +76,9 @@ import mcp_access  # noqa: E402  (read-only MCP servers of the turn, computed fr
 import test_env_fallback  # noqa: E402  (default .env.test from the machine-level TEST values)
 import credential_check  # noqa: E402  (TEST-ENVIRONMENT.md names only: no plaintext secret, every $NAME defined in an .env)
 import cli_output  # noqa: E402  (one tolerant parser of the `claude -p` JSON output, shared with the app)
+import claude_binaries  # noqa: E402  (which `claude` command runs, the fallback on an account limit, prompt via stdin for a .cmd wrapper)
+import usage_windows  # noqa: E402  (5-hour / weekly usage windows read from the rate_limit_event of the turn output)
+import turn_environment  # noqa: E402  (the turn's environment without the secrets that only came from the app .env)
 import project_repos  # noqa: E402  (REPOS.json: the project's repos; one primary repo when the file is absent)
 import detect_setup  # noqa: E402  (automatic setup command and local files to copy of a repo)
 import subprojects  # noqa: E402  (monorepo list: owner of a path, confirmed or not)
@@ -224,8 +236,8 @@ def notify_early(reason):
         print("[loop] failed to notify: %s" % error)
 
 
-def notify_wait(subject, body):
-    """Notice for a wait that is not a stop (the loop keeps going): same channels as a stop, never raises."""
+def notify_wait(subject, body, only=None):
+    """Notice for a wait that is not a stop (the loop keeps going): same channels as a stop (or only `only`), never raises."""
     if not ACTIVE.get("notify"):
         return
     repo = ACTIVE["repo"]
@@ -234,7 +246,7 @@ def notify_wait(subject, body):
     ctx = {"event": "custom", "subject": "[loop] %s: %s" % (os.path.basename(repo), subject), "project": os.path.basename(repo),
            "extra_body": body}
     try:
-        deliver(ctx, work)
+        deliver(ctx, work, only)
     except Exception as error:  # a notice never takes anything down
         print("[loop] failed to notify: %s" % error)
 
@@ -396,7 +408,7 @@ def hook_path_problems():
 def environment_problems(opts, repo):
     """claude version, permission modes and git: what changes from machine to machine."""
     problems, warns = [], []
-    binary = opts.claude or shutil.which("claude")
+    binary = claude_binaries.resolve(opts.claude or "claude")
     if binary and not binary.endswith(".py"):
         code, out, err = run([binary, "--help"], timeout=60)
         text = out + err
@@ -625,10 +637,13 @@ def check_items(problems, warns, repos, repo):
 
 
 def claude_command_problems(opts):
-    problems = []
-    if not (opts.claude or shutil.which("claude")):
-        problems.append("`claude` command not found on PATH")
-    return problems, []
+    problems, warns = [], []
+    if not claude_binaries.resolve(opts.claude or "claude"):
+        problems.append("`%s` command not found on PATH" % (opts.claude or "claude"))
+    for name in getattr(opts, "claude_fallback", None) or []:
+        if not claude_binaries.resolve(name):
+            warns.append("fallback command `%s` not found on PATH: the loop will not switch to it on a usage limit" % name)
+    return problems, warns
 
 
 def repo_branch_problems(repo, work):
@@ -1879,16 +1894,311 @@ def model_arguments(opts):
     return ["--model", model] if model else []
 
 
+def claude_names(opts):
+    """Commands of the turns, in fallback order: --claude (default `claude`), then each --claude-fallback."""
+    return claude_binaries.ordered(opts.claude, getattr(opts, "claude_fallback", None) or [])
+
+
+def current_claude(opts):
+    names = claude_names(opts)
+    return names[min(getattr(opts, "claude_index", 0), len(names) - 1)]
+
+
+def unusable_names(opts):
+    """Commands whose account turned out unusable in this run (they are never picked again in it)."""
+    return [item["command"] for item in getattr(opts, "unusable_commands", [])]
+
+
+def first_usable_index(opts):
+    """Position of the first command that is not unusable (0 = the main command); 0 when every one is."""
+    blocked = unusable_names(opts)
+    return next((index for index, name in enumerate(claude_names(opts)) if name not in blocked), 0)
+
+
+def switch_claude(opts):
+    """Moves to the next fallback command that is not unusable (sticky until the next wait); False when there is none left."""
+    names, blocked = claude_names(opts), unusable_names(opts)
+    for index in range(getattr(opts, "claude_index", 0) + 1, len(names)):
+        if names[index] not in blocked:
+            opts.claude_index = index
+            return True
+    return False
+
+
+def mark_account_unusable(opts, name, account, reason, turn):
+    """Remembers that the command's account cannot be used in this run and returns the record kept in meta.json
+    ({command, account, reason, turn}; the reason is redacted and short). The `cc` account picker cannot yet leave one account out,
+    so an unusable `cc` account makes the whole `cc` command unusable for the run (excluding just that account is planned)."""
+    record = {"command": name, "account": account, "reason": cli_output.redact(reason, claude_binaries.UNUSABLE_REASON_LIMIT), "turn": turn}
+    opts.__dict__.setdefault("unusable_commands", []).append(record)
+    opts.unusable_notice = record
+    return record
+
+
+def unusable_stop_message(opts):
+    """Reason of the final error when every command has an unusable account: each command, its account and why, and what to do."""
+    rows = ["`%s` (%s): %s" % (item["command"], item["account"] or "account unknown", item["reason"] or "no reason in the output")
+            for item in getattr(opts, "unusable_commands", [])]
+    return ("no account can be used: %s. Waiting does not fix a login. Sign in again (`claude` then /login, or `claude setup-token`), "
+            "ask the admin to enable Claude access for the organization, or switch to another account (`--claude-fallback`), then run again."
+            % "; ".join(rows))
+
+
+def claude_account(opts, name, stderr):
+    """Account text of a turn: the `cc` picker names it on stderr; otherwise `<name> auth status`, asked once per command."""
+    cache = opts.__dict__.setdefault("claude_auth", {})
+    if name not in cache:
+        cache[name] = claude_binaries.auth_status(name)
+    return claude_binaries.account_label(cache[name], claude_binaries.account_from_stderr(stderr))
+
+
+def notify_claude_change(opts, turn, name, account):
+    """Notice (every configured channel) when a turn ran on another command or account than the previous turn: `claude` -> `cc`,
+    back to `claude`, or the `cc` picker on another account. The first turn of the first run only records it."""
+    used = (name, account)
+    previous = getattr(opts, "last_claude_used", None)
+    opts.last_claude_used = used
+    unusable = getattr(opts, "unusable_notice", None)  # set when the change came from an account that cannot be used
+    opts.unusable_notice = None
+    if not previous or previous == used:
+        return
+    main_name = command_base_name(getattr(opts, "claude", "") or claude_binaries.DEFAULT_BINARY_NAME)  # --claude, default `claude`
+    is_main = command_base_name(name) == main_name
+    limit_phrases = getattr(opts, "limit_phrases", None) or {}  # which window ran out on each command, from its last limited turn
+    before = describe_claude_used(previous[0], previous[1], command_base_name(previous[0]) == main_name)
+    now = describe_claude_used(name, account, is_main)
+    print("[loop] turn %d ran on %s; before it was %s" % (turn, now, before))
+    same_command = previous[0] == name and not unusable
+    only = local_notice_channels() if same_command else None  # another account of the same command is noise for email/webhook
+    unusable_subject = ""
+    if unusable:
+        # it needs a human (log in again, ask the admin): always every channel
+        unusable_subject = "%s account unusable" % ("main" if command_base_name(unusable["command"]) == main_name else "backup")
+        reason = ("The previous account is unusable (%s), so the loop moved to the backup command. Waiting does not fix a login: "
+                  "sign in again (`claude` then /login, or `claude setup-token`) or ask the admin to enable access." % (unusable["reason"] or "no reason in the output"))
+    elif same_command:
+        reason = "The `%s` account picker moved to another account because the previous one hit its usage limit%s." % (
+            command_base_name(name), limit_suffix(limit_phrases.get(command_base_name(previous[0]), "")))
+    elif is_main:
+        reason = "The usage limit of the main account%s should have reset, so the loop went back to it." % limit_suffix(limit_phrases.get(main_name, ""))
+    else:
+        reason = "The previous account hit its usage limit%s, so the loop moved to the backup command." % limit_suffix(limit_phrases.get(command_base_name(previous[0]), ""))
+    notify_wait(claude_change_subject(name, account, is_main, same_command, unusable_subject),
+                "Turn %d now runs on %s.\nBefore it the loop ran on %s.\n%s The loop goes on by itself." % (turn, now, before, reason), only)
+
+
+LOCAL_NOTICE_CHANNELS = ("console", "toast", "file")  # channels that never leave this machine
+
+
+def local_notice_channels():
+    """The configured notice channels that stay on this machine (console, toast, file), in the configured order."""
+    configured = notify.envload.get_list("LOOP_NOTIFY_CHANNELS") or list(LOCAL_NOTICE_CHANNELS)
+    return [name for name in configured if name in LOCAL_NOTICE_CHANNELS]
+
+
+# how each sign-in method of `claude auth status` is billed, in plain words (a sign-in token is still the subscription)
+SIGN_IN_WORDS = {"login": "subscription, browser login", "token": "subscription, sign-in token", "API key": "API key, billed per token"}
+
+
+def command_base_name(name):
+    """`C:/bin/claude.exe` -> `claude`, `cc.cmd` -> `cc`."""
+    return os.path.splitext(os.path.basename(name or ""))[0]
+
+
+def split_account_label(account):
+    """(method, who, organization and plan) of a claude_binaries.account_label text such as
+    "login, dev@x.com (iData, team)" or "token, cc account claude2"; missing parts come back as ''."""
+    text = (account or "").strip()
+    extra = ""
+    found = re.search(r"\s*\(([^)]*)\)\s*$", text)
+    if found:
+        extra, text = found.group(1), text[:found.start()]
+    method, _, who = text.partition(", ")
+    if method not in SIGN_IN_WORDS:
+        method, who = "", text
+    return method, who.strip(), extra
+
+
+AUTH_METHOD_CODES = {"login": "login", "token": "token", "API key": "api_key"}  # label word -> the code kept in the turn log
+CC_ACCOUNT_IN_LABEL = re.compile(r"cc account +(\S+)")
+
+
+def claude_auth_fields(account):
+    """Structured sign-in of a turn, taken from its account label (never a secret): {"auth_method": "login"|"token"|"api_key"|"",
+    "auth_email", "auth_plan", "cc_account"}. "login, dev@x.com (iData, team)" -> login, dev@x.com, team, ''."""
+    method, who, extra = split_account_label(account)
+    parts = [part.strip() for part in extra.split(",")] + ["", ""]
+    cc_found = CC_ACCOUNT_IN_LABEL.search(who)
+    return {"auth_method": AUTH_METHOD_CODES.get(method, ""), "auth_email": who if "@" in who else "",
+            "auth_plan": parts[1], "cc_account": cc_found.group(1) if cc_found else ""}
+
+
+def describe_claude_used(name, account, is_main):
+    """Body text of one command and its account: "the main command `claude` (dev@x.com, subscription, browser login; iData, team)"."""
+    method, who, extra = split_account_label(account)
+    details = ", ".join(part for part in (who, SIGN_IN_WORDS.get(method, "")) if part)
+    details += ("; %s" % extra) if extra else ""
+    role = "the main command" if is_main else "the backup command"
+    return "%s `%s`%s" % (role, command_base_name(name), " (%s)" % details if details else " (account unknown)")
+
+
+def claude_change_subject(name, account, is_main, same_command=False, unusable=""):
+    """Subject that says, in words, which account the loop is on now and how it signs in:
+    "now on the backup account: cc account claude2 (subscription, sign-in token)",
+    "back on the main account: dev@x.com (subscription, browser login)",
+    "cc switched to cc account claude3 (subscription, sign-in token)". The organization and plan stay in the body.
+    `unusable` ("main account unusable") goes in front when the change came from an account that cannot be used."""
+    subject = claude_change_subject_core(name, account, is_main, same_command)
+    return "%s, %s" % (unusable, subject) if unusable else subject
+
+
+def claude_change_subject_core(name, account, is_main, same_command):
+    """The part of the subject that names the account the loop is on now."""
+    method, who, _ = split_account_label(account)
+    who = who or "`%s`" % command_base_name(name)
+    how = " (%s)" % SIGN_IN_WORDS[method] if method in SIGN_IN_WORDS else ""
+    if same_command:
+        return "%s switched to %s%s" % (command_base_name(name), who, how)
+    return "%s: %s%s" % ("back on the main account" if is_main else "now on the backup account", who, how)
+
+
+def return_to_main_command(opts):
+    """When the loop is on a fallback and the main command's remembered reset moment has passed, goes back to the main command
+    (index 0). Returns True when it went back; the next notify_claude_change announces it."""
+    moment = getattr(opts, "main_reset", None)
+    if getattr(opts, "claude_index", 0) > 0 and moment and datetime.datetime.now() >= moment and claude_names(opts)[0] not in unusable_names(opts):
+        opts.claude_index, opts.main_reset, opts.picker_tried = 0, None, []
+        print("[loop] the main command `%s` should be free again (reset %s): back on it" % (claude_names(opts)[0], moment.strftime("%d/%m %H:%M")))
+        return True
+    return False
+
+
+def remember_reset(opts, moment, phrase=""):
+    """Keeps a known reset time of a limited command (for the wait when every command is limited), with the words that name the
+    window that ran out ("5-hour window, back at 17:05"; '' when unknown) for the notice of that wait."""
+    if moment:
+        opts.__dict__.setdefault("limit_resets", []).append(moment)
+        if phrase:
+            opts.__dict__.setdefault("limit_reset_phrases", {})[moment] = phrase
+
+
+def limit_suffix(phrase):
+    """" (5-hour window, back at 17:05)" for a notice; '' when the window is unknown (the notice keeps its older text)."""
+    return " (%s)" % phrase if phrase else ""
+
+
+def usage_key(name, cc_account=""):
+    """Key of a command in meta.json `claude_usage`: its base name, plus `:<account>` when the `cc` picker named one ("cc:claudep")."""
+    base = command_base_name(name)
+    return "%s:%s" % (base, cc_account) if cc_account else base
+
+
+def record_usage(meta, key, windows, status):
+    """Keeps the last usage windows read from a command's output in meta.json: {"<key>": {"windows", "status", "read_at"}}.
+    A turn whose output had no rate limit event leaves the earlier reading as it was."""
+    if windows or status:
+        meta.setdefault("claude_usage", {})[key] = {"windows": windows, "status": status,
+                                                    "read_at": datetime.datetime.now().isoformat(timespec="seconds")}
+
+
+def next_fallback_name(opts):
+    """The command a limited main command would move to (the next one that is not unusable); '' when there is none."""
+    names, blocked = claude_names(opts), unusable_names(opts)
+    return next((name for name in names[getattr(opts, "claude_index", 0) + 1:] if name not in blocked), "")
+
+
+def other_usage_lines(opts, meta, main_name):
+    """One line per command or account other than the main one with its last known usage, for the weekly alert."""
+    main_base = command_base_name(main_name)
+    usage = meta.get("claude_usage") or {}
+    lines = []
+    for key, entry in usage.items():
+        if key.split(":")[0] != main_base:
+            read_at = str((entry or {}).get("read_at") or "")[11:16]
+            lines.append("- `%s`: %s%s" % (key, usage_windows.describe_windows((entry or {}).get("windows")), ", read at %s" % read_at if read_at else ""))
+    known = {key.split(":")[0] for key in usage}
+    lines += ["- `%s`: usage unknown (not run yet)" % command_base_name(name) for name in claude_names(opts)
+              if command_base_name(name) != main_base and command_base_name(name) not in known]
+    return lines
+
+
+def alert_main_weekly_limit(opts, meta, turn, name, blocking):
+    """One alert per run, on every channel, when the MAIN command's weekly window ran out: until when it is unusable, where the loop
+    goes on, and the last known 5-hour and weekly usage of every other command or account. Sent again only when the reset moment
+    changes. Returns True when it sent one."""
+    if getattr(opts, "claude_index", 0) != 0 or not usage_windows.is_weekly_block(blocking):
+        return False
+    alerted = opts.__dict__.setdefault("weekly_alerts", {})
+    main_base = command_base_name(name)
+    if main_base in alerted and alerted[main_base] == blocking.get("reset_at"):
+        return False
+    alerted[main_base] = blocking.get("reset_at")
+    moment = usage_windows.reset_moment(blocking)
+    until = usage_windows.format_moment(moment) if moment else "its reset (time unknown)"
+    fallback = next_fallback_name(opts)
+    goes_on = "the loop continues on `%s`" % command_base_name(fallback) if fallback else "no other command is configured, the loop waits for the reset"
+    lines = other_usage_lines(opts, meta, name)
+    print("[loop] main account weekly limit reached on `%s`, unusable until %s; %s" % (main_base, until, goes_on))
+    notify_wait("main account weekly limit reached, unusable until %s; %s" % (until, goes_on),
+                "Turn %d: the weekly window of the main command `%s` is used up.\nLast known usage of the other commands:\n%s"
+                % (turn, main_base, "\n".join(lines) or "- none configured"))
+    return True
+
+
+MAX_LIMIT_WAIT_SECONDS = 8 * 24 * 3600  # the weekly window is the longest one
+RESET_MARGIN_SECONDS = 120  # wake up a little after the reset, not on it
+
+
+def limit_wait_seconds(opts):
+    """(seconds, datetime of the reset or None): until the first known reset among the limited commands plus a margin, else --limit-wait."""
+    now = datetime.datetime.now()
+    future = sorted(moment for moment in getattr(opts, "limit_resets", None) or [] if moment > now)
+    if not future:
+        return opts.limit_wait * 60, None
+    seconds = int((future[0] - now).total_seconds()) + RESET_MARGIN_SECONDS
+    return min(max(seconds, 60), MAX_LIMIT_WAIT_SECONDS), future[0]
+
+
+def main_reset_moment(opts, reset):
+    """When the loop tries the main command again while a fallback keeps the turns: the reset of the main command's blocking window
+    (the weekly one when that is what ran out, never an earlier moment) plus a margin; an unknown or already past reset waits
+    --limit-wait minutes instead, so the loop never bounces between the commands."""
+    now = datetime.datetime.now()
+    known = reset if reset and reset > now else now + datetime.timedelta(minutes=opts.limit_wait)
+    return known + datetime.timedelta(seconds=RESET_MARGIN_SECONDS)
+
+
+def wait_text(seconds):
+    hours, minutes = divmod(int(seconds) // 60, 60)
+    days, hours = divmod(hours, 24)
+    return " ".join(part for part in ("%dd" % days if days else "", "%dh" % hours if hours else "", "%dmin" % minutes if minutes or not (days or hours) else "") if part)
+
+
+LIMIT_WAIT_STEP_SECONDS = 60
+
+
+def sleep_unless_paused(work, turn, seconds):
+    """Sleeps `seconds` in steps, stopping early when the panel asks for a pause; returns the pause text ('' = slept the whole time)."""
+    deadline = time.time() + seconds
+    while True:
+        left = deadline - time.time()
+        if left <= 0:
+            return ""
+        time.sleep(min(LIMIT_WAIT_STEP_SECONDS, left))
+        paused = pause_requested(work, turn)
+        if paused:
+            return paused
+
+
 def claude_command(opts, prompt):
-    binary = opts.claude or shutil.which("claude") or "claude"
-    base = [sys.executable, binary] if binary.endswith(".py") else [binary]
+    base = claude_binaries.base_argv(current_claude(opts))
     # T23: each non-primary worktree is granted as `--add-dir=<path>` (the `=` form: the flag is variadic and would swallow what follows)
     # D4: each `reference` repo (read only, no worktree) is granted the same way, as its own folder
     extra_dirs = ["--add-dir=%s" % path for path in (getattr(opts, "extra_worktrees", None) or []) + (getattr(opts, "reference_dirs", None) or [])]
     mcp_config, allowed_tools, denied_tools = mcp_read_arguments()
     allowed = ["--allowedTools"] + allowed_tools if allowed_tools else []
     return base + [
-        "-p", prompt, "--output-format", "json", "--permission-mode", opts.permission_mode,
+        "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", opts.permission_mode,
         "--permission-prompts", "none", "--max-budget-usd", str(opts.budget),
     ] + model_arguments(opts) + extra_dirs + [
         "--strict-mcp-config", "--mcp-config", mcp_config,
@@ -1906,10 +2216,26 @@ def loop_json_correction_prompt(turn, branch):
             % (turn, branch, turn, turn))
 
 
+TURN_ENVIRONMENT_REPORTED = []  # one entry once the run has printed its turn-environment line (first turn only)
+
+
+def turn_environment_for(cwd):
+    """The process environment minus the secret-looking variables that came from the app .env (see turn_environment.py). The first turn of
+    a run prints their NAMES (never a value); an internal error passes the full environment and prints one warning."""
+    result = turn_environment.build(os.environ, cwd, app_paths.envload.candidates())
+    if not TURN_ENVIRONMENT_REPORTED:
+        TURN_ENVIRONMENT_REPORTED.append(True)
+        if result.get("error"):
+            print("[loop] WARNING: turn environment filter failed, the turn gets the full environment (%s)" % result["error"])
+        elif result["removed"]:
+            print("[loop] turn environment: %d secret-looking variable(s) from the app .env left out (%s)" % (len(result["removed"]), ", ".join(result["removed"])))
+    return result["env"]
+
+
 def push_lock_env(cwd):
     """Environment of `claude -p`: push is impossible even through a guard gap (python -c, subshell...). Disables the pushurl of EVERY remote
     for that process only (GIT_CONFIG_*, nothing is written to the repo); the end delivery is done by this script, outside that environment."""
-    env = dict(os.environ)
+    env = turn_environment_for(cwd)
     env["LOOP_HEADLESS"] = "1"
     env.setdefault("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "0")  # wait for the background subagents (the verifier) instead of killing them 10 min after the last turn; run_turn's timeout still bounds it
     env.setdefault("LOOP_APP_HOME", APP_ROOT_DIR)  # the headless turn finds the app without depending on config.json
@@ -1931,7 +2257,8 @@ def push_lock_env(cwd):
 
 
 def run_turn(command, cwd, timeout_min):
-    flags = {"stdin": subprocess.DEVNULL, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True, "encoding": "utf-8", "errors": "replace", "cwd": cwd,
+    command, stdin_text = claude_binaries.prompt_through_stdin(command)  # a .cmd wrapper (`cc`) would cut the prompt at a line break
+    flags = {"stdin": subprocess.PIPE if stdin_text else subprocess.DEVNULL, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True, "encoding": "utf-8", "errors": "replace", "cwd": cwd,
              "env": push_lock_env(cwd)}
     if IS_WIN:
         flags["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -1939,7 +2266,7 @@ def run_turn(command, cwd, timeout_min):
         flags["start_new_session"] = True
     proc = subprocess.Popen(command, **flags)
     try:
-        out, err = proc.communicate(timeout=timeout_min * 60)
+        out, err = proc.communicate(input=stdin_text or None, timeout=timeout_min * 60)
         return proc.returncode, out, err, False
     except subprocess.TimeoutExpired:
         kill_tree(proc.pid)
@@ -2100,6 +2427,8 @@ def main():
     parser.add_argument("--git-user", default="", help="requires this git user.name on push (or LOOP_GIT_USER in the app .env); default: any configured account")
     parser.add_argument("--setup", default="", help='one-time command after creating the worktree (e.g. "npm ci")')
     parser.add_argument("--claude", default="", help="claude binary (or a test .py)")
+    parser.add_argument("--claude-fallback", action="append", default=[], metavar="COMMAND",
+                        help="command tried when the running one hits the account usage limit (repeatable, in order; e.g. `cc`, a wrapper signed in with another account)")
     parser.add_argument("--option", type=int, default=0, metavar="N", help="answers the question by the NUMBER of the option listed in the notice (same as --answer with that option's text)")
     parser.add_argument("--answer", default="", help="answers the question that stopped the loop (awaiting_user) and continues; goes to ANSWERS.md")
     parser.add_argument("--max-cost", type=float, default=50.0, help="cap of US$ summed over all turns (0 turns it off); a cap raised in the panel (meta max_cost_usd) wins; when exceeded the loop PAUSES (resumable)")
@@ -2192,6 +2521,7 @@ def main():
     logs = loop_state.turns_dir(work)
     turn = int(meta.get("turns", 0))
     stall, last_score, last_print, limit_hits = 0, roadmap_score(work)[0], "", 0
+    opts.last_claude_used = (meta.get("claude"), meta.get("claude_account")) if meta.get("claude") else None  # a resumed run compares with the last turn
     cost = float(meta.get("cost_usd", 0))
     if not loop_state.load_snapshot(work, turn):  # baseline: state before this run's first turn (return point for --rewind)
         loop_state.snapshot(work, turn, git(work, "rev-parse", "HEAD")[1], heads_of(work, meta))
@@ -2224,12 +2554,26 @@ def main():
                 turn, opts.wave, meta["branch"], " --e2e" if opts.e2e else "", plan_flags(work, opts.wave, opts.primary_name))
             started = time.time()
             print("[loop] turn %d | %s" % (turn, datetime.datetime.now().strftime("%H:%M:%S")))
+            return_to_main_command(opts)
+            claude_name = current_claude(opts)
             code, out, err, timed_out = run_turn(claude_command(opts, prompt), work, opts.timeout)
             data = parse_result(out)
             log = dict(data) if data.get("ok") else dict(data, raw=out[-4000:])
+            rate_limit = log.pop("rate_limit", None) or {}  # kept below as `usage_windows` and `limit_status`
+            windows = usage_windows.with_local_reset(usage_windows.windows_of(rate_limit))
+            log["usage_windows"], log["limit_status"] = windows, str(rate_limit.get("status") or "")
+            # what the turn says about limits and logins: the result text and stderr (the rest of a stream-json output is the model's own work)
+            scan_text = (str(data.get("result") or "") + "\n" + err) if data.get("ok") else cli_output.strip_rate_limit_events(out) + "\n" + err
+            picked_account = claude_binaries.account_from_stderr(err)
+            blocking = usage_windows.blocking_window(rate_limit)
             if err:
                 log["stderr"] = err[-2000:]
-            log["exit_code"], log["timeout"], log["turn"] = code, timed_out, turn
+            log["exit_code"], log["timeout"], log["turn"], log["claude"] = code, timed_out, turn, claude_name
+            log["claude_account"] = claude_account(opts, claude_name, err)
+            log.update(claude_auth_fields(log["claude_account"]))
+            meta["claude"], meta["claude_account"] = claude_name, log["claude_account"]
+            meta.update(claude_auth_fields(log["claude_account"]))
+            record_usage(meta, usage_key(claude_name, picked_account), windows, log["limit_status"])
             save_json(os.path.join(logs, "%03d.json" % turn), log)
             cost += float(data.get("total_cost_usd") or 0)
             meta.update({"turns": turn, "cost_usd": round(cost, 4)})
@@ -2244,24 +2588,76 @@ def main():
                 return finish(work, meta, "error", "turn %d exceeded %d min (process terminated)" % (turn, opts.timeout), opts)
             unreadable = unrecognized_output(data)
             failed = code != 0 or data.get("is_error") or unreadable
-            if failed and LIMIT_RE.search(out + err):
+            limited_by_status = bool(failed and (blocking or data.get("api_error_status") == 429))  # the output's own rate limit data
+            account_limited = bool(failed and (claude_binaries.is_usage_limit(scan_text) or limited_by_status))
+            limit_phrase = ""
+            if account_limited:
+                reset = usage_windows.reset_moment(blocking) or claude_binaries.reset_time(scan_text)  # the blocking window first, `[cc] reinicia:` / `limit reached|epoch` otherwise
+                limit_phrase = usage_windows.phrase(blocking)
+                opts.__dict__.setdefault("limit_phrases", {})[command_base_name(claude_name)] = limit_phrase
+                remember_reset(opts, reset, limit_phrase)
+                if getattr(opts, "claude_index", 0) == 0:  # the main command: when to try it again while a fallback keeps the turns
+                    opts.main_reset = main_reset_moment(opts, reset)
+                picked = picked_account
+                if not picked and alert_main_weekly_limit(opts, meta, turn, claude_name, blocking):
+                    save_meta(loop_state.loop_path(work, "meta.json"), meta)
+                if picked and picked not in opts.__dict__.setdefault("picker_tried", []):
+                    # the `cc` picker ran on an account that ran out during the turn: run it again, it picks the next free one ("cc" + Enter)
+                    opts.picker_tried.append(picked)
+                    opts.last_claude_used = getattr(opts, "last_claude_used", None) or (claude_name, log["claude_account"])  # notify the change
+                    print("[loop] usage limit on `%s` account %s%s; turn %d again, the picker chooses another account" % (claude_name, picked, limit_suffix(limit_phrase), turn))
+                    turn -= 1
+                    continue
+            if account_limited and switch_claude(opts):
+                print("[loop] usage limit on `%s`%s; turn %d again with `%s`" % (claude_name, limit_suffix(limit_phrase), turn, current_claude(opts)))
+                meta["claude_switches"] = int(meta.get("claude_switches", 0)) + 1
+                opts.last_claude_used = getattr(opts, "last_claude_used", None) or (claude_name, log["claude_account"])  # notify the change
+                save_meta(loop_state.loop_path(work, "meta.json"), meta)
+                turn -= 1
+                continue
+            if failed and not account_limited and (claude_binaries.is_account_unusable(scan_text) or data.get("api_error_status") in (401, 403)):
+                # the account cannot sign in (logged out, revoked token, organization without access): no wait fixes it, try the next command
+                reason = claude_binaries.unusable_reason(str(data.get("result") or "")) or claude_binaries.unusable_reason(scan_text) or "API error %s" % data.get("api_error_status")
+                record = mark_account_unusable(opts, claude_name, log["claude_account"], reason, turn)
+                meta.setdefault("claude_unusable", []).append(record)
+                if switch_claude(opts):
+                    print("[loop] account unusable on `%s` (%s); turn %d again with `%s`" % (claude_name, record["reason"], turn, current_claude(opts)))
+                    meta["claude_switches"] = int(meta.get("claude_switches", 0)) + 1
+                    opts.last_claude_used = getattr(opts, "last_claude_used", None) or (claude_name, log["claude_account"])  # notify the change
+                    save_meta(loop_state.loop_path(work, "meta.json"), meta)
+                    turn -= 1
+                    continue
+                return finish(work, meta, "error", unusable_stop_message(opts), opts)
+            if failed and (LIMIT_RE.search(scan_text) or limited_by_status):
                 limit_hits += 1
                 if limit_hits > opts.limit_retries:
                     return finish(work, meta, "error", "account usage limit persisted after %d waits" % opts.limit_retries, opts)
-                print("[loop] usage limit; waiting %d min (%d/%d)" % (opts.limit_wait, limit_hits, opts.limit_retries))
-                notify_wait("usage limit, waiting %d min" % opts.limit_wait,
-                            "The account usage limit was hit on turn %d. The loop is waiting %d min and will retry by itself (wait %d of %d)."
-                            % (turn, opts.limit_wait, limit_hits, opts.limit_retries))
-                time.sleep(opts.limit_wait * 60)
+                seconds, resume_at = limit_wait_seconds(opts)
+                when = resume_at.strftime("%d/%m %H:%M") if resume_at else ""
+                window_text = (getattr(opts, "limit_reset_phrases", None) or {}).get(resume_at, "")  # the window that frees up first
+                print("[loop] usage limit on every command (%s); waiting %s%s (%d/%d)" % (", ".join(claude_names(opts)), wait_text(seconds),
+                                                                                       " until " + when if when else "", limit_hits, opts.limit_retries))
+                notify_wait("credits ran out%s, back in %s" % (limit_suffix(window_text), wait_text(seconds)),
+                            "The usage limit was hit on turn %d by every command the loop can use (%s). %s The loop waits and starts "
+                            "again by itself, from `%s` (wait %d of %d)."
+                            % (turn, ", ".join(claude_names(opts)), ("The first account frees up at %s (in %s%s)." % (when, wait_text(seconds), "; " + window_text if window_text else ""))
+                               if when else "The reset time is unknown: it tries again in %s." % wait_text(seconds),
+                               claude_names(opts)[first_usable_index(opts)], limit_hits, opts.limit_retries))
+                paused = sleep_unless_paused(work, turn - 1, seconds)
+                if paused:
+                    return finish(work, meta, "awaiting_user", paused, opts)
+                opts.claude_index, opts.picker_tried, opts.limit_resets, opts.main_reset = first_usable_index(opts), [], [], None  # after the wait, the main command again (the first one whose account works)
                 turn -= 1
                 continue
             limit_hits = 0
+            opts.picker_tried, opts.limit_resets = [], []
             if unreadable and code == 0:
                 return finish(work, meta, "error", "claude output on turn %d was not recognized (%s; the CLI output format may have changed, "
                               "run `python harness.py doctor` to compare the installed version with the tested one): %s"
                               % (turn, data.get("detail") or "unrecognized", data.get("sample") or "(empty)"), opts)
             if failed:
                 return finish(work, meta, "error", "claude exited with code %s on turn %d: %s" % (code, turn, (err or str(data.get("result") or data.get("sample") or ""))[:300]), opts)
+            notify_claude_change(opts, turn, claude_name, log["claude_account"])
             denials = data.get("permission_denials") or []
             risky = [d for d in denials if is_risky_denial(d, work)]
             if risky:

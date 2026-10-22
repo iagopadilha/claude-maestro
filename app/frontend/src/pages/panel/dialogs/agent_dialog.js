@@ -1,12 +1,13 @@
 /* Agent dialog: everything one agent (a step of the fixed flow) did in one feature, across all turns, plus a chat with that agent.
    Facts come from the pipeline model (events replayed per turn); the full transcript of a run is read on demand from
    `GET agent/<agent_id>/log`. The chat is about the latest run of the step; a step that never ran chats about the project. */
-import { html, useState } from '../../../util/preact.js';
+import { html, useState, useEffect } from '../../../util/preact.js';
 import { list, txt } from '../../../util/format.js';
 import { openBigDialog } from '../../../components/big_dialog.js';
 import { ctx } from '../context.js';
-import { stepRuns, steps, stateAt, curN, featureName } from '../pipeline_model.js';
+import { stepRuns, steps, stateAt, curN, featureName, turnAt } from '../pipeline_model.js';
 import { FeatureLabel } from '../feature_label.js';
+import { ClaudeBadge } from '../claude_badge.js';
 
 const BADGE_COLOR = '#7fb2ff';
 const ORCHESTRATOR = 'orchestrator';
@@ -37,8 +38,9 @@ function RunLog({ log }) {
     </div>`)}${log.truncated ? html`<div class="bd-dim-note">log truncated by the server</div>` : null}</div>`;
 }
 
-function RunCard({ run }) {
+function RunCard({ run, focused }) {
   const [log, setLog] = useState(null); // null = not asked; otherwise { loading, error, lines, truncated, open }
+  useEffect(() => { if (focused && run.agent_id) loadLog(); }, []); // the run picked from the feature view opens with its log
   async function loadLog() {
     setLog({ loading: true, error: null, lines: [], truncated: false, open: true });
     try {
@@ -52,8 +54,9 @@ function RunCard({ run }) {
     if (!log || log.error) { loadLog(); return; } // first click, or retry after an error
     if (!log.loading) setLog({ ...log, open: !log.open });
   }
-  return html`<div class="bd-run">
-    <div class="bd-run-head"><span class="bd-turn">${'T' + run.turn}</span><span class="bd-mono" style=${{ color: statusColor(run.st) }}>${txt(run.st)}</span>
+  return html`<div class=${'bd-run' + (focused ? ' focused' : '')}>
+    <div class="bd-run-head"><span class="bd-turn">${'T' + run.turn}</span>${run.task ? html`<span class="bd-mono">${run.task}</span>` : null}<span class="bd-mono" style=${{ color: statusColor(run.st) }}>${txt(run.st)}</span>
+      <${ClaudeBadge} source=${turnAt(run.turn)} inherited />
       <span class="bd-spacer"></span>
       ${run.agent_id ? html`<button type="button" class="bd-link" disabled=${!!(log && log.loading)} onClick=${toggleLog}>${log && log.open ? 'hide the full log' : 'load the full log'}</button>` : null}</div>
     <div class="bd-run-out">${run.out ? run.out : 'No output recorded.'}</div>
@@ -61,9 +64,17 @@ function RunCard({ run }) {
   </div>`;
 }
 
-function AgentBody({ feature, step }) {
-  const definitions = steps(), definition = definitions[step] || {};
+/** The step runs, newest first; with `focus` (a run picked in the feature view) that run goes first, added when the pipeline lacks it. */
+function orderedRuns(feature, step, focus) {
   const runs = newestFirst(stepRuns(feature, step));
+  if (!focus || !focus.agent_id) return runs;
+  const found = runs.find((run) => run.agent_id === focus.agent_id);
+  return [found ? { ...found, task: focus.task, st: focus.st || found.st } : focus, ...runs.filter((run) => run !== found)];
+}
+
+function AgentBody({ feature, step, focus }) {
+  const definitions = steps(), definition = definitions[step] || {};
+  const runs = orderedRuns(feature, step, focus);
   const status = stepStatus(feature, step);
   const calledBy = step === 0 ? ORCHESTRATOR : (definitions[step - 1] || {}).agent || ORCHESTRATOR;
   const handsOffTo = (definitions[step + 1] || {}).agent || ORCHESTRATOR;
@@ -78,22 +89,23 @@ function AgentBody({ feature, step }) {
     <div class="bd-facts-grid">${facts.map((fact) => html`<div key=${fact.label} class="bd-fact">
       <div class="bd-label">${fact.label}</div><div class="bd-fact-value" style=${{ color: fact.color }}>${fact.value}</div></div>`)}</div>
     <div class="bd-section-label">RUNS OF THIS AGENT IN THIS FEATURE</div>
-    <div class="bd-runs">${runs.length ? runs.map((run, index) => html`<${RunCard} key=${(run.agent_id || 'run') + ':' + index} run=${run} />`)
+    <div class="bd-runs">${runs.length ? runs.map((run, index) => html`<${RunCard} key=${(run.agent_id || 'run') + ':' + index} run=${run} focused=${!!focus && index === 0} />`)
       : html`<div class="bd-dim-note">${NOT_RUN_MESSAGE}</div>`}</div>
   </div>`;
 }
 
-/** Opens the dialog of one step (index in the fixed flow) of one feature. */
-export function openAgentDialog({ feature, step }) {
+/** Opens the dialog of one step (index in the fixed flow) of one feature. `focus` ({agent_id, turn, st, out, task}) = one run picked in the
+    feature view: it is shown first with its log open, and the chat talks about that run. */
+export function openAgentDialog({ feature, step, focus = null }) {
   const definition = steps()[step] || {};
   const agentName = definition.agent || 'agent';
-  const newestRun = newestFirst(stepRuns(feature, step))[0];
+  const newestRun = orderedRuns(feature, step, focus)[0];
   const scope = newestRun && newestRun.agent_id
     ? { type: 'agent', agent_id: newestRun.agent_id, turn: newestRun.turn }
     : { type: 'general', agent_id: null, turn: null };
   return openBigDialog({
     badge: 'AGENT', badgeColor: BADGE_COLOR, title: html`${agentName} @ <${FeatureLabel} slug=${feature} />`,
-    body: () => html`<${AgentBody} feature=${feature} step=${step} />`,
+    body: () => html`<${AgentBody} feature=${feature} step=${step} focus=${focus} />`,
     chat: {
       title: 'Ask ' + agentName, placeholder: 'Ask something about this run…', scope,
       greeting: newestRun && newestRun.agent_id

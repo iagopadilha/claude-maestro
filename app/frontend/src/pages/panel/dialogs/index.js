@@ -3,3 +3,4 @@ export { openPauseDialog } from './pause_dialog.js';
 export { openAgentDialog } from './agent_dialog.js';
 export { openDepsDialog } from './deps_dialog.js';
 export { openErrorDialog } from './error_dialog.js';
+export { openFeatureDialog } from './feature_dialog.js';

@@ -283,6 +283,14 @@ function enabledChannels(v) {
   if (v && typeof v === 'object') return Object.entries(v).filter(([, on]) => on).map(([k]) => k);
   return [];
 }
+/** One row per configured claude command: role, found or "not found (skipped)", auth method (API key = pay per token), e-mail, org, plan. */
+function claudeCommandRow(command, index) {
+  const auth = command.auth || {};
+  const who = [auth.email, auth.org, auth.plan].filter(Boolean).join(' · ');
+  const method = auth.method === 'API key' ? '⚠ API key (pay per token)' : auth.method;
+  const detail = command.found ? [command.name, method, who, auth.error ? 'auth: ' + auth.error : ''].filter(Boolean).join(' · ') : command.name + ' · not found (skipped)';
+  return row('claude command (' + (command.role === 'main' ? 'main' : 'fallback') + ')', command.found ? true : command.role === 'main' ? false : null, detail, 'claude-command-' + index);
+}
 const KNOWN_INFO = new Set(['skill_dir', 'guard', 'claude', 'notify_channels', 'data_dir', 'version', 'seconds_until_shutdown', 'problems', 'ok', 'pid', 'url']);
 /** Content of #hub-diag. */
 function Diagnostics({ r, error }) {
@@ -298,6 +306,7 @@ function Diagnostics({ r, error }) {
       ${row('/orchestrator skill', skillDir ? true : null, skillDir ? String(skillDir) : '')}
       ${row('guard blocking git push', guardOk, guard.path ? String(guard.path) : '')}
       ${row('claude on PATH', bool(claude.on_path), claude.binary_configured ? String(claude.binary_configured) : '')}
+      ${list(r.claude_commands).map(claudeCommandRow)}
       ${row('notification channels', channels.length ? true : null, channels.length ? channels.join(', ') : 'none configured')}
       ${r.data_dir ? row('data folder', null, String(r.data_dir)) : null}
       ${list(r.problems).map((p, i) => row('problem', false, txt(p), 'problem-' + i))}
