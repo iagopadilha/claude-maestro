@@ -20,7 +20,7 @@ A filled `GAPS` blocks nothing. Note it in `STATE.md` as a known mapping gap.
 ```
 FEATURE: <slug>
 SCOPE: Small|Medium|Large|Complex
-FILES: .specs/features/<slug>/spec.md[, design.md][, tasks.md]
+FILES: .specs/features/<slug>/spec.md[, design.md], .specs/features/<slug>/tasks.md
 PATHS: <dir or glob>, <dir or glob>
 DEPS: <slug|dir:folder>, ... | none
 KIND: back|front|both|generic
@@ -76,6 +76,8 @@ What to do with each status:
 | `REGRESSED` | a single restore attempt via a new dispatch to the same executor with the report. If it fails → quarantine, and warn the user that there is broken code in the tree. |
 
 `CHANGED` feeds the commit message and the report. Check that the listed paths are inside the spec's `PATHS`; if any falls outside, treat it as `NEEDS_CONFIRM`.
+
+**One task per executor.** In a task wave each executor returns for ONE task (`FEATURE: <slug>`, and `NOTES` may name the `<Tn>`); `CHANGED` must stay inside that task's `Files` (SCOPE.json `tasks`), otherwise `NEEDS_CONFIRM`. After each return the orchestrator runs `harness.py tasks set <slug> <Tn> done|failed` (`DONE` = done; any other status or a failure = failed, resent to the same executor up to 2 times, then quarantine). An executor may add `DECISION: [<slug>] level=<important|critical> <doubt> | chose: <choice> | revert: <how>` lines (no `turn`); the orchestrator consolidates them into `VALIDATE.md` and stamps the turn. The `spec-writer` `FILES:` line always lists `tasks.md`.
 
 ## `verifier`
 

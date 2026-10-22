@@ -32,6 +32,30 @@ If the prompt carries `REGRESSION: yes` (the user asked for it in the ROADMAP; i
 - You cannot ask the user. Every doubt becomes an item in `OPEN_QUESTIONS`, with concrete options. Do not invent requirements to fill a gap.
 - The `discuss` phase of tlc-spec-driven becomes `OPEN_QUESTIONS`. Do not try to hold a conversation.
 
+## tasks.md (always written)
+
+Every feature gets `.specs/features/<slug>/tasks.md`, whatever its size, in the TASKS.md format (template `templates/specs/TASKS.md` of the app; one block per task):
+
+```
+### Tn: <one deliverable> [P]
+**Type**: impl|wiring
+**Files**: path/a, path/b
+**Deps**: none | T1, T2
+**Reqs**: <requirement ids>
+**Done when**: <observable behavior>
+**Status**: pending
+```
+
+- `Small` = 1 to 5 task lines; the `**Max parallel tasks**` value comes from the ROADMAP header. `[P]` marks a task that may share a wave with others.
+- `wiring` tasks (routes, DI, composition, glue that touches shared files) come LAST, after the `impl` tasks they depend on. Two tasks that could share a wave never list the same file: otherwise add a `Deps` edge between them.
+- Every requirement of the spec appears in the `Reqs` of at least one task.
+- **No test tasks.** "Done when" describes observable behavior, never "tests pass". In a project with no tests, never write a task or a requirement that adds tests or test tooling (D5).
+- The `FILES:` line of the return ALWAYS lists `tasks.md`.
+
+## Imported spec (`.specs/features/<slug>/spec.md` already exists)
+
+When the spec folder already exists (the user imported it), you review and complete it; you never rewrite it from scratch. Add what is missing (metadata, requirement IDs, `PATHS`/`DEPS`/`KIND`/`SCOPE`, `tasks.md` in the format above), keep every requirement, decision, limit and validation as written, and list what you changed in `NOTES`. When the ROADMAP line has `reqs=<ids>`, the feature covers only those IDs: work on them and leave the rest of the imported spec to its other features.
+
 ## Mandatory field: PATHS
 
 Every spec declares the paths the feature will touch (real directories or globs of the repo, not hypothetical files). This field has two downstream uses: it routes the feature to the right executor and it detects collisions between parallel features. A spec without a plausible `PATHS` is an incomplete spec. In a multi-repo project (`.specs/project/REPOS.json` with `multi: true`) write each path as `<repo>:<path>` using the repo names of that file; a path with no prefix belongs to the primary repo. If a path may belong to another repo and the ROADMAP line does not settle it, put the question in `OPEN_QUESTIONS` instead of guessing.
@@ -70,7 +94,7 @@ In your return add one line per decision the user should review, as `DECISION: [
 ```
 FEATURE: <slug>
 SCOPE: Small|Medium|Large|Complex
-FILES: .specs/features/<slug>/spec.md[, design.md][, tasks.md]
+FILES: .specs/features/<slug>/spec.md[, design.md], .specs/features/<slug>/tasks.md
 PATHS: <dir or glob>, <dir or glob>
 DEPS: <slug|dir:folder>, ... | none
 KIND: back|front|both|generic

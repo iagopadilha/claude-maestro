@@ -38,7 +38,12 @@ The skill finds the app through `LOOP_APP_HOME` or `~/.loop-harness/config.json`
 
 ### Guarded agent sessions
 **Location:** `plugin/skills/orchestrator/hooks/guard.py` (PreToolUse hook, profiles such as `auto` and `spec`), `plugin/hooks/hooks.json`, `infrastructure/workspace_file_guard.py`.
-**Purpose:** agents cannot push, write outside their allowed folders, touch production or read secrets; delivery (push + PR) is only done by the orchestrator via `harness.py deliver`.
+**Purpose:** agents cannot push, write outside their allowed folders, touch production or read secrets (every `.env` layer of the test environment included); delivery (push + PR) is only done by the orchestrator via `harness.py deliver`.
+**Implementation:** with `LOOP_HEADLESS=1` (exported by the engine) every `git push` and `gh` is blocked for every caller and the main session without `agent_type` gets the `orchestrator` profile; an executor dispatched with `SCOPE_TASK: <slug>/<Tn>` is limited to that task's files (`SCOPE.json` `tasks`).
+
+### Task waves
+**Location:** `engine/task_waves.py` (also `harness.py tasks waves|set|mirror`), `repositories/task_status_repository.py`, `app/templates/specs/TASKS.md`.
+**Purpose:** a feature with a `tasks.md` is built by one executor per task, in waves of at most `Max parallel tasks` (ROADMAP header, default 3); the status of each task is `loop/internal/tasks/<slug>.json`.
 
 ### Monorepo subprojects
 **Location:** `engine/subprojects.py`, `services/subprojects_service.py`, `subproject_map_service.py`, `system_map_service.py`, `map_job_runner.py`, `engine/context_block.py`, `engine/system_map.py`.
@@ -64,10 +69,10 @@ The skill finds the app through `LOOP_APP_HOME` or `~/.loop-harness/config.json`
 User clicks in the panel -> controller (`loop_commands_controller`) -> `LoopControlService` (options from the ROADMAP header settings) -> engine `run_loop.py` subprocess -> `claude -p --model <orchestrator model>` with the orchestrator skill (via `infrastructure/claude_client.py`) -> agents write `.specs/**` (decisions as lines of `VALIDATE.md`) -> after the turn the engine adds the turn cost to `meta.json`, pauses on the spend cap or on a new critical decision -> read services (`loop_status_service`, `loop_file_repository`) parse files -> panel polls `/p/<id>/api/...`.
 
 ### Finish and follow-up
-Navbar Finish -> `workspace_controller` (`GET wrap-up`, `POST wrap-up/finish`) -> `WrapUpService` -> `delivery.py` (push + PR, when chosen) then `LoopWorktreeService.close_loop` -> `engine/close_loop.py` (verified backup, plan copied back, `last-run.json`, `git worktree remove`). Follow-up: `follow_up_controller` -> `FollowUpService` -> `claude_job_service` (type `follow_up`) -> new stage in the worktree ROADMAP -> `follow-up/run` starts a round through `LoopControlService.start_new_loop`.
+Navbar Finish -> `workspace_controller` (`GET wrap-up`, `POST wrap-up/finish`) -> `WrapUpService` -> `delivery.py` (push + PR, when chosen) then `LoopWorktreeService.close_loop` -> `engine/close_loop.py` (verified backup, plan copied back, `last-run.json`, `git worktree remove`). Follow-up (a chat, thread per round in `loop/internal/follow-up/round-<n>.json`, US$ 1 per message and US$ 5 per round): `follow_up_controller` -> `FollowUpService` -> `claude_job_service` (type `follow_up`) -> the round's stage in the worktree ROADMAP -> `follow-up/run` (Continue loop) starts a round through `LoopControlService.start_new_loop`.
 
 ### Planning and roadmap (headless)
-Panel chat/planning controller -> `planning_service` / `claude_job_service` -> `claude -p` (read-only, scoped tools, empty MCP config unless opted in) -> `.specs` files written through `workspace_file_guard` limits.
+Panel chat/planning controller -> `planning_service` / `claude_job_service` -> `claude -p` (read-only, scoped tools, empty MCP config unless opted in) -> `.specs` files written through `workspace_file_guard` limits. A spec import (`PlanningImportService`: preview, copy to `.specs/features/<slug>/`, `IMPORT-LOG.md`) makes the AI write `IMPORT-COVERAGE.md`; the `import_coverage` planning gate checks every source item against it. Folder pickers are native-first (`POST projects/pick-folder`).
 
 ### Delivery
 `harness.py deliver` -> `engine/delivery.py`: push of the feature branch only, PR via `gh` or compare link (`LOOP_PR_MODE`).

@@ -34,6 +34,7 @@ CODEBASE_MAP_FOLDER = ("docs", "codebase")
 CODEBASE_MAP_EXTENSIONS = (".md", ".json")
 ROOT_GROUP_FOLDER = "."
 ROOT_GROUP_LABEL = "Project"
+BUILDING_STATUS = "building"
 
 
 def read_command_limits(loop_command):
@@ -109,7 +110,7 @@ def parse_answers(text):
 
 class LoopPanelService:
     def __init__(self, loop_status_service, loop_file_repository, roadmap_view_service, turn_service, agent_history_service, activity_monitor,
-                 guard_event_service, planning_requirement_service, decisions_service=None):
+                 guard_event_service, planning_requirement_service, decisions_service=None, task_status_repository=None):
         self.loop_status_service = loop_status_service
         self.loop_file_repository = loop_file_repository
         self.roadmap_view_service = roadmap_view_service
@@ -119,6 +120,7 @@ class LoopPanelService:
         self.guard_event_service = guard_event_service
         self.planning_requirement_service = planning_requirement_service
         self.decisions_service = decisions_service or DecisionsService()
+        self.task_status_repository = task_status_repository  # None = no `tasks` block in the features
 
     def build_state(self, context, project_url):
         work_dir = context.work_dir
@@ -130,6 +132,7 @@ class LoopPanelService:
         stages, features, counts, graph = self.roadmap_view_service.build_roadmap_view(work_dir, roadmap_text)
         turn = compute_current_turn(summary["json"], meta, numbers, running)
         guard = self.guard_event_service.build_guard_summary(work_dir)
+        self.attach_tasks_to_building_features(work_dir, features)
 
         return {
             "now": now_iso(), "project": get_project_name(meta, context), "repo": context.repo_path, "work": work_dir,
@@ -153,6 +156,14 @@ class LoopPanelService:
             "guard_events": guard["events"], "guard_counts": guard["counts"],
             "monitor": {"url": project_url, "idle_in_s": None, "shutdown_in_s": self.activity_monitor.seconds_until_shutdown()},
         }
+
+    def attach_tasks_to_building_features(self, work_dir, features):
+        """Adds `tasks` ({tasks:[{id,title,status,wave,note}], max_parallel}) to each feature that is being built; others get no key."""
+        if self.task_status_repository is None:
+            return
+        for feature in features:
+            if feature.get("status") == BUILDING_STATUS:
+                feature["tasks"] = self.task_status_repository.read_feature_tasks(work_dir, feature["id"])
 
     def build_loop_block(self, work_dir, summary, turn):
         loop_json, running = summary["json"], summary["running"]

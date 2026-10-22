@@ -54,7 +54,9 @@ def write(path, text):
         handle.write(text)
 result = "nothing"
 session = "fake-roadmap-session-1"
-if "dontAsk" in argv:  # planning chat (/orchestrator plan): stdin = first prompt + text, or just the text when resumed
+roadmap_job = (prompt.startswith("/orchestrator roadmap") or prompt.startswith("/orchestrator map")
+               or stdin_text.startswith("Continue in this session's `/orchestrator roadmap"))
+if "dontAsk" in argv and not roadmap_job:  # planning chat (/orchestrator plan): stdin = first prompt + text, or just the text when resumed
     session = "fake-planning-session-1"
     write(os.path.join(project, "PROJECT.md"), "# Project\n\n**Vision:** a to-do app.\n")
     questions = "- Which database? | recommended: SQLite\n" if "ASK" in stdin_text else "- none\n"

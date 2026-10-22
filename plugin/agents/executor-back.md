@@ -40,6 +40,13 @@ You implement ONE backend feature from a ready spec.
 - Spec ambiguous to the point that two valid implementations fit: `AMBIGUOUS`.
 - You broke something that worked and could not restore it: `REGRESSED`, stating what stayed broken.
 
+## One task per executor (task waves)
+
+- **Your task.** When the prompt carries `SCOPE_TASK: <slug>/<Tn>`, you implement that task only: read its block in `.specs/features/<slug>/tasks.md` (Files, Deps, Reqs, Done when) and the spec for context. Without that line the whole spec is your one task.
+- **Edit only that task's Files** (SCOPE.json `tasks`; the hook blocks the rest). A file the task needs and does not list = stop with `STATUS: NEEDS_CONFIRM` naming it. Other tasks of the same wave run in parallel on the same tree: never touch their files.
+- **No git** (read-only `git status` and `git diff` only), **no full build of the solution** (check only the project or files you touched), **no package restore or install**, and **no tests or test tooling in a project that has no tests**; where tests exist, keep to the existing rule above.
+- **Return `DECISION:` lines** (format in "Decisions to report") for each choice the user should review; the orchestrator consolidates them. Your `DONE` means your task's "Done when" holds.
+
 ## Monorepo and context
 
 - No `SUBPROJECT:` line in the prompt = nothing in this section changes: work as before.

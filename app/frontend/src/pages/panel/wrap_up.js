@@ -11,6 +11,7 @@ import { renderAll, schedulePoll } from '../project_panel.js';
 import { repoInfo } from './header.js';
 import { DecisionsCount, openDecisionsDialog } from './decisions.js';
 import { openReopenPlanning } from './reopen_planning.js';
+import { FollowUpChat } from './follow_up_chat.js';
 
 const POLL_MS = 4000;
 const COMMIT_FIRST_MESSAGE = 'chore(loop): commit the pending work before finishing';
@@ -178,54 +179,6 @@ function Summary({ summary, delivery }) {
     <div class="wu-fact"><div class="z-figure-k">DELIVERY</div><div>${httpUrl(s.pr_url) ? html`<${Link} url=${s.pr_url} text="Pull request" />` : httpUrl(s.compare_url) ? html`<${Link} url=${s.compare_url} text="Compare page" />` : delivery && delivery.done ? html`<span>pushed to origin (no PR link for this remote)</span>` : html`<span class="muted">not delivered yet</span>`}</div></div></div>`;
 }
 
-/** The stage the follow-up job added to ROADMAP.md (a string or an object with a name and features). */
-function AddedStage({ stage }) {
-  if (!stage) return null;
-  if (typeof stage === 'string') return html`<div class="wu-stage"><div class="pl-eyebrow">ADDED TO THE ROADMAP</div><pre class="wu-stage-text">${stage}</pre></div>`;
-  const features = list(stage.features);
-  return html`<div class="wu-stage"><div class="pl-eyebrow">ADDED TO THE ROADMAP</div><div class="wu-stage-name">${txt(stage.name || stage.title || stage.stage)}</div>
-    ${features.length ? html`<ul class="wu-stage-features">${features.map((feature, index) => html`<li key=${index} class="mono">${typeof feature === 'string' ? feature : feature.slug || feature.id || JSON.stringify(feature)}</li>`)}</ul>` : null}</div>`;
-}
-
-/** Follow-up box: extra instructions plus the decisions to change; Send writes the new stage, Run follow-up starts a round. */
-function FollowUpBox({ followUp, decisions, reload, locked }) {
-  const draft = (followUp && followUp.draft) || {};
-  const [text, setText] = useState('');
-  const [picked, setPicked] = useState([]);
-  const [busy, setBusy] = useState(false);
-  const touched = useRef(false);
-  const draftKey = followUp ? (draft.text || '') + '|' + list(draft.decisions).join(',') : null;
-  useEffect(() => { if (followUp && !touched.current) { setText(draft.text || ''); setPicked(list(draft.decisions)); } }, [draftKey]);
-  const job = followUp && followUp.last_job, running = !!job && job.state === 'running';
-  const choices = decisions.filter((item) => !item.reviewed || picked.includes(item.id) || item.change_requested);
-  const toggle = (id) => { touched.current = true; setPicked((current) => (current.includes(id) ? current.filter((x) => x !== id) : [...current, id])); };
-  const call = async (route, body, doneText) => {
-    setBusy(true);
-    try { await ctx.api.post(route, body, 30000); toast(doneText, 'ok'); touched.current = false; await reload(); schedulePoll(300); renderAll(); }
-    catch (failure) { toast((failure.status === 409 ? 'Not right now: ' : 'Not done: ') + failure.message, 'err'); } finally { setBusy(false); }
-  };
-  const disabled = busy || running || locked;
-  const canSend = !disabled && (text.trim() || picked.length);
-  const canRun = !disabled && !!(followUp && followUp.stage) && !(job && job.state === 'error');
-  return html`<section class="wu-follow" aria-label="Follow-up">
-    <div class="z-label">FOLLOW-UP</div>
-    <p class="wu-hint">Write what is still missing or pick decisions to change. The AI adds a "Follow-up" stage to the roadmap; you review it and run it on the same branch.</p>
-    <textarea class="dlg-area" rows="4" aria-label="Follow-up instructions" placeholder="E.g. rename the export button, and add a CSV option to the report."
-      value=${text} disabled=${disabled} onInput=${(e) => { touched.current = true; setText(e.currentTarget.value); }}></textarea>
-    ${choices.length ? html`<div class="wu-picks" role="group" aria-label="Decisions to change">${choices.map((item) => html`<label key=${item.id} class="nl-check wu-pick">
-      <input type="checkbox" checked=${picked.includes(item.id)} disabled=${disabled} onChange=${() => toggle(item.id)} />
-      <span><b class="mono">${item.slug}</b> ${item.chose}</span></label>`)}</div>` : null}
-    ${running ? html`<div class="nl-msg" role="status"><div class="spinner" aria-hidden="true"></div><span>The AI is writing the follow-up stage…</span></div>` : null}
-    ${job && job.state === 'error' ? html`<div class="nl-box nl-bad" role="alert"><strong>The follow-up job failed: </strong>${txt(job.error)}</div>` : null}
-    <${AddedStage} stage=${followUp && followUp.stage} />
-    <div class="wu-follow-actions">
-      <button type="button" class="btn btn-sm" disabled=${!canSend} onClick=${() => call('follow-up/send', { text: text.trim(), decisions: picked }, 'Follow-up sent.')}>Send follow-up</button>
-      <button type="button" class="btn btn-sm btn-primary" disabled=${!canRun} title=${followUp && followUp.stage ? '' : 'Send a follow-up first: it adds the stage to run'}
-        onClick=${() => call('follow-up/run', {}, 'Follow-up round started.')}>Run follow-up</button>
-      ${locked ? html`<span class="wu-hint">A loop is running.</span>` : null}</div>
-  </section>`;
-}
-
 /** The view of the LOOP column when the loop is done or stopped with a worktree. */
 export function WrapUp() {
   const { wrap, followUp, decisions, error, reload } = useWrapUp();
@@ -239,6 +192,6 @@ export function WrapUp() {
     ${wrap ? html`<${Summary} summary=${wrap.summary} delivery=${wrap.delivery} />
       <div class="wu-decisions"><${DecisionsCount} project=${ctx.projectId} state=${ctx.state} /></div>` : html`<div class="hint">Reading the wrap-up…</div>`}
     ${finished ? html`<p class="wu-hint">The worktree is gone, so there is no follow-up for this run. Go back to planning for the next work.</p>`
-      : html`<${FollowUpBox} followUp=${followUp} decisions=${decisions} reload=${reload} locked=${status() === 'running'} />`}
+      : html`<${FollowUpChat} followUp=${followUp} decisions=${decisions} reload=${reload} locked=${status() === 'running'} />`}
   </section>`;
 }

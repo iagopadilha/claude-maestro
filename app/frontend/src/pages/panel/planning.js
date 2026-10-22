@@ -5,10 +5,9 @@
    The back end enforces every gate; this screen only shows them. */
 import { html, useEffect, useLayoutEffect, useRef, useState } from '../../util/preact.js';
 import { isNum, cost, list, fmtHour } from '../../util/format.js';
-import { appApi } from '../../api/api_client.js';
 import { toast } from '../../components/toast.js';
 import { confirmDialog, openDialog } from '../../components/dialog.js';
-import { pickFolder } from '../../components/folder_browser.js';
+import { pickFolderNativeFirst } from '../../components/folder_browser.js';
 import { Markdown } from '../../components/markdown.js';
 import { ctx, approval } from './context.js';
 import { renderAll, schedulePoll } from '../project_panel.js';
@@ -21,7 +20,6 @@ import { reloadProgress, initializeStructure, chooseConformance, mapCodebase, ma
 import { SubprojectsInstallerPanel, loadSubprojects, subprojectsData, onSubprojectsChanged } from './subprojects.js';
 import { ProjectInstallerPanel } from './project_installer.js';
 
-const NATIVE_DIALOG_TIMEOUT_MS = 310000; // the back end waits up to 300 s for the system window
 const JOB_POLL_MS = 1500, JOB_GIVEUP_MS = 660 * 1000, REFRESH_MS = 6000, MAX_TEXT = 8000;
 const ENV_GATE = 'test_environment'; // gate id, also the id of its side-panel tab
 const QUESTIONS_GATE = 'open_questions'; // gate id, also the id of its side-panel tab
@@ -145,48 +143,62 @@ const importName = (x) => String(x.import_id || '').replace(/^\d{8}-\d{6}-/, '')
  *  and Confirm (sends them to the AI). A single file or pasted text is not imported. */
 function ImportForm({ api }) {
   const [path, setPath] = useState(''), [prev, setPrev] = useState(null), [err, setErr] = useState(''), [busy, setBusy] = useState('');
-  // the Windows folder window first (POST projects/pick-folder); the in-app browser only when the system window is unavailable
+  /** Message of a refused call; the log path of an already_imported answer is added when the message does not carry it. */
+  const importErrorText = (e) => {
+    const logPath = (e && e.body && e.body.log_path) || '';
+    return (e.message || 'Import refused.') + (logPath && !String(e.message).includes(logPath) ? ' (log: ' + logPath + ')' : '');
+  };
+  const primaryRepoFeaturesFolder = () => {
+    const rs = list(pl.repos && pl.repos.repos), main = rs.find((r) => r.primary) || rs[0];
+    return main && main.path ? String(main.path).replace(/[\\/]+$/, '') + '/.specs/features/' : '';
+  };
+  const readPreview = async (folder) => {
+    if (!folder.trim()) { setErr('Type or choose the spec feature folder first.'); return; }
+    setBusy('preview'); setErr(''); setPrev(null);
+    try { setPrev(await ctx.api.post('planning/import/preview', { path: folder.trim() }, 30000)); }
+    catch (e) { setErr(importErrorText(e)); }
+    finally { setBusy(''); }
+  };
+  // the Windows folder window first, the in-app browser only when it is unavailable (pickFolderNativeFirst)
   const browse = async () => {
-    const fallback = () => pickFolder({ title: 'Choose the spec feature folder (the one with spec.md)', buttonText: 'Use this folder', initial: path });
     setBusy('browse'); setErr('');
     let v = null;
-    try {
-      const r = await appApi.post('projects/pick-folder', {}, NATIVE_DIALOG_TIMEOUT_MS);
-      v = r && r.path ? r.path : r && /folder browser/i.test(String(r.reason || '')) ? await fallback() : null; // null = cancelled
-    } catch (_) { v = await fallback(); }
+    try { v = await pickFolderNativeFirst({ title: 'Choose the spec feature folder (the one with spec.md)', buttonText: 'Use this folder', initial: primaryRepoFeaturesFolder() }); }
     finally { setBusy(''); }
-    if (v) { setPath(v); setPrev(null); }
+    if (v) { setPath(v); setPrev(null); readPreview(v); }
   };
-  const preview = async () => {
-    if (!path.trim()) { setErr('Type or choose the spec feature folder first.'); return; }
-    setBusy('preview'); setErr(''); setPrev(null);
-    try { setPrev(await ctx.api.post('planning/import', { path: path.trim() }, 30000)); }
-    catch (e) { setErr(e.message); }
-    finally { setBusy(''); }
-  };
-  const confirm = async () => {
+  const importAndSend = async () => {
     setBusy('send'); setErr('');
     try {
-      const r = await ctx.api.post('planning/import/' + encodeURIComponent(prev.import_id) + '/send', {}, 30000);
+      const meta = await ctx.api.post('planning/import', { path: path.trim() }, 30000);
+      const r = await ctx.api.post('planning/import/' + encodeURIComponent(meta.import_id) + '/send', {}, 30000);
       api.close();
       pl.err = null; pl.pending = null;
       if (r.job_id) followJob(r.job_id, Date.now()); else loadPlanning();
       loadImports();
-    } catch (e) { setErr('Not sent: ' + e.message); setBusy(''); }
+    } catch (e) { setErr('Not imported: ' + importErrorText(e)); setBusy(''); }
   };
-  const files = list(prev && prev.files);
+  const files = list(prev && prev.files), skipped = list(prev && prev.skipped), warnings = list(prev && prev.warnings);
+  const counts = (prev && prev.counts) || {}, refused = prev && prev.refused, earlier = prev && prev.already_imported;
+  const COUNT_LABELS = [['requirements', 'requirements'], ['decisions', 'decisions'], ['tasks', 'tasks'], ['out_of_scope_rows', 'out-of-scope rows'], ['edge_cases', 'edge cases'], ['success_criteria', 'success criteria']];
+  const canImport = !!prev && !refused && !earlier && !busy && !busyNow();
   return html`<div class="plan-imp">
     <p class="plan-env-note">Pick the folder of one spec feature (tlc-spec-driven: <code>spec.md</code>, and <code>design.md</code>, <code>tasks.md</code>, <code>context.md</code> when they exist), for example <code>${'.specs/features/<feature>/'}</code>. The AI reads it and writes this project's roadmap, flows and context from it (it still only edits the files in .specs/project). Nothing is sent until you confirm.</p>
     <div class="plan-imp-row"><label class="sr-only" for="plan-imp-path">Spec feature folder</label>
       <input id="plan-imp-path" type="text" class="plan-imp-in" spellcheck="false" placeholder="Spec feature folder (with spec.md)" value=${path} onInput=${(e) => { setPath(e.currentTarget.value); setPrev(null); }} />
       <button type="button" class="btn btn-sm" id="plan-imp-browse" disabled=${!!busy} onClick=${browse}>${busy === 'browse' ? 'Waiting for the window…' : 'Browse folders…'}</button></div>
     ${err ? html`<div class="nl-box nl-bad" role="alert" id="plan-imp-err">${err}</div>` : null}
-    ${prev ? html`<div class="plan-imp-prev" id="plan-imp-prev" role="status"><b>Spec feature ${importName(prev)}: ${files.length} file${files.length === 1 ? '' : 's'}</b>
-      <ul>${files.map((f, i) => { const n = typeof f === 'string' ? f : f.name || f.path || ''; return html`<li key=${i}><code>${n}</code>${n === prev.main ? html` <span class="plan-imp-main">main</span>` : null}</li>`; })}</ul></div>` : null}
+    ${prev ? html`<div class="plan-imp-prev" id="plan-imp-prev" role="status"><b>Spec feature ${prev.slug || importName(prev)}: ${files.length} file${files.length === 1 ? '' : 's'} found</b>
+      ${refused ? html`<div class="nl-box nl-bad" id="plan-imp-refused" role="alert">Refused: ${refused.reason || 'this folder cannot be imported.'}</div>` : null}
+      ${earlier ? html`<div class="nl-box nl-bad" id="plan-imp-earlier" role="alert">This spec feature was already imported (${earlier.import_id}). See the log <code>${earlier.log_path}</code>. A changed spec goes through the spec-change flow, not a second import.</div>` : null}
+      <ul>${files.map((f, i) => html`<li key=${i}><code>${f.relative_path}</code>${f.relative_path === 'spec.md' ? html` <span class="plan-imp-main">main</span>` : null}</li>`)}</ul>
+      ${skipped.length ? html`<div><b>Skipped (${skipped.length})</b><ul id="plan-imp-skipped">${skipped.map((f, i) => html`<li key=${i}><code>${f.relative_path}</code> <span class="plan-env-note">${f.reason || f.status || ''}</span></li>`)}</ul></div>` : null}
+      <div class="plan-env-note" id="plan-imp-counts">${COUNT_LABELS.filter(([k]) => counts[k] != null).map(([k, label]) => counts[k] + ' ' + label).join(' · ')}</div>
+      ${warnings.length ? html`<ul class="plan-imp-warn" id="plan-imp-warn" aria-label="Warnings">${warnings.map((w, i) => html`<li key=${i}>${String(w)}</li>`)}</ul>` : null}</div>` : null}
     <div class="plan-imp-act">
       <button type="button" class="btn btn-sm" id="plan-imp-cancel" disabled=${busy === 'send'} onClick=${() => api.close()}>Cancel</button>
-      <button type="button" class="btn btn-sm" id="plan-imp-preview" disabled=${!!busy} onClick=${preview}>${busy === 'preview' ? 'Reading…' : 'Preview'}</button>
-      <button type="button" class="btn btn-sm btn-primary" id="plan-imp-confirm" disabled=${!prev || !!busy || busyNow()} onClick=${confirm}>${busy === 'send' ? 'Sending…' : 'Confirm and send to the AI'}</button>
+      <button type="button" class="btn btn-sm" id="plan-imp-preview" disabled=${!!busy} onClick=${() => readPreview(path)}>${busy === 'preview' ? 'Reading…' : 'Preview'}</button>
+      ${refused || earlier ? null : html`<button type="button" class="btn btn-sm btn-primary" id="plan-imp-confirm" disabled=${!canImport} onClick=${importAndSend}>${busy === 'send' ? 'Importing…' : 'Import'}</button>`}
     </div></div>`;
 }
 function openImport() {
@@ -252,9 +264,36 @@ function UncommittedBlock({ u }) {
       <div class="mono plan-ready-files">${fileNames(other)}</div></div>` : null}
   </div>`;
 }
+// RDY-01..03: grouped items {kind, repo, files, text, fix}; when present they replace the text list (old payloads keep the fallback).
+const readyItems = (r) => list(r.items).filter((x) => x && typeof x === 'object' && (x.text || x.repo || list(x.files).length));
+function ReadyItem({ it }) {
+  const files = list(it.files).map(String);
+  const isProblem = it.level ? it.level === 'problem' : /problem|error|block|missing-roadmap/i.test(String(it.kind || ''));
+  const shown = files.slice(0, 10);
+  return html`<div class=${isProblem ? 'plan-ready-p' : 'plan-ready-w'} data-repo=${it.repo || ''}>
+    <b>${isProblem ? 'PROBLEM' : 'WARNING'}</b> ${it.repo ? html`<span class="mono">${it.repo}</span>: ` : null}${it.text ? String(it.text) : ''}
+    ${shown.length ? html`<div class="mono plan-ready-files">${shown.join(', ') + (files.length > 10 ? ` +${files.length - 10} more` : '')}</div>` : null}
+    ${it.fix ? html`<div class="muted">${String(it.fix)}</div>` : null}
+  </div>`;
+}
 function ReadyBody() {
   const r = rdy.data;
   if (!r) return null;
+  const items = readyItems(r);
+  if (items.length) {
+    const when = r.at ? fmtHour(r.at) : '';
+    const running = r.state === 'running' || rdy.running;
+    const seen = new Set(items.map((x) => String(x.text || '')));
+    return html`<div class="plan-ready" id="plan-ready-body">
+      ${r.state === 'stale' ? html`<div class="plan-ready-w">The plan changed since the last check${when ? ' (ran at ' + when + ')' : ''}.</div>` : null}
+      ${r.state === 'running' ? html`<div class="plan-ready-w">Checking whether the loop can run…</div>` : null}
+      ${r.state === 'error' ? html`<div class="plan-ready-p">${'readiness check did not run: ' + (r.error || 'unknown error')}</div>` : null}
+      ${items.map((it, i) => html`<${ReadyItem} key=${'i' + i} it=${it} />`)}
+      ${list(r.problems).filter((x) => !seen.has(String(x))).map((x, i) => html`<div class="plan-ready-p" key=${'p' + i}><b>PROBLEM</b> ${String(x)}</div>`)}
+      ${warningTexts(r).filter((x) => !seen.has(x)).map((x, i) => html`<div class="plan-ready-w" key=${'w' + i}><b>WARNING</b> ${x}</div>`)}
+      <button type="button" class="btn btn-sm" id="plan-ready-run" disabled=${running || busyNow()} onClick=${runReadiness}>${running ? 'Checking…' : 'Run again'}</button>
+    </div>`;
+  }
   const when = r.at ? fmtHour(r.at) : '';
   const running = r.state === 'running' || rdy.running;
   return html`<div class="plan-ready" id="plan-ready-body">
@@ -565,7 +604,7 @@ function Gate({ g }) {
         ${g.optional && !g.ok ? html`<span class="plan-opt">optional</span>` : null}</div>
       ${g.id === READY_GATE && rdy.data ? html`<${ReadyBody} />` : g.detail ? html`<div class="plan-gate-d">${g.detail}</div>` : null}
       ${giantNote(g, items)}
-      ${g.id === READY_GATE && rdy.data ? null : items.length ? html`<details class="plan-gate-more"><summary>${items.length} item${items.length === 1 ? '' : 's'}</summary>
+      ${g.id === READY_GATE && rdy.data ? null : items.length ? html`<details class="plan-gate-more" open=${g.id === 'import_coverage' && !g.ok}><summary>${items.length} item${items.length === 1 ? '' : 's'}</summary>
         <ul class="plan-gate-items">${items.map((x, i) => html`<li key=${i}>${String(x)}</li>`)}</ul></details>` : null}
     </div>
   </li>`;

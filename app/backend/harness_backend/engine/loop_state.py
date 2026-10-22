@@ -109,7 +109,9 @@ def parse_roadmap(text):
         title = TITLE_FIELD.search(rest)
         if title:
             rest = rest[:title.start()] + " " + rest[title.end():]
-        fields = dict(re.findall(r"([\w-]+)=(\S+)", rest))  # [\w-]: repo-order has a hyphen
+        # [\w-]: repo-order has a hyphen. Every key=value is kept as written, including the optional
+        # reqs=<ID|range,...> (e.g. reqs=ORIG-01..06,CRIA-01..08): fields["reqs"] is the raw comma list, no spaces.
+        fields = dict(re.findall(r"([\w-]+)=(\S+)", rest))
         if title and title.group(1).strip():
             fields["title"] = " ".join(title.group(1).split())
         if not title and "title=" in rest:

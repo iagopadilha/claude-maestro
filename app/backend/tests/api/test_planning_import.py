@@ -35,7 +35,7 @@ class PlanningImportTests(PlanningTestCase):
         folder = self.feature_folder("my feature")
         status, body = self.import_body({"path": folder})
         self.assertEqual(status, 200, body)
-        self.assertEqual((body["files"], body["main"], body["source"]), (["spec.md"], "spec.md", "folder"))
+        self.assertEqual((body["files"], body["main"], body["source"]), (["spec.md", "IMPORT-LOG.md"], "spec.md", "folder"))  # the log is an attachment too
         self.assertRegex(body["import_id"], r"^\d{8}-\d{6}-my-feature$")
         copy = read_file(self.imported_file(body["import_id"], "spec.md"))
         self.assertIn("Goal: a thing.", copy)
@@ -49,19 +49,19 @@ class PlanningImportTests(PlanningTestCase):
                                               ("notes.txt", "x"), ("a.png", "x")))
         status, body = self.import_body({"path": folder})
         self.assertEqual(status, 200, body)
-        self.assertEqual((body["files"], body["main"]), (["design.md", "spec.md", "tasks.md"], "spec.md"))
+        self.assertEqual((body["files"], body["main"]), (["design.md", "spec.md", "tasks.md", "IMPORT-LOG.md"], "spec.md"))
         self.assertTrue(body["import_id"].endswith("-feat"))
 
     def test_refusals_are_clear_and_nothing_is_copied_or_sent(self):
         single = self.feature_folder("single")
         self.feature_folder("empty", (("spec.md", "  \n"),))
         self.feature_folder("big", (("spec.md", "x" * (400 * 1024 + 1)),))
-        self.feature_folder("many", [("spec.md", "# S\n")] + [("f%02d.md" % index, "# F\n") for index in range(10)])
+        self.feature_folder("many", [("spec.md", "# S\n")] + [("f%02d.md" % index, "# F\n") for index in range(30)])  # 31 files, limit 30
         self.feature_folder("docs", (("a.md", "# A\n"), ("b.md", "# B\n")))
         cases = (({"path": os.path.join(single, "spec.md")}, "not a file"),
                  ({"path": os.path.join(self.source_dir, "empty")}, "is empty"),
                  ({"path": os.path.join(self.source_dir, "big")}, "larger than 400 KB"),
-                 ({"path": os.path.join(self.source_dir, "many")}, "limit is 10"),
+                 ({"path": os.path.join(self.source_dir, "many")}, "limit is 30"),
                  ({"path": os.path.join(self.source_dir, "docs")}, "no spec.md"),
                  ({"path": os.path.join(self.source_dir, "missing")}, "folder not found"),
                  ({"text": SPEC_TEXT}, "send `path`"),

@@ -13,6 +13,7 @@ import {
 } from './pipeline_model.js';
 import { openAgentDialog } from './dialogs/index.js';
 import { FeatureLabel } from './feature_label.js';
+import { ctx } from './context.js';
 import { clampCameraTo, fitCameraTo, sameCamera } from './camera_clamp.js';
 
 // ---------- geometry (px). Kept in JS because the SVG edges need the same coordinates as the nodes ----------
@@ -271,6 +272,17 @@ function Legend({ turn }) {
   </div>`;
 }
 
+/** Task chips of a building feature, one row per wave. Reads `tasks` from the panel state; no tasks = nothing drawn. */
+function TaskWaves({ slug }) {
+  const feature = (ctx.state && Array.isArray(ctx.state.features) ? ctx.state.features : []).find((item) => item && item.id === slug);
+  const tasks = feature && feature.tasks && Array.isArray(feature.tasks.tasks) ? feature.tasks.tasks : [];
+  if (!tasks.length) return null;
+  const waves = [...new Set(tasks.map((task) => task.wave || 1))].sort((a, b) => a - b);
+  return html`<div class="pl-task-waves">${waves.map((wave) => html`<div key=${wave} class="pl-task-wave"><span class="pl-task-wave-name mono">Wave ${wave}</span>
+    ${tasks.filter((task) => (task.wave || 1) === wave).map((task) => html`<span key=${task.id} class=${'pl-task-chip ' + String(task.status || 'pending')}
+      title=${task.status === 'failed' && task.note ? String(task.note) : String(task.title || task.id)}>${task.status === 'running' ? html`<span class="spinner sm"></span>` : null}${task.status === 'done' ? '✓ ' : ''}${task.id}</span>`)}</div>`)}</div>`;
+}
+
 /** List mode: the same information, one card per feature (useful on narrow screens). */
 function ListMode({ graph }) {
   return html`<div class="pl-list">
@@ -279,6 +291,7 @@ function ListMode({ graph }) {
         <span class="pl-badge" style=${{ color: lane.color, borderColor: lane.color }}>${lane.status}</span></div>
       <div class="pl-card-steps">${lane.steps.map((node) => html`<button type="button" key=${node.key} class=${'pl-step' + (node.tagged ? ' tagged' : '') + (node.selected ? ' selected' : '')}
         style=${{ color: node.color }} title=${node.role} onClick=${() => selectNode({ f: node.feature, s: node.step })} onDblClick=${() => openAgent(node.feature, node.step)}>${node.agent} · ${node.st}${node.attempts ? ' · ' + node.attempts : ''}</button>`)}</div>
+      <${TaskWaves} slug=${lane.id} />
     </div>`)}
     <${Teaser} graph=${graph} />
   </div>`;

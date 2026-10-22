@@ -8,6 +8,7 @@
   `python -m unittest discover -s backend/tests -t backend` from `app/` (see `app/README.md`).
 - Plugin guard hook: tests live next to the hook, `plugin/skills/orchestrator/hooks/test_guard.py` and `test_guard_cookbook.py`. How to run them: unclear (no runner documented).
 - No CI config found (no `.github/workflows`).
+- `pytest` is not installed: every suite, the guard tests included, runs with `python -m unittest discover` (give `-s <folder> -t <top>` as above, or `-s plugin/skills/orchestrator/hooks -p "test_guard*.py"` for the guard).
 
 ## Kinds of tests that exist
 | Kind | Where | Notes |

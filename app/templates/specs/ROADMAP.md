@@ -9,6 +9,10 @@ Grammar of each feature line (checked by engine/loop_state.py). One line per fea
   > - [slug] status=<pending|speccing|specced|approved|building|verified|blocked> scope=<Small|Medium|Large|Complex>
   >   kind=<back|front|both|generic> paths=<p1,p2> [deps=<slug|dir:folder,...>] [isolation=<same-tree|worktree>]
   >   [tries=<n>] [origin=adopted] [e2e=<ok|failed|not-covered>] [regression=<yes|baseline|ok|failed>] [note=...]
+  >   [reqs=<ID|ID..ID,...>]
+
+reqs= lists the requirement ids (or ranges, e.g. reqs=ORIG-01..06,CRIA-01..08) the feature covers; no spaces. It is
+optional, parsed as-is and must be kept untouched by every rewrite of the line (status changes included).
 
 A new feature is born status=pending (scope, kind and paths may start empty: the spec-writer fills them in). The
 regression field only applies to a refactor-* feature and only when the user asks for it (it requires a filled-in
@@ -31,13 +35,15 @@ line = the default shown, an invalid value = the default and a warning in the pl
 1-8); Max spend per turn / for the loop in US$ (0 on the loop = no cap); Max minutes per turn; Branch = the loop branch name or
 automatic; Branch base = the branch new worktrees start from and the PR target (default developer; the loop falls back to the
 current branch with a warning when it does not exist locally); Setup = one command run once in the new worktree (for example npm ci); When a feature gets stuck = pause or continue;
-Push and PR = push the feature branch and open the PR at the end (yes/no).
+Push and PR = push the feature branch and open the PR at the end (yes/no);
+Max parallel tasks = executors per wave inside ONE feature (1 to 5, default 3).
 -->
 
 **Goal:** FILL_IN
 
 **E2E:** no
 **Dispatch:** auto
+**Max parallel tasks:** 3
 **Max spend per turn:** 5
 **Max spend for the loop:** 50
 **Max minutes per turn:** 60

@@ -6,7 +6,7 @@ import os
 import re
 import unittest
 
-from backend.tests.infra.test_guard_sql_write import GuardTestCase, GUARDS, PLUGIN_GUARD, USER_GUARD
+from tests.infra.test_guard_sql_write import GuardTestCase, GUARDS, PLUGIN_GUARD, USER_GUARD
 
 SUGGESTED = ".specs/project/SUBPROJECTS-SUGGESTED.json"
 

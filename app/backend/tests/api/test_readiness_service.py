@@ -72,7 +72,7 @@ class ReadinessServiceTests(unittest.TestCase):
         self.assertEqual((state["state"], state["problems"], state["warnings"]), ("ready", [], ["no test command known for repo-b"]))
         self.assertTrue(state["at"] and state["fingerprint"])
         argv, folder, timeout = self.runner.calls[0]
-        self.assertEqual((argv, folder, timeout), (["python", "run_loop.py", self.folder, "--check", "--planning"], self.folder, 120))
+        self.assertEqual((argv, folder, timeout), (["python", "run_loop.py", self.folder, "--check", "--planning", "--json"], self.folder, 120))
         cache = json.loads(read_file(os.path.join(self.folder, ".specs", "project", "loop", "internal", "planning", "readiness.json")))
         self.assertEqual(cache["state"], "ready")
         self.assertEqual(self.service.get(self.context)["state"], "ready", "read from the cache, no new process")
@@ -204,7 +204,7 @@ class ReadinessRoutesTests(ProjectsTestCase):
         self.assertEqual((status, body["state"]), (200, "stale"))
         status, body = self.request("POST", "/p/%s/api/planning/readiness/run" % self.project_id, {})
         self.assertEqual(status, 202, body)
-        self.assertEqual(set(self.wait_for_state("ready")), {"state", "at", "problems", "warnings", "uncommitted", "fingerprint", "error"})
+        self.assertEqual(set(self.wait_for_state("ready")), {"state", "at", "problems", "warnings", "uncommitted", "items", "fingerprint", "error"})
 
     def test_approval_is_refused_with_the_first_problem_and_allowed_when_ready(self):
         status, body = self.approve()

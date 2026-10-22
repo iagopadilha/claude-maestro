@@ -49,6 +49,51 @@ def default_machine_paths():
     return paths
 
 
+UNCOMMITTED_FIX = "Commit these files (the worktree is born from the last commit)"
+
+
+def group_items(items):
+    """RDY-02: merges every `uncommitted` item of the same repo into one (files deduplicated, order kept); other items pass through in order."""
+    grouped, result = {}, []
+    for item in items or []:
+        if not isinstance(item, dict) or item.get("kind") != "uncommitted":
+            result.append(item)
+            continue
+        repo = item.get("repo")
+        if repo in grouped:
+            merged = grouped[repo]
+            merged["files"] = list(dict.fromkeys(list(merged.get("files") or []) + list(item.get("files") or [])))
+            continue
+        grouped[repo] = dict(item, files=list(dict.fromkeys(item.get("files") or [])))
+        result.append(grouped[repo])
+    return result
+
+
+JSON_LINE_PREFIX = "[check] JSON: "
+
+
+def parse_json_items(output):
+    """The `items` of the check's `[check] JSON: {...}` line; None when the line is missing or unreadable (the caller falls back to text)."""
+    for line in reversed(output.splitlines()):
+        if line.startswith(JSON_LINE_PREFIX):
+            try:
+                items = json.loads(line[len(JSON_LINE_PREFIX):]).get("items")
+            except (ValueError, AttributeError):
+                return None
+            return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else None
+    return None
+
+
+def build_items(problems, warnings, uncommitted):
+    """The panel's `items`: one grouped `uncommitted` item per repo (from the structured blocks), then every other line as `other`."""
+    items = [{"kind": "uncommitted", "level": "warning", "repo": block.get("repo"),
+              "files": list(block.get("setup_files") or []) + list(block.get("other_changes") or []),
+              "text": "uncommitted changes in %s" % block.get("repo"), "fix": UNCOMMITTED_FIX} for block in uncommitted or []]
+    items += [{"kind": "other", "level": "problem", "repo": None, "files": [], "text": text, "fix": ""} for text in problems]
+    items += [{"kind": "other", "level": "warning", "repo": None, "files": [], "text": text, "fix": ""} for text in warnings]
+    return group_items(items)
+
+
 class ReadinessService:
     def __init__(self, process_runner, script_path_provider, log, machine_paths_provider=None, timeout_seconds=CHECK_TIMEOUT_SECONDS,
                  python=None, enforced=False):
@@ -138,6 +183,8 @@ class ReadinessService:
             return {"state": STATE_STALE, "at": None, "problems": [], "warnings": [], "uncommitted": [], "fingerprint": ""}
         return {"state": data["state"], "at": data.get("at"), "problems": list(data.get("problems") or []),
                 "warnings": list(data.get("warnings") or []), "uncommitted": list(data.get("uncommitted") or []),
+                "items": (group_items(data["items"]) if isinstance(data.get("items"), list)
+                          else build_items(data.get("problems") or [], data.get("warnings") or [], data.get("uncommitted") or [])),
                 "fingerprint": data.get("fingerprint") or "",
                 "error": data.get("error") or ""}
 
@@ -176,7 +223,7 @@ class ReadinessService:
 
     def execute_check(self, context):
         fingerprint = self.compute_fingerprint(context)  # before the run: a change during it leaves the result stale
-        argv = [self.python, self.script_path_provider(), context.repo_path, "--check", "--planning"]
+        argv = [self.python, self.script_path_provider(), context.repo_path, "--check", "--planning", "--json"]
         code, output, error = self.process_runner.run_and_wait(argv, context.repo_path, self.timeout_seconds)
         if code == TIMEOUT_CODE:
             return self.build_error("the check took longer than %d s" % self.timeout_seconds, fingerprint)
@@ -188,8 +235,12 @@ class ReadinessService:
             return self.build_error(last_lines[-1] if last_lines else "no READY or PROBLEM line (code %s)" % code, fingerprint)
         problems = [redact_secrets(item, MESSAGE_LIMIT) for item in parsed["problems"]]
         warnings = [redact_secrets(item, MESSAGE_LIMIT) for item in parsed["warnings"] if not item.startswith(UNCOMMITTED_WARNING_PREFIX)]
-        return {"state": STATE_PROBLEMS if problems else STATE_READY, "at": now_iso(), "problems": problems, "warnings": warnings,
-                "uncommitted": self.read_uncommitted_blocks(context), "fingerprint": fingerprint, "error": ""}
+        result = {"state": STATE_PROBLEMS if problems else STATE_READY, "at": now_iso(), "problems": problems, "warnings": warnings,
+                  "uncommitted": self.read_uncommitted_blocks(context), "fingerprint": fingerprint, "error": ""}
+        engine_items = parse_json_items(output or "")
+        if engine_items is not None:
+            result["items"] = group_items(engine_items)
+        return result
 
     @staticmethod
     def read_uncommitted_blocks(context):

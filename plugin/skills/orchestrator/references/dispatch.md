@@ -15,6 +15,7 @@ When dispatching `executor-generic`, include in the prompt a line `SKILL: <name>
 - The first line `FEATURE: <slug>` (exactly one feature per agent, in every dispatch of every role; the panel's pipeline reads it) and the path of the spec and, if they exist, of `design.md` and `tasks.md`. **Path, not content.**
 - The literal `PATHS` list, with the instruction not to leave it, and the line `SCOPE_FEATURE: <slug>` (the guard reads it to limit editing to this feature's `PATHS` only, not the union of the wave).
 - A warning when another executor is running in parallel on the same tree, with the neighbor's paths.
+- **Task wave dispatch** (build phase, `SKILL.md`): one executor per task, the extra line `SCOPE_TASK: <slug>/<Tn>` next to `SCOPE_FEATURE: <slug>`, and the path of `tasks.md` (the executor reads its own task there). Write SCOPE.json `tasks` (`{"<slug>/<Tn>": [files]}`) BEFORE the wave. The tasks of one wave never share a file (`harness.py tasks waves <slug>` guarantees it); tell each executor the files of its wave neighbors. A feature without `tasks.md` is dispatched as ONE task covering the spec (log it).
 - Multi-repo project: the worktree path of every repo the `PATHS` touch (from `meta.repos`), the `PATHS` as absolute paths in those worktrees, and the `repo-order=` of the feature. Dispatch the repos of one feature in that order (producer before consumer); the executor edits only inside those worktrees and never in the user's original repo folders.
 - The verifier's `FAIL` block or the reviewer's `FINDINGS`, when it is a resend.
 
@@ -93,6 +94,7 @@ Every feature is its own lane with ONE agent per step (`SKILL.md`, "Lanes"): nev
 | Specs | Yes, one `spec-writer` per feature. They write only in `.specs/features/<slug>/`, never collide. |
 | Gate | Yes, one `spec-reviewer` per feature. Read-only. A feature enters it as soon as its own spec is back. |
 | Execution | One executor per feature, in parallel only with disjoint `PATHS` (and deps verified) or a worktree; a colliding feature waits as `approved` while the others go on. |
+| Execution (task waves) | Inside one feature, one executor per task of the wave, at most `Max parallel tasks` (ROADMAP header, default 3); waves run in order. Across features the total stays inside `Max spend per turn` and `Max minutes per turn`: shrink the wave when short. |
 | Verification | One `verifier` per feature, in parallel by default. Serialize only two that would build the same project or solution output (the other lanes keep moving). |
 | Commit | Always serial, always the orchestrator; one feature at a time, as soon as ITS verification passed. |
 

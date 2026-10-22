@@ -18,6 +18,9 @@ to `work`:
   turn's `claude -p`: `total_cost_usd`, `duration_ms`, `num_turns`, `usage`, `result`, `session_id`,
   `permission_denials`, `exit_code`, `timeout`, `turn`), `turns/NNN.events.jsonl` (optional live agent events),
   `snapshots/NNN/`, `chat/<thread>.json`, `jobs/<job>.json`, `whiteboard.json`, `actions.log`
+- Task waves: `internal/tasks/<slug>.json` is the status of each task of a feature's `tasks.md` (`pending|running|done|failed`, optional note), written only by `harness.py tasks set`:
+  `harness.py tasks waves <slug> [--max N]` (JSON waves of the tasks not done yet, at most `Max parallel tasks` per wave), `tasks set <slug> <Tn> <status> [--note TEXT]`, `tasks mirror <slug>` (copies the status into the
+  `**Status**:` lines of `tasks.md`); `--root DIR` = the folder that holds `.specs`. `GET state` adds a `tasks` block (`{tasks: [{id, title, status, wave, note}], max_parallel}`) to each feature being built (`TaskStatusRepository`); the pipeline list view shows it.
 - `meta.json` keys added by the loop panel work: `delivery` `{push_pr, remove_worktree_on_finish}` (the two checkboxes of the Start
   dialog, written by the app at start; before the worktree exists they wait in `delivery-pending.json` of the repository and the
   engine merges them), `cost_usd` (total spent by the run, never reset by a start, a resume or a raise), `max_cost_usd` (cap of this
@@ -378,8 +381,10 @@ What the Start dialog shows, read-only: the values are decided in planning (the 
 }
 ```
 `settings` come from `domain/roadmap_settings.parse_loop_settings` over the ROADMAP of the work folder; the header names are
-`Dispatch`, `E2E`, `Max spend per turn`, `Max spend for the loop`, `Max minutes per turn`, `Branch`, `Setup`,
-`When a feature gets stuck` and `Push and PR` (grammar `**Name:** value`, outside HTML comments). A line that is absent is listed
+`Dispatch`, `E2E`, `Max spend per turn`, `Max spend for the loop`, `Max minutes per turn`, `Branch`, `Branch base`, `Setup`,
+`When a feature gets stuck`, `Push and PR` and `Max parallel tasks` (executors per wave inside one feature, 1 to 5, default 3; `settings.max_parallel_tasks`). The payload also has `base_branch_resolved`
+`{"name", "source": "roadmap|env|default"}`: by default the loop branches from `developer`. To change it, write `Branch base: main` (or `release/2.0`) in the ROADMAP header.
+Order: ROADMAP, then LOOP_INTEGRATION_BRANCH, then developer. The PR goes to the same branch. (grammar `**Name:** value`, outside HTML comments). A line that is absent is listed
 in `missing` and takes its default; an invalid value takes the default and adds an item to `problems`. `delivery` is what
 `LoopControlService.read_delivery` returns: the worktree meta, else `delivery-pending.json`, else the defaults (push per the ROADMAP,
 remove on Finish). `models.orchestrator` is the `orchestrator_model` key of `config.json` (default `opus`; `""` = no `--model` flag).
@@ -474,18 +479,21 @@ Refusals: 400 for an invalid `mode`, `confirm_text` or `accept_unreviewed` (a wr
 (`decisions` only on `unreviewed_critical`; a `close_failed` 409 also carries `closed` and `backup`.) Token required.
 
 ### Follow-up (project routes)
-A follow-up is new work on the same branch after a finished loop, planned by a short AI job and run as a normal round. It needs the loop worktree (after Finish removes it,
-use Back to planning instead).
-- **GET follow-up** -> `{"draft": {"text": "...", "decisions": ["<id>"]}, "last_job": {...}|null, "stage": {"id": "Follow-up-1", "n": 1, "name": "Follow-up 1", "features": [{"slug", "status"}]}|null}`
-  (`stage` = the last `Follow-up` stage of the ROADMAP).
-- **POST follow-up/send** `{"text": "...", "decisions": ["<id>"], "budget_usd"?: 1}` -> 202 `{"ok": true, "job": {...}}`. A `claude -p` job of type `follow_up`: `--model sonnet`, hook
-  profile `planning`, no MCP, `Read Grep Glob` plus `Edit` only on `ROADMAP.md` and `FLOWS.md`, run in the loop worktree, budget default US$ 1 (up to 5). The prompt carries the instructions and the
-  chosen decisions and asks for ONE stage `## Stage Follow-up-<n> - Follow-up <n>` with new features in the ROADMAP grammar plus FLOWS entries. When the job ends the app accepts ONLY an appended
-  stage (and appended FLOWS text): anything else is undone, both files are restored and the job ends as `error` with the reason. The text is kept in the draft until a send succeeds. 400 without text and
-  without decisions, with text over 8000 characters, an invalid budget or an unknown decision id; 409 with the loop running (`loop_running`), another claude job running (`follow_up_busy`) or without
-  the worktree (`no_worktree`).
-- **POST follow-up/run** `{}` -> the answer of `loop/start` (`{"ok": true, "pid": N}`, with its 400/409 refusals): renews the roadmap approval for the new feature list (clicking Run is the approval of the reviewed stage), then starts a
-  round on the same worktree with the delivery choices of the first start and the ROADMAP header settings. 409 `no_follow_up_stage` when there is no `Follow-up` stage with open features; 409 `repo_in_use` like a start.
+A follow-up is a chat that plans new work on the same branch after a finished loop, then runs it as a normal round. It needs the loop worktree (after Finish removes it,
+use Back to planning instead). One thread per round in `.specs/project/loop/internal/follow-up/round-<n>.json` (`round`, `session_id`, `spent_usd`, `summary_note`, `baseline`, `messages`, `closed_at`);
+every message resumes the round's claude session (the `session_id` is never returned).
+- **GET follow-up** -> `{"round": 1, "thread": {"messages": [...], "spent_usd": 0, "summary_note": ""}, "stage": {"id": "Follow-up-1", "n": 1, "name": "Follow-up 1", "features": [{"slug", "status"}]}|null, "last_job": {...}|null,
+  "caps": {"message_usd": 1, "round_usd": 5}, "can_send": {"ok", "reason"}, "can_continue": {"ok", "reason"}, "finished": false, "draft": {"text": "...", "decisions": ["<id>"]}}`
+  (`stage` = the stage of the current round; `finished` = the loop worktree is gone; `reason` says why a button is off).
+- **POST follow-up/send** `{"text": "...", "decisions": ["<id>"]}` -> 202 `{"ok": true, "job": {...}}`. A `claude -p` job of type `follow_up`: `--model sonnet`, hook
+  profile `planning`, no MCP, `Read Grep Glob` plus `Edit` only on `ROADMAP.md` and `FLOWS.md`, run in the loop worktree. The cap is fixed, US$ 1 per message and US$ 5 per round (a `budget_usd` in the body is ignored).
+  The prompt carries the instructions and the chosen decisions and asks for ONE stage `## Stage Follow-up-<n> - Follow-up <n>` with new features in the ROADMAP grammar plus FLOWS entries; later messages of the round may edit that stage.
+  When the job ends the app accepts ONLY edits of the round's stage (and appended FLOWS text): anything else is undone, both files go back to their text before the turn and the message ends as `error` with the reason.
+  The text is kept in the draft until a send succeeds. 400 without text and without decisions, with text over 8000 characters or an unknown decision id. 409 with `code`: `loop_running`, `follow_up_busy` (another claude job runs),
+  `no_worktree`, `follow_up_budget` (the round already spent US$ 5).
+- **POST follow-up/run** (**Continue loop**) `{}` -> the answer of `loop/start` (`{"ok": true, "pid": N}`, with its 400/409 refusals): closes the round (the next send is round n+1 with spend 0), renews the roadmap approval for the new feature list
+  (clicking it is the approval of the reviewed stage), then starts a round on the same worktree with the delivery choices of the first start and the ROADMAP header settings. 409 `no_follow_up_stage` when the round has no stage with open
+  features; 409 `repo_in_use` like a start.
 
 ### POST shutdown   `{}`
 Compatible no-op `{"ok": true}`: shutting down belongs to the app (`POST /api/app/shutdown`).
@@ -519,13 +527,21 @@ Also 409 `busy` while a loop runs, 409 `commit_push_failed` when git fails (extr
 Response `{"ok": true, "repo", "branch", "committed", "pushed", "commit"}`.
 
 ### Planning: import a spec and readiness (project routes `/p/<id>/api/...`)
+- `POST planning/import/preview` `{"path": "<spec feature folder>"}` -> `{slug, files, skipped, counts, items, warnings, refused, already_imported}`: what an import would take (requirement/decision/task ids, core sections, warnings).
+  Nothing is copied and no AI is called; `refused` is `{reason, counts}` when a limit is broken.
 - `POST planning/import` `{"path": "<spec feature folder>"}` -> `{import_id, files, main: "spec.md", at, source: "folder"}`. Only a tlc-spec-driven
-  feature folder with `spec.md` is imported (its top-level `.md` files, up to 10; each up to 400 KB; credentials redacted), read only, into
-  `.specs/project/loop/internal/planning/imported/<stamp>-<feature>/`; it sends nothing. 400 for a file path, pasted `text`, a folder without
-  `spec.md`, an empty or oversized `.md`, a missing folder.
+  feature folder with `spec.md` is imported: every `.md` inside it (subfolders too), read only, credentials redacted. Limits: depth 3, 30 files, 400 KB per file, 2 MB in total.
+  The source is copied twice: to `.specs/project/loop/internal/planning/imported/<stamp>-<feature>/` (with `import.json` and `IMPORT-LOG.md`, the log of what was read, skipped and detected) and to
+  `.specs/features/<slug>/` of the work folder; it sends nothing. 400 for a file path, pasted `text`, a folder without `spec.md`, an empty or oversized `.md`, a folder over the limits, a missing folder.
+  409 `already_imported` (the same source folder or slug was imported; the response carries the earlier `import_id` and `log_path`) or `feature_folder_exists` (`.specs/features/<slug>/` exists and was not imported by the app).
 - `GET planning/imports` -> `{imports: [{import_id, files, main, at, source, sent_at}]}` newest first (the chat shows them as attachments).
 - `POST planning/import/<import_id>/send` -> 202 `{ok, job_id}` like `planning/send`: ONE fixed planning message that tells the AI to build ROADMAP, FLOWS,
-  PROJECT and the repository scope from the copies. Importing again adds to the conversation; nothing is wiped.
+  PROJECT and the repository scope from the copies, and to write `.specs/project/IMPORT-COVERAGE.md`. Another feature adds to the conversation; nothing is wiped.
+  **Coverage.** Nothing of the source may be lost: each ROADMAP feature built from it carries `reqs=ORIG-01..06,CRIA-01..08` (comma list of ids or ranges, no spaces) and points to `.specs/features/<slug>/`.
+  `IMPORT-COVERAGE.md` has one `## <slug>` heading per import and under it a table `| Item | Kind | Destination |` with a row for EVERY requirement/decision/task id of the source (or, without ids, every core section; a range like
+  `ORIG-01..06` counts as its ids). Destination is a location (`ROADMAP:[slug] reqs`, `RULES.md#...`, `FLOWS.md#...`) or `dropped: <reason>`; `domain/import_coverage.py` parses it.
+  After a send, the planning gate **`import_coverage`** is not optional: it fails when `IMPORT-COVERAGE.md` is missing or an item has no row (`missing: <id>`); `dropped: <item> - <reason>` lines are shown and never block.
+  The count (`N covered, N dropped, N missing`) is appended to the `IMPORT-LOG.md` of the import.
 - `GET planning/readiness` -> the cached "Ready to run the loop" result `{state: ready|problems|stale|running|error, at, problems: [...], warnings: [...], fingerprint, error?}`.
   It is `stale` when ROADMAP, REPOS, TEST-ENVIRONMENT or `.env.test` changed since it ran; `running` while a check is scheduled.
 - `POST planning/readiness/run` -> 202 with the live state (`running`); poll `GET planning/readiness`. It runs `run_loop.py <repo> --check --planning` (timeout
@@ -536,6 +552,13 @@ Response `{"ok": true, "repo", "branch", "committed", "pushed", "commit"}`.
   PROBLEM is that step.
 - The planning gates (`GET planning`, `gates`) end with `ready` ("Ready to run the loop"). **`POST roadmap/approve` answers 422** (`code: planning_gates`) with the
   gates, the `ready` one failed and its first problem as the reason, while the readiness is not `ready`.
+- **Readiness items.** The result of `GET planning/readiness` also carries `items: [{kind, level: problem|warning, repo, files: [paths], text, fix}]`, the structured twin of `problems` / `warnings`: one `uncommitted` item per repository
+  (its setup and other changed files merged, `fix` = "Commit these files (the worktree is born from the last commit)") and one item per other line (`kind` such as `other`, with a `fix` sentence when known). The check runs with `--json`:
+  `harness.py check <repo> --json` prints, after the text lines, one `[check] JSON: {"ready", "problems", "warnings", "items"}` line the service parses (without it, the items are built from the text lines).
+
+### POST projects/pick-folder (hub route)
+`{"initial"?: "<existing folder>"}` -> `{"path": "...|null", "reason": "...|null"}`. Native-first folder picker: the OS dialog (tkinter in a subprocess, 300 s timeout) opens in `initial` when it is an existing folder (anything else is ignored).
+`path` is null with a `reason` when the user cancelled, there is no tkinter or the dialog failed; only then the panel falls back to its own folder browser (`GET system/folders`). Every folder picker of the panel (open project, repositories, spec import) goes through it.
 
 ### Test environment: Access card (project routes)
 `GET /p/<id>/api/test-environment` returns `{ok, ready, names, fill_in, access, shared_paths}`. `access` is data for the **Access** card, never a value:

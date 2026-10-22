@@ -6,7 +6,7 @@ import { html, useState, useEffect } from '../../util/preact.js';
 import { POLLING_INTERVAL_MS } from '../../api/api_client.js';
 import { toast } from '../../components/toast.js';
 import { confirmDialog } from '../../components/dialog.js';
-import { pickFolder } from '../../components/folder_browser.js';
+import { pickFolderNativeFirst } from '../../components/folder_browser.js';
 import { SubprojectsTable, mapFileCount, mapQueueOf } from '../../components/subprojects_table.js';
 import { SubprojectsInstaller } from '../../components/subprojects_installer.js';
 import { ctx } from './context.js';
@@ -196,9 +196,9 @@ function buildActions(store) {
     toggleSkip: (path, skip) => editDraft(store, (rows) => rows.map((row) => (row.path === path ? { ...row, skip } : row))),
     removeRow: (path) => editDraft(store, (rows) => rows.filter((row) => row.path !== path)),
     async addFolder() {
-      const picked = await pickFolder({ title: 'Add a subproject folder', buttonText: 'Add this folder', explanation: 'Choose a folder inside the repository.' });
-      if (!picked) return;
       const root = repositoryRoot(store);
+      const picked = await pickFolderNativeFirst({ initial: root, title: 'Add a subproject folder', buttonText: 'Add this folder', explanation: 'Choose a folder inside the repository.' });
+      if (!picked) return;
       const relative = relativeToRoot(picked, root);
       if (relative == null) { toast(root ? `Choose a folder inside the repository (${root}).` : 'Cannot tell the repository folder: reopen the project and try again.', 'err'); return; }
       if (!relative) { toast('Choose a folder inside the repository, not the repository itself.', 'err'); return; }

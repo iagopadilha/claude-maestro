@@ -6,6 +6,7 @@ from ..repositories.error_event_repository import ErrorEventRepository
 from ..infrastructure.process_runner import ProcessRunner
 from ..repositories.loop_file_repository import LoopFileRepository
 from ..repositories.specs_file_repository import SpecsFileRepository
+from ..repositories.task_status_repository import TaskStatusRepository
 from .agent_history_service import AgentHistoryService
 from .decisions_service import DecisionsService
 from .error_center_service import ErrorCenterService
@@ -47,7 +48,8 @@ def build_loop_read_module(config, log, project_service, activity_monitor, plann
     agent_history_service = AgentHistoryService(loop_file_repository, claude_transcript_repository, log)
     loop_panel_service = LoopPanelService(loop_status_service, loop_file_repository, roadmap_view_service, turn_service,
                                           agent_history_service, activity_monitor, GuardEventService(loop_file_repository),
-                                          planning_requirement_service, decisions_service=decisions_service)
+                                          planning_requirement_service, decisions_service=decisions_service,
+                                          task_status_repository=TaskStatusRepository())
     error_center_service = ErrorCenterService(loop_status_service, loop_file_repository, ErrorEventRepository())
     pipeline_service = PipelineService(loop_status_service, loop_file_repository, roadmap_view_service, agent_history_service, log)
     controller = LoopReadController(project_service, loop_panel_service, agent_history_service, turn_service, log, error_center_service,

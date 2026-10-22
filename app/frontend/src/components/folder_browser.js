@@ -4,6 +4,9 @@ import { html, useState, useEffect, useRef } from '../util/preact.js';
 import { appApi } from '../api/api_client.js';
 import { openDialog } from './dialog.js';
 
+const NATIVE_DIALOG_TIMEOUT_MS = 310000; // the back end waits up to 300 s for the system window
+const NATIVE_CANCELLED_REASON = 'cancelled'; // folder_picker_service.CANCELLED_REASON
+
 const baseName = (p) => String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || String(p || '');
 function join(base, name) {
   if (!base) return name;
@@ -106,4 +109,15 @@ export function pickFolder({ title = 'Choose a folder', buttonText = 'Use this f
       onClose: () => resolve(chosen),
     });
   });
+}
+
+/** The system folder window first (POST projects/pick-folder); the in-app browser only when the system window is unavailable or failed.
+    Resolves with the chosen path or null (cancelled). */
+export async function pickFolderNativeFirst({ initial = '', title, buttonText, explanation } = {}) {
+  try {
+    const r = await appApi.post('projects/pick-folder', { initial }, NATIVE_DIALOG_TIMEOUT_MS);
+    if (r && r.path) return r.path;
+    if (r && r.reason === NATIVE_CANCELLED_REASON) return null;
+  } catch (_) { /* the system window failed: use the in-app browser */ }
+  return pickFolder({ initial, title, buttonText, explanation });
 }

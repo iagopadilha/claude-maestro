@@ -585,6 +585,45 @@ def preflight(repo, opts):
     return problems, warns
 
 
+CHECK_FIXES = {
+    "missing-roadmap": "Generate and approve the roadmap in Planning",
+    "uncommitted": "Commit these files (the worktree is born from the last commit)",
+    "dotnet-restore": "Add `dotnet restore` as the Setup line in the ROADMAP header (planning)",
+    "node-modules": "Add `npm ci` as the Setup line",
+    "permission-mode": "If the first turn fails, use permission mode acceptEdits",
+}
+
+
+def check_item_kind(text):
+    """RDY-01: the kind of a check line, from its text (the text itself is never changed)."""
+    lowered = text.lower()
+    if lowered.startswith("missing .specs/project/roadmap.md"):
+        return "missing-roadmap"
+    if lowered.startswith("uncommitted changes in "):
+        return "uncommitted"
+    if lowered.startswith(".net detected"):
+        return "dotnet-restore"
+    if lowered.startswith("node project"):
+        return "node-modules"
+    if "`auto` mode" in lowered or "auto mode depends" in lowered:
+        return "permission-mode"
+    return "other"
+
+
+def check_items(problems, warns, repos, repo):
+    """RDY-01: [{kind, repo, files, text, fix}] for the `--json` output of the check. The uncommitted text lines are replaced by the
+    structured one-per-repo items; every other line keeps its text and gets a kind and a fix sentence."""
+    items = []
+    problem_texts = set(problems)
+    for text in list(problems) + list(warns):
+        kind = check_item_kind(text)
+        if kind == "uncommitted":
+            continue
+        items.append({"kind": kind, "level": "problem" if text in problem_texts else "warning", "repo": None, "files": [], "text": text,
+                      "fix": CHECK_FIXES.get(kind, "")})
+    return [dict(item, level=item.get("level") or "warning") for item in readiness_checks.uncommitted_items(repos, repo)] + items
+
+
 def claude_command_problems(opts):
     problems = []
     if not (opts.claude or shutil.which("claude")):
@@ -2069,6 +2108,7 @@ def main():
     parser.add_argument("--yes", action="store_true", help="confirms --rewind")
     parser.add_argument("--leftovers", choices=["commit", "discard"], default="", help="uncommitted files outside .specs/ left in the worktree: commit them all as a checkpoint or discard them, then carry on (the panel's recovery buttons)")
     parser.add_argument("--summary-dir", default="", help="folder of the final summary (default: the app's output folder, ~/Downloads when unset)")
+    parser.add_argument("--json", action="store_true", help="with --check: after the text lines, print one `[check] JSON: {...}` line with problems, warnings and `items` (kind, repo, files, text, fix)")
     parser.add_argument("--check", action="store_true", help="only checks the preflight, prints the ready command and exits (creates nothing)")
     parser.add_argument("--planning", action="store_true", help="with --check: readiness of a roadmap NOT yet approved (skips the approval, adds worktree, feature-path, MCP, credential and test-command checks)")
     parser.add_argument("--dry-run", action="store_true")
@@ -2112,6 +2152,9 @@ def main():
     if opts.check:
         if not problems:
             print("[check] READY. Command:\n  %s" % ready_command(repo, opts))
+        if opts.json:
+            print("[check] JSON: " + json.dumps({"ready": not problems, "problems": problems, "warnings": warns,
+                                                  "items": check_items(problems, warns, project_repos.load_repos(repo), repo)}, ensure_ascii=False))
         return 1 if problems else 0
     if problems:
         work_now = worktree_of(repo)

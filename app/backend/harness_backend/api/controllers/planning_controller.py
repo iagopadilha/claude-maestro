@@ -1,5 +1,5 @@
 """Planning mode routes: GET planning, POST planning/send, GET planning/job/<job>, POST planning/reset, the spec import
-(POST planning/import, GET planning/imports, POST planning/import/<id>/send) and the readiness check (GET planning/readiness,
+(POST planning/import/preview, POST planning/import, GET planning/imports, POST planning/import/<id>/send) and the readiness check (GET planning/readiness,
 POST planning/readiness/run). Only translates HTTP <-> the services; the refusals carry `code` (planning_busy, planning_prerequisites, loop_running)."""
 from ..router import Response
 from .project_responses import respond_converting_errors
@@ -20,6 +20,7 @@ class PlanningController:
         router.add("GET", "/p/{project_id}/api/planning/job/{job_id}", self.get_job)
         router.add("POST", "/p/{project_id}/api/planning/reset", self.reset_conversation)
         if self.planning_import_service:
+            router.add("POST", "/p/{project_id}/api/planning/import/preview", self.preview_import)
             router.add("POST", "/p/{project_id}/api/planning/import", self.import_spec)
             router.add("GET", "/p/{project_id}/api/planning/imports", self.list_imports)
             router.add("POST", "/p/{project_id}/api/planning/import/{import_id}/send", self.send_import)
@@ -44,6 +45,10 @@ class PlanningController:
     def reset_conversation(self, request):
         return respond_converting_errors(lambda: Response.json(200, self.planning_service.reset_conversation(
             self.get_context(request), request.body.get("confirm"))))
+
+    def preview_import(self, request):
+        return respond_converting_errors(lambda: Response.json(200, self.planning_import_service.preview_import(
+            self.get_context(request), request.body)))
 
     def import_spec(self, request):
         return respond_converting_errors(lambda: Response.json(200, self.planning_import_service.import_spec(
