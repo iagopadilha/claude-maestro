@@ -149,7 +149,7 @@ class TestSend(FollowUpTestCase):
         self.client.behavior = behavior
         job = self.send()
         self.assertEqual(job["state"], "error")
-        self.assertIn("earlier part of the ROADMAP", job["error"])
+        self.assertIn("a line above the Follow-up 1 stage was changed", job["error"])  # text of validate_round_stage
         self.assertEqual((self.read(self.path("ROADMAP.md")), self.read(self.path("FLOWS.md"))), (ROADMAP, FLOWS))
 
     def test_editing_an_earlier_flows_line_is_reverted(self):
@@ -207,12 +207,12 @@ class TestSend(FollowUpTestCase):
         self.assertEqual(self.service.get_follow_up(self.context)["draft"], {"text": "", "decisions": ["abc"]})
 
     def test_validation(self):
-        for body in ({"text": ""}, {"text": "x", "budget_usd": 6}, {"text": "x", "budget_usd": 0}, {"text": 5}, {"text": "x", "decisions": "a"}):
+        for body in ({"text": ""}, {"text": 5}, {"text": "x", "decisions": "a"}):
             with self.assertRaises(InvalidRequestError):
                 self.service.send_follow_up(self.context, body)
         self.client.behavior = self.append_stage
-        self.send(budget_usd=5)
-        self.assertEqual(self.client.calls[0]["argv"][self.client.calls[0]["argv"].index("--max-budget-usd") + 1], "5")
+        self.send(budget_usd=5)  # the body budget is ignored: the cap per message is always 1
+        self.assertEqual(self.client.calls[0]["argv"][self.client.calls[0]["argv"].index("--max-budget-usd") + 1], "1")
 
 
 class TestRefusals(FollowUpTestCase):

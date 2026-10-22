@@ -99,15 +99,15 @@ class TestClaudeJobs(ProjectsTestCase):
         self.assertEqual((body["ok"], body["detail"]["id"], body["detail"]["type"]), (True, body["job"], "roadmap"))
         job = self.wait_for_job(project_id, body["job"])
         self.assertEqual((job["state"], job["type"], job["reply"], job["cost_usd"]), ("ok", "roadmap", "roadmap generated", 0.42))
-        self.assertEqual(set(job), {"id", "type", "state", "started_at", "finished_at", "cost_usd", "reply", "error"})
+        self.assertEqual(set(job), {"id", "type", "state", "started_at", "finished_at", "cost_usd", "reply", "error", "progress"})
         self.assertNotIn("session_id", json.dumps(self.request("GET", "/p/%s/api/jobs" % project_id)[1]))
 
         call = self.read_claude_calls()[-1]
         argv = call["argv"]
         self.assertEqual(argv[argv.index("-p") + 1], EXPECTED_ROADMAP_PROMPT)
-        self.assertEqual(argv[argv.index("--permission-mode") + 1], "auto")
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
         self.assertEqual(float(argv[argv.index("--max-budget-usd") + 1]), 5.0)
-        self.assertNotIn("--strict-mcp-config", argv, "the roadmap runs with the normal MCP")
+        self.assertIn("--strict-mcp-config", argv, "the roadmap job runs without MCP (AUD-4)")
         self.assertEqual(os.path.normcase(call["cwd"]), os.path.normcase(repo), "the job runs in the repo folder")
         goal = read_file(loop_file_path(repo, "internal", "roadmap-goal.md"))
         self.assertTrue(goal.startswith("# Roadmap goal\n"))
@@ -134,6 +134,51 @@ class TestClaudeJobs(ProjectsTestCase):
         self.assertIn("[extra]", read_file(os.path.join(repo, ".specs", "project", "ROADMAP.md")))
         _, listing = self.request("GET", "/p/%s/api/jobs" % project_id)
         self.assertEqual([item["type"] for item in listing["jobs"]][:2], ["roadmap_refine", "roadmap"])
+
+    def test_the_roadmap_jobs_are_confined_dontask_planning_hook_and_no_mcp_and_map_first_uses_roadmapmap(self):
+        repo = create_git_repo(os.path.join(self.projects_dir, "confined"))
+        project_id = self.open_project(repo)
+        mark_loop_already_ran(repo)
+
+        def run(body):
+            status, answer = self.request("POST", "/p/%s/api/roadmap/generate" % project_id, body)
+            self.assertEqual(status, 202, answer)
+            self.assertEqual(self.wait_for_job(project_id, answer["job"])["state"], "ok")
+            return self.read_claude_calls()[-1]["argv"]
+
+        def profile(argv):
+            command = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            return command.rsplit("--profile ", 1)[1]
+
+        def tools(argv, flag, stop):
+            start = argv.index(flag) + 1
+            end = next((i for i in range(start, len(argv)) if argv[i].startswith("--") and i > start - 1 and argv[i] in stop), len(argv))
+            return argv[start:end]
+
+        plain = run({"goal": "x", "map_first": False})
+        self.assertEqual(plain[plain.index("--permission-mode") + 1], "dontAsk")
+        self.assertEqual(profile(plain), "planning")
+        self.assertEqual(plain[plain.index("--mcp-config") + 1], '{"mcpServers":{}}')
+        self.assertIn("--strict-mcp-config", plain)
+        allowed = tools(plain, "--allowedTools", ("--disallowedTools",))
+        self.assertTrue(all(name not in allowed for name in ("Agent", "Bash")), allowed)
+        self.assertIn("Bash", tools(plain, "--disallowedTools", ("--settings",)))
+
+        mapped = run({"goal": "x", "map_first": True})
+        self.assertEqual(mapped[mapped.index("--permission-mode") + 1], "dontAsk")
+        self.assertEqual(profile(mapped), "roadmapmap")
+        self.assertEqual(mapped[mapped.index("--mcp-config") + 1], '{"mcpServers":{}}')
+        allowed = tools(mapped, "--allowedTools", ("--disallowedTools",))
+        for expected in ("Agent", "Bash", "Edit(/docs/codebase/**)"):
+            self.assertIn(expected, allowed)
+
+        status, answer = self.request("POST", "/p/%s/api/roadmap/refine" % project_id, {"text": "more"})
+        self.assertEqual(status, 202, answer)
+        self.wait_for_job(project_id, answer["job"])
+        refine = self.read_claude_calls()[-1]
+        self.assertEqual(refine["argv"][refine["argv"].index("--permission-mode") + 1], "dontAsk")
+        self.assertEqual(profile(refine["argv"]), "planning")
+        self.assertIn("--resume", refine["argv"])
 
     def test_map_first_and_budget_go_into_the_command(self):
         repo = create_git_repo(os.path.join(self.projects_dir, "budget"))

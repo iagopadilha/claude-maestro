@@ -31,7 +31,7 @@ class LoopSettingsTests(CommandsTestCase):
         status, data = self.fixture.call("/api/loop/settings")
         self.assertEqual(status, 200)
         self.assertEqual(data["settings"]["budget_loop"], 50.0)
-        self.assertEqual(len(data["missing"]), 10)
+        self.assertEqual(len(data["missing"]), 11)
         self.assertEqual(data["problems"], [])
         self.assertEqual(data["models"], {"orchestrator": "opus", "agents": "sonnet"})
         self.assertTrue(data["integration_branch"])

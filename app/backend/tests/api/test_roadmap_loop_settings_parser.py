@@ -1,4 +1,4 @@
-"""`parse_loop_settings`: the nine loop settings of the ROADMAP header (defaults, invalid values, missing keys, template)."""
+"""`parse_loop_settings`: the eleven loop settings of the ROADMAP header (defaults, invalid values, missing keys, template)."""
 import os
 import unittest
 
@@ -15,12 +15,12 @@ class ParseLoopSettingsTests(unittest.TestCase):
         self.assertEqual(sorted(result["missing"]), sorted(LOOP_SETTING_DEFAULTS))
         self.assertEqual((result["settings"]["budget_loop"], result["settings"]["budget_turn"]), (50.0, 5.0))
 
-    def test_all_ten_lines(self):
+    def test_all_eleven_lines(self):
         text = ("**E2E:** yes\n**Dispatch:** 4\n**Max spend per turn:** US$ 7.5\n**Max spend for the loop:** 120\n**Max minutes per turn:** 90\n"
-                "**Branch:** loop/x\n**Branch base:** staging\n**Setup:** npm ci\n**When a feature gets stuck:** continue\n**Push and PR:** no\n")
+                "**Branch:** loop/x\n**Branch base:** staging\n**Setup:** npm ci\n**When a feature gets stuck:** continue\n**Push and PR:** no\n**Max parallel tasks:** 4\n")
         result = parse_loop_settings(text)
         self.assertEqual(result["settings"], {"dispatch": 4, "e2e": True, "budget_turn": 7.5, "budget_loop": 120.0, "minutes_turn": 90,
-                                              "branch": "loop/x", "base_branch": "staging", "setup": "npm ci", "when_stuck": "continue", "push_pr": False})
+                                              "branch": "loop/x", "base_branch": "staging", "setup": "npm ci", "when_stuck": "continue", "push_pr": False, "max_parallel_tasks": 4})
         self.assertEqual((result["problems"], result["missing"]), ([], []))
 
     def test_invalid_values_keep_the_default_and_report_a_problem(self):
