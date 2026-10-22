@@ -266,7 +266,11 @@ class LoopControlService:
             dispatch = {"wave": settings["dispatch"], "auto": False, "reason": "set in the ROADMAP"}
         push = settings["push_pr"] if choices["push"] is None else choices["push"]
         base_branch = read_roadmap_base_branch(self.read_roadmap_text(context))
-        return convert_settings_to_loop_flags(settings, dispatch["wave"], push, base_branch=base_branch), dispatch, None
+        flags = convert_settings_to_loop_flags(settings, dispatch["wave"], push, base_branch=base_branch)
+        claude_binary = getattr(self.config, "claude_binary", "") or ""
+        if claude_binary:  # AUD-36: the engine runs the same `claude` the app runs (a demo/test fake), not always the one on PATH
+            flags += ["--claude", claude_binary]
+        return flags, dispatch, None
 
     @staticmethod
     def read_roadmap_text(context):
