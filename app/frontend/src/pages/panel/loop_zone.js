@@ -16,7 +16,8 @@ import { TurnStrip, stepsInTurn } from './turn_strip.js';
 import { Inspector } from './inspector.js';
 import { TabBar } from './global_zone.js';
 import { WrapUp, wrapUpVisible } from './wrap_up.js';
-import { ClaudeAccountChip, MethodTag, methodOf } from './claude_account_chip.js';
+import { ClaudeAccountChip } from './claude_account_chip.js';
+import { ClaudeBadge, describeClaude } from './claude_badge.js';
 
 const TURN_STATUS_LABEL = { done: 'DONE', error: 'ERROR', running: 'RUNNING', awaiting_user: 'WAITING FOR YOU', continue: 'CONTINUING' };
 const FALLBACK_DOT = 'var(--line4)';
@@ -51,8 +52,8 @@ function TurnHeader({ turn }) {
       <div><div class="z-figure-k">DURATION</div><div>${isNum(turn.duration_s) ? dur(turn.duration_s) : '—'}</div></div>
       <div><div class="z-figure-k">COST</div><div>${isNum(turn.cost_usd) ? cost(turn.cost_usd) : '—'}</div></div>
       <div><div class="z-figure-k">STEPS IN TURN</div><div>${steps == null ? '—' : steps}</div></div>
-      <div title=${turn.claude_account || ''}><div class="z-figure-k">CLAUDE</div><div>${commandName(turn.claude)}<${MethodTag} method=${methodOf(turn.claude_account)} /></div>
-        ${turn.claude_account ? html`<div class="z-figure-k">${turn.claude_account}</div>` : null}</div>
+      <div title=${(describeClaude(turn) || {}).title || turn.claude_account || ''}><div class="z-figure-k">CLAUDE</div><div>${describeClaude(turn) ? html`<${ClaudeBadge} source=${turn} />` : commandName(turn.claude)}</div>
+        ${(describeClaude(turn) || {}).words ? html`<div class="z-figure-k">${describeClaude(turn).words}</div>` : (turn.claude_account ? html`<div class="z-figure-k">${turn.claude_account}</div>` : null)}</div>
     </div>
   </div>`;
 }

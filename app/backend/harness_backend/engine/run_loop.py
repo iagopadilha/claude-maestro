@@ -1969,6 +1969,20 @@ def split_account_label(account):
     return method, who.strip(), extra
 
 
+AUTH_METHOD_CODES = {"login": "login", "token": "token", "API key": "api_key"}  # label word -> the code kept in the turn log
+CC_ACCOUNT_IN_LABEL = re.compile(r"cc account +(\S+)")
+
+
+def claude_auth_fields(account):
+    """Structured sign-in of a turn, taken from its account label (never a secret): {"auth_method": "login"|"token"|"api_key"|"",
+    "auth_email", "auth_plan", "cc_account"}. "login, dev@x.com (iData, team)" -> login, dev@x.com, team, ''."""
+    method, who, extra = split_account_label(account)
+    parts = [part.strip() for part in extra.split(",")] + ["", ""]
+    cc_found = CC_ACCOUNT_IN_LABEL.search(who)
+    return {"auth_method": AUTH_METHOD_CODES.get(method, ""), "auth_email": who if "@" in who else "",
+            "auth_plan": parts[1], "cc_account": cc_found.group(1) if cc_found else ""}
+
+
 def describe_claude_used(name, account, is_main):
     """Body text of one command and its account: "the main command `claude` (dev@x.com, subscription, browser login; iData, team)"."""
     method, who, extra = split_account_label(account)
@@ -2401,7 +2415,9 @@ def main():
                 log["stderr"] = err[-2000:]
             log["exit_code"], log["timeout"], log["turn"], log["claude"] = code, timed_out, turn, claude_name
             log["claude_account"] = claude_account(opts, claude_name, err)
+            log.update(claude_auth_fields(log["claude_account"]))
             meta["claude"], meta["claude_account"] = claude_name, log["claude_account"]
+            meta.update(claude_auth_fields(log["claude_account"]))
             save_json(os.path.join(logs, "%03d.json" % turn), log)
             cost += float(data.get("total_cost_usd") or 0)
             meta.update({"turns": turn, "cost_usd": round(cost, 4)})

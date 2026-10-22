@@ -14,6 +14,7 @@ from typing import Protocol
 
 from ..domain.project_errors import JobInProgressError, JobNotFoundError
 from ..repositories.specs_file_repository import loop_state
+from ..infrastructure.claude_client import call_kind
 
 JOB_TYPE_ROADMAP = "roadmap"
 JOB_TYPE_ROADMAP_REFINE = "roadmap_refine"
@@ -172,7 +173,8 @@ class ClaudeJobService:
         result = self.run_before_start(record, command)
         if result is None:
             try:
-                result = self.claude_client.run_prompt(command.argv, command.work_dir or record["dir"], command.stdin_text, timeout_seconds)
+                with call_kind(record["type"]):
+                    result = self.claude_client.run_prompt(command.argv, command.work_dir or record["dir"], command.stdin_text, timeout_seconds)
             except Exception as failure:  # a job never takes the app down
                 result = {"ok": False, "reply": "", "cost_usd": None, "session_id": "", "error": "internal failure: %s" % type(failure).__name__}
             if command.finalize is not None:

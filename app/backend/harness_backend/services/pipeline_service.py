@@ -12,6 +12,7 @@ import threading
 
 from ..repositories.loop_file_repository import loop_state
 from ..repositories.loop_read_formatting import clip_redacted_text, ms_to_seconds, redact_credentials, to_number
+from .claude_account_service import build_turn_claude
 from .agent_history_service import ORCHESTRATOR_ROLE, VERIFIER_NOTE_MARK, WORKING_STATUSES, get_inferred_role
 from .loop_panel_service import compute_current_turn
 from .turn_service import TURN_STATUS_RUNNING, get_turn_status
@@ -192,7 +193,7 @@ class PipelineService:
                 "status": get_turn_status(record, repository.read_snapshot_loop_json(snapshot)),
                 "cost_usd": to_number(record.get("total_cost_usd")), "duration_s": ms_to_seconds(record.get("duration_ms")),
                 "decision": decision or None, "events": events, "files": self.list_turn_files(work_dir, snapshot, previous),
-                "claude": str(record.get("claude") or ""), "claude_account": str(record.get("claude_account") or "")}
+                **build_turn_claude(record)}
 
     def build_live_turn(self, number, feature_rows, waves):
         """The turn in progress has no file yet: its RUNNING events are the features the loop is working on (agent inferred from the status,

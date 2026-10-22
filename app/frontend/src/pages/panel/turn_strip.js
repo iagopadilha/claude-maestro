@@ -5,6 +5,7 @@ import { html, useEffect, useRef } from '../../util/preact.js';
 import { isNum, cost } from '../../util/format.js';
 import { pipe, turnsList, liveN, curN, selectTurn } from './pipeline_model.js';
 import { toggleGlobalZone, globalZoneHidden, globalToggleArrow } from './layout.js';
+import { ClaudeBadge, describeClaude } from './claude_badge.js';
 
 const FALLBACK_DOT = '#4a4f57';
 
@@ -16,12 +17,15 @@ export function stepsInTurn(turn) {
 const stepsText = (turn) => { const k = stepsInTurn(turn); return k == null ? '' : `${k} step${k === 1 ? '' : 's'}`; };
 
 function TurnCard({ turn, on, isLive }) {
-  const tip = `Turn ${turn.n}${isLive ? ' (latest)' : ''} · ${turn.label || turn.status || ''}`;
+  const claudeTip = (describeClaude(turn) || {}).title;
+  const tip = `Turn ${turn.n}${isLive ? ' (latest)' : ''} · ${turn.label || turn.status || ''}${claudeTip ? '
+' + claudeTip : ''}`;
   return html`<button type="button" class=${'z-turn' + (on ? ' is-on' : '') + (isLive ? ' is-live' : '')} title=${tip} aria-pressed=${String(on)}
     onClick=${() => selectTurn(isLive ? null : turn.n)}>
     <span class="z-turn-top"><span class="z-turn-n mono">${'T' + turn.n}</span><span class="z-turn-dot" style=${{ background: turn.dot || FALLBACK_DOT }}></span></span>
     <span class="z-turn-label">${turn.label || turn.status || '—'}</span>
     <span class="z-turn-foot mono"><span>${stepsText(turn)}</span><span>${isNum(turn.cost_usd) ? cost(turn.cost_usd) : ''}</span></span>
+    <span class="z-turn-claude"><${ClaudeBadge} source=${turn} /></span>
   </button>`;
 }
 

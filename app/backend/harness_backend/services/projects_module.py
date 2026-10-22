@@ -47,6 +47,7 @@ from .subproject_validation_service import SubprojectValidationService
 from .subprojects_service import SubprojectsService, subprojects_engine
 from .system_map_service import SystemMapService, attach_system_map
 from .test_environment_service import TestEnvironmentService
+from .claude_call_log_service import build_shared_claude_call_log_service
 
 
 class ProjectsModule:
@@ -79,7 +80,8 @@ def build_projects_module(config, log, get_app_url, folder_dialog_argv=None, job
     process_runner = ProcessRunner()
     git_client = GitClient(process_runner)
     claude_client = ClaudeClient(process_runner, claude_binary=config.claude_binary, guard_path=config.guard_path,
-                                 fallback_binaries=config.claude_fallback_binaries)
+                                 fallback_binaries=config.claude_fallback_binaries,
+                                 call_recorder=build_shared_claude_call_log_service(config).record_call)
     project_repository = ProjectRepository(config.projects_registry_path)
     specs_file_repository = SpecsFileRepository()
 
@@ -171,7 +173,7 @@ def build_projects_module(config, log, get_app_url, folder_dialog_argv=None, job
     controllers = [
         ProjectController(project_service, project_progress_service, specs_structure_service, folder_picker_service, log,
                           specs_reset_service),
-        RoadmapController(project_service, roadmap_service, claude_job_service),
+        RoadmapController(project_service, roadmap_service, claude_job_service, build_shared_claude_call_log_service(config)),
         SpecsController(project_service, spec_file_service),
         PlanningController(project_service, planning_service, planning_import_service, readiness_service),
         SpecChangeController(project_service, spec_change_service),

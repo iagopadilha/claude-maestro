@@ -214,10 +214,12 @@ class FeatureExecutionViewTests(TranscriptFixtureMixin, ReadTestCase):
         self.fixture.write_json("turns/003.json", {"session_id": SESSION_ID, "claude": "cc", "claude_account": "token, cc account claude"})
         self.fixture.start(projects_dir=self.projects)
         data = self.detail()
-        self.assertEqual(data["claude"], {"command": "cc", "account": "token, cc account claude"})
+        self.assertEqual(data["claude"], {"command": "cc", "account": "token, cc account claude", "auth_method": "token", "auth_email": "",
+                                          "auth_plan": "", "cc_account": "claude"})
         call = data["agents"][0]
         self.assertEqual(sorted(call), sorted(["agent_id", "role", "turn", "task", "state", "return_status", "duration_s", "tokens", "started_at",
-                                               "finished_at", "summary"]))
+                                               "finished_at", "summary", "claude", "claude_account", "auth_method", "auth_email", "auth_plan",
+                                               "cc_account"]))  # the last six: command and sign-in inherited from the turn
         self.assertEqual((call["duration_s"], call["started_at"]), (30, START))
 
     def test_steps_follow_the_roadmap_status(self):

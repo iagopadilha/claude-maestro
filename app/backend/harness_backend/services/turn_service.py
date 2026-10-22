@@ -3,6 +3,7 @@ import json
 
 from ..repositories.loop_file_repository import loop_state
 from ..repositories.loop_read_formatting import ms_to_seconds, redact_credentials, to_number, to_text_list
+from .claude_account_service import build_turn_claude
 
 # same scoreboard as run_loop.RANK: counts turns without progress from the snapshots
 POINTS_BY_STATUS = {"pending": 0, "speccing": 1, "specced": 2, "approved": 3, "building": 4, "verified": 6, "blocked": 0}
@@ -40,7 +41,7 @@ class TurnService:
             rows.append({"n": number, "cost_usd": to_number(record.get("total_cost_usd")),
                          "duration_s": ms_to_seconds(record.get("duration_ms")), "status": status,
                          "feature": to_text_list(snapshot_loop.get("feature")), "commits": commits, "has_snapshot": bool(snapshot),
-                         "claude": str(record.get("claude") or ""), "claude_account": str(record.get("claude_account") or "")})
+                         **build_turn_claude(record)})
         return rows
 
     def count_turns_without_progress(self, work_dir):

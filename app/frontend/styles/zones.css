@@ -267,3 +267,23 @@
 .z-method.is-token{border-color:var(--blue-line);color:var(--blue);background:var(--blue-bg);}
 .z-method.is-key{border-color:var(--red-line);color:var(--red-text);background:var(--red-bg);font-weight:600;}
 @media (max-width:760px){.z-claude-row{padding-left:12px;padding-right:12px;}}
+
+/* command + sign-in of a turn (and, inherited and quieter, of its agents); API key is the warning colour */
+.z-cbadge{display:inline-block;font-size:10px;line-height:1.4;padding:0 6px;border-radius:3px;border:1px solid #2a2f37;color:#8b929c;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;}
+.z-cbadge.is-login{border-color:var(--green-line);color:var(--green-soft);background:var(--green-bg);}
+.z-cbadge.is-token{border-color:var(--blue-line);color:var(--blue);background:var(--blue-bg);}
+.z-cbadge.is-api_key{border-color:var(--amber-line);color:var(--amber-soft);background:var(--amber-bg);font-weight:600;}
+.z-cbadge.inherited{font-size:9px;padding:0 4px;opacity:.75;background:transparent;font-weight:400;}
+.z-cbadge.inherited.is-api_key{opacity:1;}
+.z-turn-claude{display:flex;margin-top:2px;min-height:14px;}
+.z-claude-chip.is-api_key{border-color:var(--amber-line);color:var(--amber-soft);background:var(--amber-bg);font-weight:600;}
+.z-who{display:inline-flex;flex-direction:column;align-items:flex-start;vertical-align:middle;}
+.z-who-btn{font:600 10px var(--mono, monospace);width:auto;min-width:18px;height:18px;padding:0 6px;border-radius:9px;border:1px solid #2a2f37;background:transparent;color:#8b929c;cursor:pointer;}
+.z-who-btn:hover,.z-who.is-open .z-who-btn{color:#e6e8eb;border-color:#4a4f57;}
+.z-who-text{margin-top:6px;padding:8px 10px;max-width:520px;border:1px solid #2a2f37;border-radius:6px;background:#14171c;color:#c9ced5;font:400 11px/1.5 var(--sans);text-transform:none;letter-spacing:0;}
+.z-who-text p{margin:0 0 6px;}
+.z-who-text p:last-child{margin-bottom:0;}
+.z-usage-btn{border-radius:4px;}
+.z-totals{flex-basis:100%;padding:6px 10px;border:1px solid #23272e;border-radius:6px;background:#14171c;font-size:11px;color:#c9ced5;}
+.z-totals-row{display:flex;justify-content:space-between;gap:12px;padding:1px 0;}
+.z-totals .z-figure-k{margin-top:4px;}

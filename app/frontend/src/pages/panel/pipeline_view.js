@@ -15,6 +15,7 @@ import { openAgentDialog, openFeatureDialog } from './dialogs/index.js';
 import { taskGraphOf, waveModeLabel, splitNoteOf } from './feature_dialog_model.js';
 import { FeatureLabel } from './feature_label.js';
 import { ctx } from './context.js';
+import { ClaudeBadge, WhoSpawnsToggle } from './claude_badge.js';
 import { clampCameraTo, fitCameraTo, sameCamera } from './camera_clamp.js';
 
 // ---------- geometry (px). Kept in JS because the SVG edges need the same coordinates as the nodes ----------
@@ -167,7 +168,8 @@ function buildGraph(turn) {
         const x = G.LANE_X + G.LANE_PAD + index * G.STEP_GAP + offset.x, top = nodeTop + offset.y;
         const lastRun = step.runs[step.runs.length - 1] || null, isSelected = !!selected && !selected.orch && selected.f === feature.id && selected.s === index;
         const node = { key: `${feature.id}:${index}`, feature: feature.id, step: index, agent: (lastRun && lastRun.agent) || stepList[index].agent, role: stepList[index].role, st: step.st,
-          color: STEP_COLOR[step.st] || STEP_COLOR.PENDING, x, y: top, attempts: step.runs.length > 1 ? `${step.runs.length}×` : '', tagged: changed.has(`${feature.id}:${index}`), tag: `T${turn}`, selected: isSelected };
+          color: STEP_COLOR[step.st] || STEP_COLOR.PENDING, x, y: top, attempts: step.runs.length > 1 ? `${step.runs.length}×` : '', tagged: changed.has(`${feature.id}:${index}`), tag: `T${turn}`, selected: isSelected,
+          turnClaude: lastRun ? turnAt(lastRun.turn) : null }; // an agent has the command and sign-in of the turn that spawned it
         nodes.push(node);
         lanes[lanes.length - 1].steps.push(node);
         if (index === 0) starts.push({ x, y: top + G.NODE_H / 2, st: step.st });
@@ -236,7 +238,7 @@ function StepNode({ node }) {
     style=${{ left: node.x + 'px', top: node.y + 'px', '--pl-color': node.color }}
     onClick=${select} onDblClick=${() => openAgent(node.feature, node.step)} onKeyDown=${onActivateKey(select)}>
     <div class="pl-node-top"><span class="pl-node-agent"><span class="pl-dot"></span><span class="pl-node-name">${node.agent}</span></span>${node.tagged ? html`<span class="pl-tag">${node.tag}</span>` : null}</div>
-    <div class="pl-node-bottom"><span class="pl-node-status">${node.st}</span><span class="pl-node-attempts">${node.attempts}</span></div>
+    <div class="pl-node-bottom"><span class="pl-node-status">${node.st}</span>${node.turnClaude ? html`<${ClaudeBadge} source=${node.turnClaude} inherited />` : null}<span class="pl-node-attempts">${node.attempts}</span></div>
   </div>`;
 }
 
@@ -283,6 +285,7 @@ function Legend({ turn }) {
     <span><span class="pl-legend-line" style=${{ color: ARROW_COLORS.pending }}>╌</span> pending</span>
     <span><span class="pl-legend-line" style=${{ color: ARROW_COLORS.fail }}>━</span> failed / blocked</span>
     <span><span class="pl-tag">T${turn}</span> changed in this turn</span>
+    <${WhoSpawnsToggle} />
   </div>`;
 }
 
@@ -305,6 +308,7 @@ function OpenFeatureButton({ slug }) {
 /** List mode: the same information, one card per feature (useful on narrow screens). */
 function ListMode({ graph }) {
   return html`<div class="pl-list">
+    <div class="pl-list-note"><${WhoSpawnsToggle} /></div>
     ${graph.lanes.map((lane) => html`<div key=${lane.id} class=${'pl-card' + (lane.quarantined ? ' quarantined' : '')}>
       <div class="pl-card-head" onClick=${() => openFeatureDialog({ feature: lane.id })}><span class="pl-lane-stage">W${lane.wave} · ${lane.stage == null ? 'STAGE ?' : 'STAGE ' + lane.stage}</span><${FeatureLabel} slug=${lane.id} className="pl-lane-id" />
         <span class="pl-badge" style=${{ color: lane.color, borderColor: lane.color }}>${lane.status}</span><${OpenFeatureButton} slug=${lane.id} /></div>

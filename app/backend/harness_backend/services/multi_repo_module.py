@@ -30,6 +30,7 @@ from .repo_registry_service import RepoRegistryService
 from .wrap_up_service import WrapUpService
 from .setup_commit_service import SetupCommitService
 from .workspace_service import EngineWorktreeAdapter, WorkspaceService
+from .claude_call_log_service import build_shared_claude_call_log_service
 
 ENGINE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "engine"))
 if ENGINE_DIR not in sys.path:
@@ -75,7 +76,8 @@ def build_multi_repo_module(config, log, project_service, loop_status_service, l
         return list(dict.fromkeys(paths))
 
     claude_client = ClaudeClient(process_runner, claude_binary=config.claude_binary, guard_path=config.guard_path,
-                                 fallback_binaries=config.claude_fallback_binaries)
+                                 fallback_binaries=config.claude_fallback_binaries,
+                                 call_recorder=build_shared_claude_call_log_service(config).record_call)
     repo_catalog_service = RepoCatalogService(claude_client, WorkspaceFileGuard(), log, known_paths_provider=list_known_repo_paths)
     if loop_control_service is not None:  # Start asks for the repository definition before it creates anything
         loop_control_service.scope_defined_provider = lambda context: project_repos.is_scope_defined(context.repo_path)

@@ -5,8 +5,9 @@ import { html, useState, useEffect } from '../../../util/preact.js';
 import { list, txt } from '../../../util/format.js';
 import { openBigDialog } from '../../../components/big_dialog.js';
 import { ctx } from '../context.js';
-import { stepRuns, steps, stateAt, curN, featureName } from '../pipeline_model.js';
+import { stepRuns, steps, stateAt, curN, featureName, turnAt } from '../pipeline_model.js';
 import { FeatureLabel } from '../feature_label.js';
+import { ClaudeBadge } from '../claude_badge.js';
 
 const BADGE_COLOR = '#7fb2ff';
 const ORCHESTRATOR = 'orchestrator';
@@ -55,6 +56,7 @@ function RunCard({ run, focused }) {
   }
   return html`<div class=${'bd-run' + (focused ? ' focused' : '')}>
     <div class="bd-run-head"><span class="bd-turn">${'T' + run.turn}</span>${run.task ? html`<span class="bd-mono">${run.task}</span>` : null}<span class="bd-mono" style=${{ color: statusColor(run.st) }}>${txt(run.st)}</span>
+      <${ClaudeBadge} source=${turnAt(run.turn)} inherited />
       <span class="bd-spacer"></span>
       ${run.agent_id ? html`<button type="button" class="bd-link" disabled=${!!(log && log.loading)} onClick=${toggleLog}>${log && log.open ? 'hide the full log' : 'load the full log'}</button>` : null}</div>
     <div class="bd-run-out">${run.out ? run.out : 'No output recorded.'}</div>

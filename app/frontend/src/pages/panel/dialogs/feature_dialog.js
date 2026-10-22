@@ -11,6 +11,7 @@ import { steps, featureName } from '../pipeline_model.js';
 import { FeatureLabel } from '../feature_label.js';
 import { featureCalls } from '../feature_history.js';
 import { retColor } from '../turn_diagram.js';
+import { ClaudeBadge, WhoSpawnsToggle, describeClaude } from '../claude_badge.js';
 import { openAgentDialog } from './agent_dialog.js';
 import { taskGraphOf, waveModeLabel, splitNoteOf, agentChipOf, statusCounts, layoutTaskGraph, agentRowsOf, fallbackSteps } from '../feature_dialog_model.js';
 
@@ -73,7 +74,7 @@ function Header({ slug, detail }) {
     <${Fact} label="CURRENT STEP">${txt(detail && detail.current_step)}<//>
     <${Fact} label="DEPENDS ON">${deps.length ? deps.join(', ') : 'nothing'}<//>
     <${Fact} label="PATHS">${list(base.paths).length ? list(base.paths).join(', ') : '—'}<//>
-    <${Fact} label="LAST TURN RAN WITH">${claude ? `${txt(claude.command)} · ${txt(claude.account)}` : '—'}<//>
+    <${Fact} label="LAST TURN RAN WITH">${claude ? html`<${ClaudeBadge} source=${{ ...claude, claude_account: claude.account }} /> ${(describeClaude({ ...claude, claude_account: claude.account }) || {}).words || ''}` : '—'}<//>
   </div>`;
 }
 
@@ -91,7 +92,7 @@ function AgentChip({ slug, task }) {
   return html`<button type="button" class=${'fd-chip' + (chip.running ? ' running' : '')} title=${'Open ' + chip.role + ' · ' + chip.agent.agent_id}
     onClick=${() => openTaskAgent(slug, chip.role, chip.agent, task)}>
     <span class="fd-chip-top">${chip.running ? html`<span class="spinner sm"></span>` : html`<span class="fd-chip-dot" style=${{ background: resultColor || '#6b727c' }}></span>`}
-      <span class="fd-chip-role"><span class="fd-chip-spawned">spawned</span> ${chip.role}</span>
+      <span class="fd-chip-role"><span class="fd-chip-spawned">spawned</span> ${chip.role}</span><${ClaudeBadge} source=${chip.agent} inherited />
       ${chip.attempts > 1 ? html`<span class="fd-chip-attempts" title="attempts">${chip.attempts}×</span>` : null}</span>
     <span class="fd-chip-bottom">${chip.running ? 'running' : html`<span style=${{ color: resultColor || '#8b929c' }}>${txt(chip.result)}</span>`}${chip.duration ? ' · ' + chip.duration : ''}</span>
   </button>`;
@@ -134,7 +135,7 @@ function AgentCalls({ slug, rows, loading }) {
     return html`<button type="button" key=${(row.id || 'call') + ':' + index} class="fd-call" title=${row.id || ''} onClick=${() => openTaskAgent(slug, row.role, { agent_id: row.id || row.agent_id, turn: row.turn, state: row.state, return_status: row.return_status }, { id: row.task || '', title: row.summary || '' })}>
       <span class="bd-turn">${'T' + txt(row.turn)}</span><span class="fd-call-dot" style=${{ background: color }}></span><span class="fd-call-role">${txt(row.role)}</span>
       ${row.return_status ? html`<span class="fd-call-return" style=${{ color: resultColor, borderColor: resultColor }}>${String(row.return_status)}</span>` : null}
-      <span class="fd-call-meta">${txt(row.state)} · ${dur(row.duration_s)}</span>
+      <span class="fd-call-meta">${txt(row.state)} · ${dur(row.duration_s)}</span><${ClaudeBadge} source=${row} inherited />
       <span class="fd-call-said">${row.summary ? String(row.summary) : ''}</span></button>`; })}</div>`;
 }
 
@@ -148,7 +149,7 @@ function FeatureBody({ slug }) {
     ${error ? html`<div class="bd-inline-error" role="alert">${'Live feature data unavailable: ' + error + (fallback ? ' (showing the panel state)' : '')}</div>` : null}
     <${Header} slug=${slug} detail=${data} />
     <div class="bd-section-label">STEPS</div><${StepTimeline} stepList=${stepList} />
-    <div class="bd-section-label">TASKS · ONE AGENT SPAWNED PER TASK</div>
+    <div class="bd-section-label">TASKS · ONE AGENT SPAWNED PER TASK <${WhoSpawnsToggle} /></div>
     ${payload ? html`<${TaskGraph} slug=${slug} payload=${payload} />` : html`<div class="bd-dim-note">${loading ? 'loading…' : 'No task information for this feature yet.'}</div>`}
     <div class="bd-section-label">${'AGENT CALLS (' + rows.length + ')'}</div><${AgentCalls} slug=${slug} rows=${rows} loading=${loading} />
   </div>`;

@@ -18,6 +18,7 @@ import threading
 from ..domain.project_errors import InvalidRequestError, JobInProgressError, JobNotFoundError
 from ..engine import repo_catalog
 from ..infrastructure.claude_client import redact_secrets
+from ..infrastructure.claude_client import call_kind
 
 CATALOG_JOB_TYPE = "repo-catalog"
 CATALOG_BUSY_CODE = "busy"
@@ -180,7 +181,8 @@ class RepoCatalogService:
         snapshot = self.workspace_file_guard.take_snapshot(path, GUARD_IGNORED_PATHS)
         argv = self.claude_client.build_command(CATALOG_MODEL, CATALOG_BUDGET_USD, CATALOG_ALLOWED_TOOLS, CATALOG_DISALLOWED_TOOLS,
                                                 no_mcp=True, permission_mode=CATALOG_PERMISSION_MODE)
-        run = self.claude_client.run_prompt(argv, path, PROMPT, CATALOG_TIMEOUT_SECONDS)
+        with call_kind("catalog"):
+            run = self.claude_client.run_prompt(argv, path, PROMPT, CATALOG_TIMEOUT_SECONDS)
         report = self.workspace_file_guard.revert_unexpected_changes(snapshot, ())  # nothing may change in the repo
         touched = report["reverted"] + report["removed"] + report["unrestorable"]
         if touched:

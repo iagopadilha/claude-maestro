@@ -81,6 +81,10 @@ def main():
         ready = [slug for slug, lane_step in lanes if lane_step == step]
     e2e = "--e2e" in tokens
 
+    if not os.path.isfile(os.path.join(SPECS, "ROADMAP.md")):
+        # not a loop project (a test that runs this fake from its own folder): answer, but never create `.specs/` there
+        print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "no roadmap here", "total_cost_usd": 0}))
+        return 0
     scenario = json.loads(read(os.environ["FAKE_SCENARIO"]) or "{}")
     if os.environ.get("FAKE_CC_ACCOUNT"):  # plays the `cc` account picker in headless mode: it names the account on stderr
         print("[cc] conta: %s" % os.environ["FAKE_CC_ACCOUNT"], file=sys.stderr)

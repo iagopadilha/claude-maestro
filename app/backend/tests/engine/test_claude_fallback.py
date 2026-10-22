@@ -210,7 +210,10 @@ class TestLoopFallback(LoopCase):
         self.done(project.run(), 0)
         self.assertEqual(project.meta()["claude_account"], "cc account claude2")
         with open(os.path.join(loop_state.turns_dir(project.work), "001.json"), encoding="utf-8") as handle:
-            self.assertEqual(json.load(handle)["claude_account"], "cc account claude2")
+            turn_log = json.load(handle)
+        self.assertEqual(turn_log["claude_account"], "cc account claude2")
+        self.assertEqual((turn_log["cc_account"], turn_log["auth_method"], turn_log["auth_email"]), ("claude2", "", ""))
+        self.assertEqual(project.meta()["cc_account"], "claude2")
 
     def picker_env(self, project, accounts, exhausted=""):
         project.extra_env.update(FAKE_PICKER_ACCOUNTS=accounts, FAKE_PICKER_EXHAUSTED=exhausted, LOOP_NOTIFY_CHANNELS="console,file",

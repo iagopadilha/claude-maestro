@@ -111,10 +111,13 @@ export function agentRowsOf(turns, detailAgents) {
   const fromTurns = asList(turns).flatMap((turn) => asList(turn.agents).map((agent) => ({
     id: agent.id, role: agent.role, turn: turn.n, state: agent.state, return_status: agent.return_status, duration_s: agent.duration_s,
     summary: agent.decision || agent.summary || null,
+    claude: agent.claude, claude_account: agent.claude_account, auth_method: agent.auth_method, auth_email: agent.auth_email, auth_plan: agent.auth_plan,
+    cc_account: agent.cc_account, // inherited from the turn that spawned the agent
   })));
   if (fromTurns.length) return fromTurns;
   return asList(detailAgents).map((agent) => ({ id: agent.agent_id, role: agent.role, turn: agent.turn, state: agent.state,
-    return_status: agent.return_status, duration_s: agent.duration_s, summary: agent.summary || null }));
+    return_status: agent.return_status, duration_s: agent.duration_s, summary: agent.summary || null,
+    claude: agent.claude, auth_method: agent.auth_method, auth_email: agent.auth_email, cc_account: agent.cc_account }));
 }
 
 /** The five steps of the timeline when the endpoint did not send them (older back end): derived from the roadmap status. */

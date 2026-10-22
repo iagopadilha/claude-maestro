@@ -6,6 +6,7 @@ import { ctx, ui, pal } from './context.js';
 import { selectAgent } from './roadmap_sidebar.js';
 import { retColor } from './turn_diagram.js';
 import { openFeatureDialog } from './dialogs/index.js';
+import { ClaudeBadge } from './claude_badge.js';
 
 const sameFeature = (a, id) => String(a.feature || '').split(',').map((s) => s.trim()).includes(id);
 
@@ -22,7 +23,7 @@ function Call({ a }) {
   return html`<button type="button" class="fh-call" title=${a.id} onClick=${() => selectAgent(a.id)}>
     <span class="fh-top"><span class="dot" style=${{ background: color }}></span><span class="arow-role">${txt(a.role)}</span>
       ${a.return_status ? html`<span class="rbadge" style=${{ color: rc, borderColor: rc }}>${String(a.return_status)}</span>` : null}
-      <span class="arow-state" style=${{ color }}>${txt(a.state)}</span><span class="arow-meta">${`${tok(a.tokens)} tok · ${dur(a.duration_s)}`}</span></span>
+      <span class="arow-state" style=${{ color }}>${txt(a.state)}</span><span class="arow-meta">${`${tok(a.tokens)} tok · ${dur(a.duration_s)}`}</span><${ClaudeBadge} source=${a} inherited /></span>
     <span class="fh-said">${said ? String(said) : 'no decision recorded yet'}</span>
   </button>`;
 }

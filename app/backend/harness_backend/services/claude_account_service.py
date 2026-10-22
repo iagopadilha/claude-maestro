@@ -19,6 +19,10 @@ EMAIL_PATTERN = re.compile(r"\S+@\S+")
 ORG_PLAN_PATTERN = re.compile(r"\(([^)]*)\)\s*$")
 KNOWN_METHODS = ("login", "token", "API key")
 MAIN_ROLE = "main"
+METHOD_CODES = {"login": "login", "token": "token", "API key": "api_key"}  # label word (what `auth status` gives) -> code kept in files
+METHOD_WORDS = {"login": "subscription · browser login", "token": "subscription · sign-in token", "api_key": "API key · billed per token",
+                "": "sign-in unknown"}
+UNKNOWN_COMMAND = "unknown"
 
 _shared_services = {}
 _shared_lock = threading.Lock()
@@ -50,6 +54,56 @@ def parse_account_label(label):
     account = CC_ACCOUNT_LABEL_PATTERN.search(text)
     fields["cc_account"] = account.group(1) if account else ""
     return fields
+
+
+def method_code(method):
+    """Code of a sign-in method given as a label word ("login", "token", "API key") or already as a code ("api_key"); '' when unknown."""
+    text = str(method or "").strip()
+    return METHOD_CODES.get(text) or (text if text in METHOD_WORDS and text else "")
+
+
+def build_turn_auth(record):
+    """Structured sign-in of one turn record (or the meta): {"auth_method", "auth_email", "auth_plan", "cc_account"}, never a secret.
+    The loop writes these fields next to `claude_account`; a turn written before that is read from the `claude_account` label."""
+    record = record or {}
+    if "auth_method" in record or "cc_account" in record:
+        return {"auth_method": method_code(record.get("auth_method")), "auth_email": str(record.get("auth_email") or ""),
+                "auth_plan": str(record.get("auth_plan") or ""), "cc_account": str(record.get("cc_account") or "")}
+    parsed = parse_account_label(record.get("claude_account"))
+    return {"auth_method": method_code(parsed["method"]), "auth_email": parsed["email"], "auth_plan": parsed["plan"],
+            "cc_account": parsed["cc_account"]}
+
+
+def build_turn_claude(record):
+    """The command and sign-in fields a turn row carries: {"claude", "claude_account", "auth_method", "auth_email", "auth_plan", "cc_account"}."""
+    record = record or {}
+    return dict({"claude": str(record.get("claude") or ""), "claude_account": str(record.get("claude_account") or "")}, **build_turn_auth(record))
+
+
+def add_usage_row(rows, key, field, cost_usd):
+    """Counts one `field` ("turns" or "calls") and its cost in the row of `key`."""
+    row = rows.setdefault(key, {"turns": 0, "calls": 0, "cost_usd": 0.0})
+    row[field] += 1
+    row["cost_usd"] += cost_usd or 0.0
+
+
+def build_usage_totals(turn_rows, call_rows=()):
+    """Turns (loop) and panel calls summed per sign-in method and per command:
+    {"by_method": [{"method", "turns", "calls", "cost_usd"}], "by_command": [{"command", "turns", "calls", "cost_usd"}], "turns", "calls", "cost_usd"}.
+    A row carries `claude` (command), `auth_method` and `cost_usd`; rows without a command count as "unknown"."""
+    by_method, by_command = {}, {}
+    for field, rows in (("turns", turn_rows), ("calls", call_rows)):
+        for row in rows:
+            cost = row.get("cost_usd") if isinstance(row.get("cost_usd"), (int, float)) else 0.0
+            add_usage_row(by_method, method_code(row.get("auth_method")), field, cost)
+            add_usage_row(by_command, command_name(row.get("claude")) or UNKNOWN_COMMAND, field, cost)
+
+    def finish(rows, key_name):
+        return [dict({key_name: key}, turns=row["turns"], calls=row["calls"], cost_usd=round(row["cost_usd"], 4))
+                for key, row in sorted(rows.items(), key=lambda item: (-item[1]["cost_usd"], item[0]))]
+    methods = finish(by_method, "method")
+    return {"by_method": methods, "by_command": finish(by_command, "command"), "turns": sum(row["turns"] for row in methods),
+            "calls": sum(row["calls"] for row in methods), "cost_usd": round(sum(row["cost_usd"] for row in methods), 4)}
 
 
 class ClaudeAccountService:
@@ -115,6 +169,7 @@ class ClaudeAccountService:
                 "org": parsed["org"] or (auth.get("org") if same_account else "") or "",
                 "plan": parsed["plan"] or (auth.get("plan") if same_account else "") or "",
                 "cc_account": parsed["cc_account"],
+                "auth_method": method_code(parsed["method"] or auth.get("method")),
                 "switches": meta.get("claude_switches") or 0,
                 "label": label or (row or {}).get("label") or ""}
 

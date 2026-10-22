@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import re
+import threading
+from contextlib import contextmanager
 from typing import Protocol
 
 from ..config import skill_locator
@@ -28,6 +30,18 @@ ERROR_MESSAGE_LIMIT = 300
 DISABLED_PUSH_URL = "push-disabled-by-loop://use-delivery.py"
 LIST_REMOTES_TIMEOUT_SECONDS = 30
 REDACTION_MARK = cli_output.REDACTION_MARK
+_call_context = threading.local()
+
+
+@contextmanager
+def call_kind(kind):
+    """Names what the `run_prompt` calls made inside the block are for ("chat", "roadmap", "map"...): the call log shows it."""
+    previous = getattr(_call_context, "kind", "")
+    _call_context.kind = kind
+    try:
+        yield
+    finally:
+        _call_context.kind = previous
 
 
 def redact_secrets(text, limit=None):
@@ -69,11 +83,13 @@ class IClaudeClient(Protocol):
 
 
 class ClaudeClient:
-    def __init__(self, process_runner, claude_binary="", guard_path="", fallback_binaries=()):
+    def __init__(self, process_runner, claude_binary="", guard_path="", fallback_binaries=(), call_recorder=None):
         """Empty `claude_binary` = `claude` from PATH; a name such as `cc` (a wrapper signed in with another account) is looked up
         on PATH and on the saved user PATH. A `.py` (the tests' fake claude) runs with `sys.executable`. `fallback_binaries` =
         the commands tried, in order, when the running one hits an account usage limit (engine/claude_binaries.py).
-        `guard_path` = the orchestrator skill's guard.py (the app config's); empty = looked up through the skill locator."""
+        `guard_path` = the orchestrator skill's guard.py (the app config's); empty = looked up through the skill locator.
+        `call_recorder(folder, kind, result)` (optional) is told about every finished `run_prompt` (the call log)."""
+        self.call_recorder = call_recorder
         self.process_runner = process_runner
         self.claude_binary = claude_binary
         self.guard_path = guard_path
@@ -177,6 +193,8 @@ class ClaudeClient:
             if not limited or position == len(names) - 1:
                 break
             logger.warning("`%s` hit the account usage limit: trying `%s`", name, names[position + 1])
+        if self.call_recorder is not None:
+            self.call_recorder(folder, getattr(_call_context, "kind", ""), result)
         return result
 
     def run_once(self, argv, folder, stdin_text, timeout_seconds, extra_env):

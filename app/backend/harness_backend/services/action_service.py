@@ -13,6 +13,7 @@ from typing import Protocol
 
 from ..infrastructure.claude_client import redact_secrets
 from .loop_worktree_service import MAX_TARGETS, extract_last_json, get_context_integration_branch
+from ..infrastructure.claude_client import call_kind
 
 ACTION_DELIVER = "deliver"
 ACTION_SUMMARY = "summary"
@@ -257,7 +258,8 @@ class ActionService:
         try:
             argv = self.claude_client.build_command(ROUTER_MODEL, ROUTER_BUDGET_USD, ROUTER_ALLOWED_TOOLS, ROUTER_DISALLOWED_TOOLS, no_mcp=True)
             folder = context.work_dir if os.path.isdir(context.work_dir) else context.repo_path
-            returned = self.claude_client.run_prompt(argv, folder, stdin_text, self.router_timeout_seconds)
+            with call_kind("action"):
+                returned = self.claude_client.run_prompt(argv, folder, stdin_text, self.router_timeout_seconds)
             if not returned["ok"]:
                 result["error"] = returned.get("error") or UNEXPECTED_FAILURE
             else:

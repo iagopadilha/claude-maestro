@@ -10,6 +10,7 @@ from ..infrastructure.process_runner import ProcessRunner
 from ..repositories.quarantine_summary_repository import QuarantineSummaryRepository
 from .chat_scope_context_service import ChatScopeContextService
 from .quarantine_service import QuarantineService
+from .claude_call_log_service import build_shared_claude_call_log_service
 
 
 class QuarantineModule:
@@ -22,7 +23,8 @@ class QuarantineModule:
 
 def build_quarantine_module(config, log, project_service, loop_read_module, loop_commands_module, planning_requirement_service):
     process_runner = ProcessRunner()
-    claude_client = ClaudeClient(process_runner, config.claude_binary, fallback_binaries=config.claude_fallback_binaries)
+    claude_client = ClaudeClient(process_runner, config.claude_binary, fallback_binaries=config.claude_fallback_binaries,
+                                 call_recorder=build_shared_claude_call_log_service(config).record_call)
     quarantine_service = QuarantineService(
         log, loop_read_module.loop_status_service, loop_read_module.loop_file_repository, loop_read_module.pipeline_service,
         loop_read_module.claude_transcript_repository, loop_commands_module.loop_control_service, GitClient(process_runner), claude_client,

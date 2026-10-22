@@ -132,3 +132,8 @@
 .pl-open:hover{border-color:var(--pl-blue);color:#fff;}
 .pl-lane,.pl-card-head{cursor:pointer;}
 .pl-lane{cursor:move;}
+
+/* the turn's command and sign-in on a step node (inherited from its turn) and the "who spawns the agents" note */
+.pl-node-bottom .z-cbadge{flex:0 1 auto;min-width:0;}
+.pl-legend .z-who{margin-left:auto;}
+.pl-list-note{display:flex;justify-content:flex-end;}
