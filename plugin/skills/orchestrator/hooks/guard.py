@@ -132,10 +132,14 @@ NULL_TARGETS = {"/dev/null", "$null", "nul", "null"}
 
 # rules that not even PERMISSIONS.json releases: workflows never push to the integration branch/main nor force, and the
 # roadmap approval and the panel's trigger endpoints are only ever the user's click
-HARD = {"push-protected", "push-force", "approval-write", "panel-trigger", "grafana-write", "headless-push", "headless-gh"}
+HARD = {"push-protected", "push-force", "approval-write", "panel-trigger", "grafana-write", "headless-push", "headless-gh", "permissions-write"}
 
-# headless loop (LOOP_HEADLESS=1, exported by the engine): delivery belongs to the engine, so the session only commits
-HEADLESS_RULES = ["headless-push", "headless-gh"]
+# headless loop (LOOP_HEADLESS=1, exported by the engine): delivery belongs to the engine, so the session only commits;
+# PERMISSIONS.json holds the user's releases, so the session never writes it (any profile, HARD)
+HEADLESS_RULES = ["headless-push", "headless-gh", "permissions-write"]
+PERMISSIONS_FILE = re.compile(r"(?:^|[\\/])PERMISSIONS\.json$", re.I)
+PERMISSIONS_CMD_RE = re.compile(r"\brules\.py\s+(?:write|allow|release)\b|" + HARNESS_CLI + r"rules\s+(?:write|allow|release)\b", re.I)
+PERMISSIONS_MSG = "PERMISSIONS.json holds the user's releases: only the user changes it, never the loop"
 HEADLESS_MSG = "git push / gh: delivery belongs to the engine (harness.py deliver / Finish); in a headless loop you only commit"
 
 
@@ -157,6 +161,7 @@ PROFILES = {
     # the app's planning chat (a `claude -p`, not an agent): like spec (only .specs/), but WITHOUT state-write: it writes ROADMAP.md and
     # FLOWS.md itself. ROADMAP-APPROVED.json stays blocked (approval-write): the approval is the user's click in the panel.
     "planning": ["specs-only", "secrets", "approval-write", "panel-trigger", "git-write", "git-push", "pr-release", "prod-write", "outbound-msg", "grafana-write", "sql-write", "capabilities-block"],
+    "roadmapmap": ["specs-only", "map-docs", "secrets", "approval-write", "panel-trigger", "git-write", "git-push", "pr-release", "prod-write", "outbound-msg", "grafana-write", "sql-write", "capabilities-block"],  # roadmap generation with --map-first: planning + docs/codebase
     # the app's subproject validation job (a `claude -p`): the planning hardening, but it writes ONE file, the suggestion the server validates
     "subprojects": ["specs-only", "subprojects-only", "secrets", "approval-write", "panel-trigger", "git-write", "git-push", "pr-release", "prod-write", "outbound-msg", "grafana-write", "sql-write", "capabilities-block"],
     # the app's system map job (a `claude -p`): the planning hardening, but it writes ONE file, docs/codebase/SYSTEM.md of the repository root
@@ -1011,6 +1016,12 @@ def check_bash(command, profile_rules, permissions):
             if cd_move:
                 statement_cwd = resolve_dir(cd_move.group(1), statement_cwd)
     # 3) shell write to a file that must never be touched
+    if "permissions-write" in profile_rules:
+        shell_targets = list(shell_write_targets(command))
+        for statement in split_statements(command):
+            shell_targets.extend(confined_write_targets(statement))
+        if any(PERMISSIONS_FILE.search(str(target).strip("\"'")) for target in shell_targets) or PERMISSIONS_CMD_RE.search(command):
+            hits.append(("permissions-write", PERMISSIONS_MSG))
     for target in shell_write_targets(command):
         if APPROVAL_FILE.search(target) and "approval-write" in profile_rules:
             hits.append(("approval-write", "ROADMAP-APPROVED.json is written only by the user's click in the panel"))
@@ -1230,6 +1241,8 @@ def check_tool(tool_name, tool_input, profile_rules, permissions):
         target = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
         if APPROVAL_FILE.search(target) and "approval-write" in profile_rules:
             hits.append(("approval-write", "ROADMAP-APPROVED.json is written only by the user's click in the panel"))
+        if PERMISSIONS_FILE.search(target) and "permissions-write" in profile_rules:
+            hits.append(("permissions-write", PERMISSIONS_MSG))
         if STATE_FILE.search(target) and "state-write" in profile_rules:
             hits.append(("state-write", "only the orchestrator writes ROADMAP/STATE/RULES/phases and the loop folder"))
         if "secrets" in profile_rules and (SECRET_HINT.search(target) or mentions_copied_secret(target, permissions.get("_cwd"), permissions.get("_specs_dir"))):
