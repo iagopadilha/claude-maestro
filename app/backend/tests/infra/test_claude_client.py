@@ -131,12 +131,41 @@ sys.exit(1)
 '''
 
 
+UNAUTHORIZED_CLAUDE = r'''
+import json, sys
+sys.stdin.read()
+print(json.dumps({"type": "result", "is_error": True, "result": "API Error: 403 permission_error (error type oauth_org_not_allowed, HTTP 403)"}))
+sys.exit(1)
+'''
+
+
 class TestFallbackBinaries(ClaudeClientCase):
     def setUp(self):
         super().setUp()
         self.limited = os.path.join(self.folder, "limited_claude.py")
         with open(self.limited, "w", encoding="utf-8") as handle:
             handle.write(LIMITED_CLAUDE)
+        self.unauthorized = os.path.join(self.folder, "unauthorized_claude.py")
+        with open(self.unauthorized, "w", encoding="utf-8") as handle:
+            handle.write(UNAUTHORIZED_CLAUDE)
+
+    def test_an_unusable_account_runs_the_same_argv_with_the_fallback(self):
+        client = ClaudeClient(ProcessRunner(), self.unauthorized, fallback_binaries=[self.binary])
+        with self.assertLogs("harness_backend.infrastructure.claude_client", level="WARNING") as logged:
+            result = client.run_prompt(client.build_command("sonnet", 1), self.folder, "question", 60)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["binary"], self.binary)
+        self.assertIn("unusable", logged.output[0])
+
+    def test_every_command_unusable_returns_the_last_error_with_its_binary(self):
+        client = ClaudeClient(ProcessRunner(), self.unauthorized, fallback_binaries=[self.limited])
+        result = client.run_prompt(client.build_command("sonnet", 1), self.folder, "", 60)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["binary"], self.limited)
+        client = ClaudeClient(ProcessRunner(), self.unauthorized, fallback_binaries=[self.unauthorized])
+        result = client.run_prompt(client.build_command("sonnet", 1), self.folder, "", 60)
+        self.assertEqual(result["binary"], self.unauthorized)
+        self.assertIn("oauth_org_not_allowed", result["error"])
 
     def test_usage_limit_runs_the_same_argv_with_the_fallback(self):
         client = ClaudeClient(ProcessRunner(), self.limited, fallback_binaries=[self.binary])

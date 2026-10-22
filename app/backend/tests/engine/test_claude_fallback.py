@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fallback `claude` command (engine/claude_binaries.py): the order, the prompt through stdin for a .cmd wrapper such as `cc`,
-and the loop switching to the next command when the running one hits the account usage limit.
+and the loop switching to the next command when the running one hits the account usage limit or its account cannot be used.
 
 Run (from app/):  python -m unittest backend.tests.engine.test_claude_fallback -v
 """
@@ -24,6 +24,7 @@ from test_loop import FAKE, ROAD_BASIC, SCEN_BASIC, LoopCase  # noqa: E402
 
 LIMITED = os.path.join(HERE, "fake_claude_limited.py")
 PICKER = os.path.join(HERE, "fake_cc_picker.py")
+UNAUTHORIZED = os.path.join(HERE, "fake_claude_unauthorized.py")
 IS_WIN = os.name == "nt"
 
 
@@ -52,6 +53,27 @@ class TestOrder(unittest.TestCase):
         self.assertTrue(claude_binaries.is_usage_limit("Claude AI usage limit reached|1767225600"))
         self.assertTrue(claude_binaries.is_usage_limit("API Error: 429 Too Many Requests"))
         self.assertFalse(claude_binaries.is_usage_limit("API Error: 529 Overloaded"))
+
+    def test_unusable_account_is_matched_by_its_auth_signatures_only(self):
+        for text in ("API Error: 403 {\"error\":{\"type\":\"permission_error\"}} (error type oauth_org_not_allowed, HTTP 403)",
+                     "Your organization has disabled Claude subscription access for Claude Code",
+                     "API Error: 401 {\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}",
+                     "Invalid API key · Please run /login", "OAuth token has expired", "OAuth token was revoked", "OAuth token revoked",
+                     "Error: not logged in", "API Error 403 forbidden", "permission_error returned by the API Error handler",
+                     "OAuth authentication is currently not allowed for this organization.",
+                     "{\"details\":{\"error_code\":\"oauth_not_allowed_for_organization\"}}"):
+            self.assertTrue(claude_binaries.is_account_unusable(text), text)
+        for text in ("", None, "the app answered 403 Forbidden and 401 Unauthorized as expected", "permission_error in the app's own tests",
+                     "HTTP 403 from the route under test", "API Error: 529 Overloaded", "Claude AI usage limit reached|1767225600"):
+            self.assertFalse(claude_binaries.is_account_unusable(text), text)
+
+    def test_the_reason_is_the_line_around_the_signature_and_short(self):
+        self.assertEqual(claude_binaries.unusable_reason("noise\nAPI Error: 403 forbidden\nmore"), "API Error: 403 forbidden")
+        self.assertEqual(claude_binaries.unusable_reason("nothing here"), "")
+        long_line = "x" * 500 + " oauth_org_not_allowed " + "y" * 500
+        reason = claude_binaries.unusable_reason(long_line)
+        self.assertLessEqual(len(reason), claude_binaries.UNUSABLE_REASON_LIMIT)
+        self.assertIn("oauth_org_not_allowed", reason)
 
     def test_swap_keeps_every_argument_after_the_base(self):
         argv = claude_binaries.base_argv(FAKE) + ["-p", "x", "--output-format", "json"]
@@ -160,6 +182,28 @@ class TestNoticeAndReturn(unittest.TestCase):
         self.assertEqual(sent, [("cc switched to cc account claude2 (subscription, sign-in token)", ["console", "toast", "file"])])
         self.assertEqual(self.sent_notices(opts, 5, "cc", "token, cc account claude2"), [], "no change, no notice")
 
+    def test_an_unusable_account_notice_goes_to_every_channel_with_the_reason(self):
+        opts = argparse.Namespace(claude="claude", last_claude_used=("claude", "login, dev@x.com"))
+        run_loop.mark_account_unusable(opts, "claude", "login, dev@x.com", "API Error: 403 token=abc123 oauth_org_not_allowed", 2)
+        sent = []
+        with mock.patch.dict(os.environ, {"LOOP_NOTIFY_CHANNELS": "console,toast,file,email"}), \
+                mock.patch.object(run_loop, "notify_wait", lambda subject, body, only=None: sent.append((subject, body, only))):
+            run_loop.notify_claude_change(opts, 2, "cc", "token, cc account claude2")
+        self.assertEqual(len(sent), 1)
+        subject, body, only = sent[0]
+        self.assertEqual(subject, "main account unusable, now on the backup account: cc account claude2 (subscription, sign-in token)")
+        self.assertIsNone(only)
+        self.assertIn("oauth_org_not_allowed", body)
+        self.assertNotIn("abc123", body)
+
+    def test_an_unusable_main_command_is_never_picked_again(self):
+        now = datetime.datetime.now()
+        opts = argparse.Namespace(claude="claude", claude_fallback=[FAKE], claude_index=1, picker_tried=[], main_reset=now - datetime.timedelta(minutes=1))
+        run_loop.mark_account_unusable(opts, "claude", "", "Please run /login", 1)
+        self.assertFalse(run_loop.return_to_main_command(opts))
+        self.assertEqual(run_loop.first_usable_index(opts), 1)
+        self.assertFalse(run_loop.switch_claude(opts), "nothing after the fallback")
+
     def test_back_on_the_main_command_after_its_reset_moment(self):
         now = datetime.datetime.now()
         opts = argparse.Namespace(claude="claude", claude_fallback=[FAKE], claude_index=1, picker_tried=["a"],
@@ -243,6 +287,50 @@ class TestLoopFallback(LoopCase):
         self.done(result, 20)
         self.assertIn("credits ran out", result.stdout)
         self.assertEqual(result.stdout.count("turn 1 again with `%s`" % PICKER), 2, "after the wait it starts again from the main command")
+
+    def test_an_unusable_main_account_runs_on_the_fallback_and_is_notified_on_every_channel(self):
+        project = self.make(ROAD_BASIC, SCEN_BASIC)
+        log = os.path.join(project.tmp, "unauthorized.log")
+        project.extra_env.update(FAKE_UNAUTHORIZED_LOG=log, LOOP_NOTIFY_CHANNELS="console,file")
+        result = project.run("--claude", UNAUTHORIZED, "--claude-fallback", FAKE, "--limit-retries", "0", fake=False)
+        self.done(result, 0)
+        self.assertIn("account unusable on `%s`" % UNAUTHORIZED, result.stdout)
+        self.assertIn("main account unusable, now on the backup account: `fake_claude`", result.stdout)
+        self.assertEqual(project.meta()["claude"], FAKE)
+        self.assertEqual(project.meta()["claude_switches"], 1)
+        unusable = project.meta()["claude_unusable"]
+        self.assertEqual([(item["command"], item["turn"]) for item in unusable], [(UNAUTHORIZED, 1)])
+        self.assertIn("oauth_org_not_allowed", unusable[0]["reason"])
+        with open(log, encoding="utf-8") as handle:
+            self.assertEqual(len(handle.read().splitlines()), 1, "the unusable command runs once, never again in the run")
+
+    def test_every_command_unusable_stops_with_an_error_and_does_not_wait(self):
+        project = self.make(ROAD_BASIC, SCEN_BASIC)
+        second = os.path.join(project.tmp, "second_unauthorized.py")
+        with open(UNAUTHORIZED, encoding="utf-8") as source, open(second, "w", encoding="utf-8") as target:
+            target.write(source.read())
+        result = project.run("--claude", UNAUTHORIZED, "--claude-fallback", second, "--limit-retries", "3", "--limit-wait", "30", fake=False)
+        self.done(result, 20)
+        reason = project.meta()["reason"]
+        self.assertIn("no account can be used", reason)
+        self.assertIn("`%s`" % UNAUTHORIZED, reason)
+        self.assertIn("`%s`" % second, reason)
+        self.assertIn("oauth_org_not_allowed", reason)
+        self.assertIn("setup-token", reason)
+        self.assertNotIn("waiting", result.stdout.lower().replace("waiting does not fix", ""))
+        self.assertEqual(len(project.meta()["claude_unusable"]), 2)
+
+    def test_a_403_mentioned_in_a_successful_reply_does_not_switch(self):
+        project = self.make(ROAD_BASIC, SCEN_BASIC)
+        noisy = os.path.join(project.tmp, "noisy_claude.py")
+        with open(noisy, "w", encoding="utf-8") as handle:
+            handle.write("import subprocess, sys\n"
+                         "print('API Error: 403 and oauth_org_not_allowed are what the app under test returns', file=sys.stderr)\n"
+                         "sys.exit(subprocess.run([sys.executable, %r] + sys.argv[1:], stdin=sys.stdin).returncode)\n" % FAKE)
+        result = project.run("--claude", noisy, "--claude-fallback", UNAUTHORIZED, fake=False)
+        self.done(result, 0)
+        self.assertEqual(project.meta()["claude"], noisy)
+        self.assertNotIn("claude_unusable", project.meta())
 
     def test_check_warns_about_a_missing_fallback(self):
         project = self.make(ROAD_BASIC, SCEN_BASIC)

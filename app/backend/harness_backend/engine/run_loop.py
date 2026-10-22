@@ -35,7 +35,10 @@ Stops (all notify through the LOOP_NOTIFY_CHANNELS channels: console, toast, fil
   --max-stall turns WITHOUT PROGRESS (default 10; the counter resets on every status advance in the ROADMAP) |
   account usage limit (first the next --claude-fallback command, e.g. `cc` signed in with another account; when every one is
   limited, waits until the first known reset (else --limit-wait min), up to --limit-retries times, and starts again from --claude;
-  while on a fallback, it goes back to --claude by itself once that command's remembered reset moment has passed).
+  while on a fallback, it goes back to --claude by itself once that command's remembered reset moment has passed) |
+  unusable account (logged out, revoked token, organization without access: the turn is run again on the next command with a
+  notice on every channel and no wait; that command is not used again in the run; when none is left, error naming each command,
+  its account and the reason).
 No overall turn cap: as long as there is progress, it continues.
 
 Always on stop: writes .specs/project/loop/json/meta.json and generates the summary (loop_summary.py, no Claude) in
@@ -1895,13 +1898,44 @@ def current_claude(opts):
     return names[min(getattr(opts, "claude_index", 0), len(names) - 1)]
 
 
+def unusable_names(opts):
+    """Commands whose account turned out unusable in this run (they are never picked again in it)."""
+    return [item["command"] for item in getattr(opts, "unusable_commands", [])]
+
+
+def first_usable_index(opts):
+    """Position of the first command that is not unusable (0 = the main command); 0 when every one is."""
+    blocked = unusable_names(opts)
+    return next((index for index, name in enumerate(claude_names(opts)) if name not in blocked), 0)
+
+
 def switch_claude(opts):
-    """Moves to the next fallback command (sticky until the next wait); False when there is none left."""
-    index = getattr(opts, "claude_index", 0)
-    if index + 1 >= len(claude_names(opts)):
-        return False
-    opts.claude_index = index + 1
-    return True
+    """Moves to the next fallback command that is not unusable (sticky until the next wait); False when there is none left."""
+    names, blocked = claude_names(opts), unusable_names(opts)
+    for index in range(getattr(opts, "claude_index", 0) + 1, len(names)):
+        if names[index] not in blocked:
+            opts.claude_index = index
+            return True
+    return False
+
+
+def mark_account_unusable(opts, name, account, reason, turn):
+    """Remembers that the command's account cannot be used in this run and returns the record kept in meta.json
+    ({command, account, reason, turn}; the reason is redacted and short). The `cc` account picker cannot yet leave one account out,
+    so an unusable `cc` account makes the whole `cc` command unusable for the run (excluding just that account is planned)."""
+    record = {"command": name, "account": account, "reason": cli_output.redact(reason, claude_binaries.UNUSABLE_REASON_LIMIT), "turn": turn}
+    opts.__dict__.setdefault("unusable_commands", []).append(record)
+    opts.unusable_notice = record
+    return record
+
+
+def unusable_stop_message(opts):
+    """Reason of the final error when every command has an unusable account: each command, its account and why, and what to do."""
+    rows = ["`%s` (%s): %s" % (item["command"], item["account"] or "account unknown", item["reason"] or "no reason in the output")
+            for item in getattr(opts, "unusable_commands", [])]
+    return ("no account can be used: %s. Waiting does not fix a login. Sign in again (`claude` then /login, or `claude setup-token`), "
+            "ask the admin to enable Claude access for the organization, or switch to another account (`--claude-fallback`), then run again."
+            % "; ".join(rows))
 
 
 def claude_account(opts, name, stderr):
@@ -1918,6 +1952,8 @@ def notify_claude_change(opts, turn, name, account):
     used = (name, account)
     previous = getattr(opts, "last_claude_used", None)
     opts.last_claude_used = used
+    unusable = getattr(opts, "unusable_notice", None)  # set when the change came from an account that cannot be used
+    opts.unusable_notice = None
     if not previous or previous == used:
         return
     main_name = command_base_name(getattr(opts, "claude", "") or claude_binaries.DEFAULT_BINARY_NAME)  # --claude, default `claude`
@@ -1925,15 +1961,21 @@ def notify_claude_change(opts, turn, name, account):
     before = describe_claude_used(previous[0], previous[1], command_base_name(previous[0]) == main_name)
     now = describe_claude_used(name, account, is_main)
     print("[loop] turn %d ran on %s; before it was %s" % (turn, now, before))
-    same_command = previous[0] == name
+    same_command = previous[0] == name and not unusable
     only = local_notice_channels() if same_command else None  # another account of the same command is noise for email/webhook
-    if same_command:
+    unusable_subject = ""
+    if unusable:
+        # it needs a human (log in again, ask the admin): always every channel
+        unusable_subject = "%s account unusable" % ("main" if command_base_name(unusable["command"]) == main_name else "backup")
+        reason = ("The previous account is unusable (%s), so the loop moved to the backup command. Waiting does not fix a login: "
+                  "sign in again (`claude` then /login, or `claude setup-token`) or ask the admin to enable access." % (unusable["reason"] or "no reason in the output"))
+    elif same_command:
         reason = "The `%s` account picker moved to another account because the previous one hit its usage limit." % command_base_name(name)
     elif is_main:
         reason = "The usage limit of the main account should have reset, so the loop went back to it."
     else:
         reason = "The previous account hit its usage limit, so the loop moved to the backup command."
-    notify_wait(claude_change_subject(name, account, is_main, same_command),
+    notify_wait(claude_change_subject(name, account, is_main, same_command, unusable_subject),
                 "Turn %d now runs on %s.\nBefore it the loop ran on %s.\n%s The loop goes on by itself." % (turn, now, before, reason), only)
 
 
@@ -1992,11 +2034,18 @@ def describe_claude_used(name, account, is_main):
     return "%s `%s`%s" % (role, command_base_name(name), " (%s)" % details if details else " (account unknown)")
 
 
-def claude_change_subject(name, account, is_main, same_command=False):
+def claude_change_subject(name, account, is_main, same_command=False, unusable=""):
     """Subject that says, in words, which account the loop is on now and how it signs in:
     "now on the backup account: cc account claude2 (subscription, sign-in token)",
     "back on the main account: dev@x.com (subscription, browser login)",
-    "cc switched to cc account claude3 (subscription, sign-in token)". The organization and plan stay in the body."""
+    "cc switched to cc account claude3 (subscription, sign-in token)". The organization and plan stay in the body.
+    `unusable` ("main account unusable") goes in front when the change came from an account that cannot be used."""
+    subject = claude_change_subject_core(name, account, is_main, same_command)
+    return "%s, %s" % (unusable, subject) if unusable else subject
+
+
+def claude_change_subject_core(name, account, is_main, same_command):
+    """The part of the subject that names the account the loop is on now."""
     method, who, _ = split_account_label(account)
     who = who or "`%s`" % command_base_name(name)
     how = " (%s)" % SIGN_IN_WORDS[method] if method in SIGN_IN_WORDS else ""
@@ -2009,7 +2058,7 @@ def return_to_main_command(opts):
     """When the loop is on a fallback and the main command's remembered reset moment has passed, goes back to the main command
     (index 0). Returns True when it went back; the next notify_claude_change announces it."""
     moment = getattr(opts, "main_reset", None)
-    if getattr(opts, "claude_index", 0) > 0 and moment and datetime.datetime.now() >= moment:
+    if getattr(opts, "claude_index", 0) > 0 and moment and datetime.datetime.now() >= moment and claude_names(opts)[0] not in unusable_names(opts):
         opts.claude_index, opts.main_reset, opts.picker_tried = 0, None, []
         print("[loop] the main command `%s` should be free again (reset %s): back on it" % (claude_names(opts)[0], moment.strftime("%d/%m %H:%M")))
         return True
@@ -2454,6 +2503,18 @@ def main():
                 save_meta(loop_state.loop_path(work, "meta.json"), meta)
                 turn -= 1
                 continue
+            if failed and not account_limited and claude_binaries.is_account_unusable(out + err):
+                # the account cannot sign in (logged out, revoked token, organization without access): no wait fixes it, try the next command
+                record = mark_account_unusable(opts, claude_name, log["claude_account"], claude_binaries.unusable_reason(str(data.get("result") or "")) or claude_binaries.unusable_reason(out + err), turn)
+                meta.setdefault("claude_unusable", []).append(record)
+                if switch_claude(opts):
+                    print("[loop] account unusable on `%s` (%s); turn %d again with `%s`" % (claude_name, record["reason"], turn, current_claude(opts)))
+                    meta["claude_switches"] = int(meta.get("claude_switches", 0)) + 1
+                    opts.last_claude_used = getattr(opts, "last_claude_used", None) or (claude_name, log["claude_account"])  # notify the change
+                    save_meta(loop_state.loop_path(work, "meta.json"), meta)
+                    turn -= 1
+                    continue
+                return finish(work, meta, "error", unusable_stop_message(opts), opts)
             if failed and LIMIT_RE.search(out + err):
                 limit_hits += 1
                 if limit_hits > opts.limit_retries:
@@ -2467,11 +2528,11 @@ def main():
                             "again by itself, from `%s` (wait %d of %d)."
                             % (turn, ", ".join(claude_names(opts)), ("The first account frees up at %s (in %s)." % (when, wait_text(seconds)))
                                if when else "The reset time is unknown: it tries again in %s." % wait_text(seconds),
-                               claude_names(opts)[0], limit_hits, opts.limit_retries))
+                               claude_names(opts)[first_usable_index(opts)], limit_hits, opts.limit_retries))
                 paused = sleep_unless_paused(work, turn - 1, seconds)
                 if paused:
                     return finish(work, meta, "awaiting_user", paused, opts)
-                opts.claude_index, opts.picker_tried, opts.limit_resets, opts.main_reset = 0, [], [], None  # after the wait, the main command again
+                opts.claude_index, opts.picker_tried, opts.limit_resets, opts.main_reset = first_usable_index(opts), [], [], None  # after the wait, the main command again (the first one whose account works)
                 turn -= 1
                 continue
             limit_hits = 0

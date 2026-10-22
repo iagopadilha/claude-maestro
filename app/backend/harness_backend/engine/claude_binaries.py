@@ -7,7 +7,8 @@ loop turns and the panel jobs pick the command the same way.
 The order comes from config.json: `claude_binary` first (empty = `claude`), then `claude_fallback_binaries` (a list or one name).
 A name like `cc` may be a wrapper script (`cc.cmd`) that signs `claude` in with another account. When the running command
 fails with an account usage limit, the caller moves to the next one; an `overloaded` API (529) is not an account limit and
-never switches.
+never switches. An account that cannot be used at all (logged out, revoked or expired token, an organization that blocks
+subscription access: `is_account_unusable`) moves the caller to the next command too, with no wait.
 
 A Windows batch wrapper (`.cmd`/`.bat`) goes through cmd.exe, which cuts an argument at its first line break and expands
 `%NAME%`: the prompt of such a call always goes through stdin (`claude -p` with no prompt argument reads it from there).
@@ -126,6 +127,39 @@ def swap_binary(argv, old_name, new_name):
 def is_usage_limit(text):
     """True when the output names an account limit (switching account helps); False for anything else, `overloaded` included."""
     return bool(USAGE_LIMIT_PATTERN.search(text or ""))
+
+
+# an account that cannot sign in at all (logged out, revoked or expired token, an organization that blocks subscription access):
+# waiting never fixes it, only another account does. Only specific signatures: a bare "401"/"403" may be an HTTP code of the
+# app a turn is working on.
+ACCOUNT_UNUSABLE_PATTERN = re.compile(
+    r"oauth_org_not_allowed|authentication_error|API Error[^\n]{0,200}permission_error|permission_error[^\n]{0,200}API Error"
+    r"|API Error:? *(?:401|403)\b|Invalid API key|OAuth token has expired|OAuth token (?:was )?revoked|Please run /login"
+    r"|not logged in|disabled Claude subscription access"
+    r"|oauth_not_allowed_for_organization|OAuth authentication is currently not allowed", re.I)  # the organization blocks subscription sign-in
+UNUSABLE_REASON_LIMIT = 300
+
+
+def is_account_unusable(text):
+    """True when the output says this account cannot be used (authentication or authorization failure): switching account helps,
+    waiting does not. Call it only on the text of a turn or call that failed."""
+    return bool(ACCOUNT_UNUSABLE_PATTERN.search(text or ""))
+
+
+def unusable_reason(text):
+    """Short text of why the account is unusable: the output line (or the window of a long JSON line) around the first signature;
+    '' when the output has none. It is not redacted: the caller redacts it before it leaves the machine."""
+    text = text or ""
+    found = ACCOUNT_UNUSABLE_PATTERN.search(text)
+    if not found:
+        return ""
+    line_start = text.rfind("\n", 0, found.start()) + 1
+    line_end = text.find("\n", found.end())
+    line = text[line_start:line_end if line_end >= 0 else len(text)]
+    if len(line) > UNUSABLE_REASON_LIMIT:
+        begin = found.start() - line_start
+        line = line[begin:begin + UNUSABLE_REASON_LIMIT]
+    return line.strip()
 
 
 CC_RESET_PATTERN = re.compile(r"^\[cc\] reinicia: *(\S+)", re.M)  # `cc` with no free account: when the first one frees up (ISO, UTC)

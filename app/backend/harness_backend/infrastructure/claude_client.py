@@ -27,6 +27,8 @@ ALWAYS_REMOVED_VARIABLES = ("LOOP_MONITOR_URL",)
 SECRET_TEXT_PATTERN = cli_output.SECRET_TEXT_PATTERN
 SUSPICIOUS_LONG_TEXT_PATTERN = cli_output.SUSPICIOUS_LONG_TEXT_PATTERN
 ERROR_MESSAGE_LIMIT = 300
+LIMIT_CAUSE = "usage_limit"  # why run_once asks for the next command: the account ran out of usage
+UNUSABLE_CAUSE = "account_unusable"  # ... or the account cannot be used at all (logged out, revoked token, no access)
 DISABLED_PUSH_URL = "push-disabled-by-loop://use-delivery.py"
 LIST_REMOTES_TIMEOUT_SECONDS = 30
 REDACTION_MARK = cli_output.REDACTION_MARK
@@ -171,7 +173,8 @@ class ClaudeClient:
 
     def run_prompt(self, argv, folder, stdin_text, timeout_seconds, extra_env=None):
         """Runs the argv (no shell, environment without secrets, stdin = `stdin_text`) and parses the `--output-format json` JSON.
-        When the command hits an account usage limit, the same argv runs again with each fallback binary in turn.
+        When the command hits an account usage limit, or its account cannot be used (authentication or authorization failure), the
+        same argv runs again with each fallback binary in turn.
 
         Always returns a dict (never raises):
           ok          True only with code 0, a JSON object and a false `is_error`
@@ -187,18 +190,20 @@ class ClaudeClient:
         result = {}
         for position, name in enumerate(names):
             attempt = argv if position == 0 else claude_binaries.swap_binary(argv, names[0], name)
-            result, limited = self.run_once(attempt, folder, stdin_text, timeout_seconds, extra_env)
+            result, switch_cause = self.run_once(attempt, folder, stdin_text, timeout_seconds, extra_env)
             result["binary"] = name
             result["account"] = result.pop("stderr_account", "")
-            if not limited or position == len(names) - 1:
+            if not switch_cause or position == len(names) - 1:
                 break
-            logger.warning("`%s` hit the account usage limit: trying `%s`", name, names[position + 1])
+            logger.warning("`%s` %s: trying `%s`", name, "has an unusable account (%s)" % result["error"] if switch_cause == UNUSABLE_CAUSE
+                           else "hit the account usage limit", names[position + 1])
         if self.call_recorder is not None:
             self.call_recorder(folder, getattr(_call_context, "kind", ""), result)
         return result
 
     def run_once(self, argv, folder, stdin_text, timeout_seconds, extra_env):
-        """(result dict of `run_prompt`, True when it failed with an account usage limit)."""
+        """(result dict of `run_prompt`, why the next command should run: LIMIT_CAUSE for an account usage limit, UNUSABLE_CAUSE for an
+        account that cannot be used (authentication or authorization failure), '' when the call worked or failed for another reason)."""
         argv, stdin_text = claude_binaries.prompt_through_stdin(argv, stdin_text or "")
         code, output, error = self.process_runner.run_and_wait(argv, folder, timeout_seconds, input_text=stdin_text,
                                                                env=self.build_env_without_secrets(), extra_env=extra_env)
@@ -207,15 +212,18 @@ class ClaudeClient:
                   "error": "", "raw": raw, "stderr_account": claude_binaries.account_from_stderr(error)}
         if code == TIMEOUT_CODE:
             result["error"] = TIMEOUT_MESSAGE
-            return result, False
+            return result, ""
         if code != 0 or not raw or raw.get("is_error"):
             lines = [line for line in (error or output or "").strip().splitlines() if line.strip()]
             reason = raw.get("result") if raw.get("is_error") else None
             result["error"] = redact_secrets(reason or (lines[-1] if lines else "claude finished with an error"), ERROR_MESSAGE_LIMIT)
-            return result, claude_binaries.is_usage_limit("\n".join((reason or "", output or "", error or "")))
+            failure_text = "\n".join((reason or "", output or "", error or ""))
+            if claude_binaries.is_usage_limit(failure_text):
+                return result, LIMIT_CAUSE
+            return result, UNUSABLE_CAUSE if claude_binaries.is_account_unusable(failure_text) else ""
         result["ok"] = True
         result["reply"] = str(raw.get("result") or "")
-        return result, False
+        return result, ""
 
     @staticmethod
     def parse_json_output(output):
