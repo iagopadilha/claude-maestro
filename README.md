@@ -1,27 +1,40 @@
 # Loop Harness
 
-**A deterministic loop engine and visual graph monitor for Claude Code.** It runs 100% on your machine, uses your own Claude plan through the `claude` CLI, and installs zero Python packages.
+**A local control panel and a plugin that drive your own `claude` subscription through a planned, guarded loop.** You plan by chat, approve a roadmap with a click, and the loop builds it in waves of parallel features while a guard hook holds every agent inside its scope. It runs 100% on your machine and installs zero Python packages.
 
 ![Loop Harness panel: a loop running, features moving through the graph, the guard blocking an out-of-scope edit](docs/media/demo.gif)
 
-> Try it without wiring a real repo: `python app/harness.py demo` animates a whole loop on a throwaway project with mocked data.
+> Try it without wiring a real repo: `python app/harness.py demo` animates a whole loop on a throwaway project with mocked data. It never starts `claude`.
 
 ## The problem
 
-Running autonomous coding agents through the API gets expensive fast. Running them with `claude -p` in a bash loop uses your subscription instead, but it leaves you blind in a sea of Markdown files, and nothing stops an agent from editing files outside its scope.
+Running autonomous coding agents through the API gets expensive fast. Running them with `claude -p` in a bash loop uses your subscription instead, but it leaves you blind in a sea of Markdown files, and nothing stops an agent from editing files outside its scope or from loading every skill, plugin and MCP server your profile happens to have.
 
-## The answer
+## What it does
 
-Loop Harness separates the **brain** (skills and prompts, the `plugin/`) from the **runtime** (a deterministic Python engine plus a web UI, the `app/`). It turns Claude Code into a visual state machine:
+Loop Harness separates the **brain** (skills, agents and the guard, the `plugin/`) from the **runtime** (a deterministic Python engine plus a web panel, the `app/`).
 
-- **Graph execution.** Features are nodes with dependency edges. Each turn the engine picks a wave of features whose paths do not overlap and whose dependencies are done, fans them out to parallel Sonnet subagents, and fans them back in at verify and commit.
-- **Hard scope locks.** A `PreToolUse` hook (`guard.py`) blocks, with exit 2, every edit outside a feature's paths, pushes to protected branches, production writes and your own project rules. Each rule ships with tests that run against the real hook. You watch the blocks live in the panel.
-- **Human in the loop.** You approve the roadmap with a click. The loop stops when it needs you, you answer from the panel (or with `--answer`), and you can send an instruction to the next turn at any time.
-- **Deterministic state.** The LLM does not own the state. Python validates every transition, chooses the next wave, snapshots each turn so you can `--rewind`, and refuses an unapproved roadmap. The model writes specs and code; the engine decides what may happen next.
-- **Local and lean.** Python standard library only (**zero `pip install`**), ES modules served as-is (**no `npm`, no build step**), listening on `127.0.0.1` only. Nothing to break in your environment and no hosted service.
-- **Your own plan.** Every turn is a `claude -p` call through the CLI you are already signed in to. There is no API key to manage and no per-token API bill.
+1. **Plan by chat.** A new project opens in planning mode. A live chat (`/orchestrator plan`) asks you questions and writes `PROJECT.md`, `ROADMAP.md` and `FLOWS.md` (the flow that proves each feature) while you watch them in a preview. The chat answers right away: the safety snapshot and prompt build run in the job thread, and the user message is saved before the request answers (measured: a send went from about 2.2 to 2.8 s to 17 to 66 ms server side, and the message shows in the browser in 2 to 12 ms; [`app/docs/ARCHITECTURE.md`](app/docs/ARCHITECTURE.md), "Instant chat").
+2. **Or import a spec you already have.** Point the panel at a tlc-spec-driven feature folder: it is copied (read only, credentials redacted), the planning chat builds ROADMAP, FLOWS and PROJECT from it, and an **import coverage gate** fails until every requirement, decision and task id of the source has a row in `IMPORT-COVERAGE.md` (a destination, or `dropped: <reason>`). Nothing of the source is lost silently ([`app/docs/API.md`](app/docs/API.md), "Planning: import a spec and readiness").
+3. **Approve the roadmap.** **Approve roadmap** unlocks only when the checklist is green: prerequisites, a goal, valid features, no open question and a flow per feature. The loop does not start without an approved roadmap, and only your click approves it.
+4. **Run the loop.** Features are nodes with dependency edges. Each turn the engine picks a wave of features whose paths do not overlap and whose dependencies are done, and the orchestrator fans them out to parallel Sonnet subagents (spec, gate, execute, verify, commit). The loop works in its own worktree and branch, never yours.
+5. **Wrap up and deliver.** At the end you review the decisions the loop took for you, **Finish** pushes only the feature branch and opens the PR (`harness.py deliver`), and an optional **follow-up** stage turns what you found into new features.
 
-![The panel: roadmap, current turn by lane, agent log, guard feed](docs/media/panel.jpg)
+The engine, not the model, owns the state: Python validates every transition, chooses the next wave, snapshots each turn so you can `--rewind`, and refuses an unapproved roadmap.
+
+## The guard
+
+A `PreToolUse` hook (`plugin/skills/orchestrator/hooks/guard.py`) runs on the orchestrator, on every subagent and on the app's own `claude -p` jobs. It blocks with exit 2; each rule ships with tests that run against the real hook, and you watch the blocks live in the panel.
+
+- **Profiles.** `orchestrator`, `executor`, `spec`, `verifier` for the loop; `planning`, `roadmapmap`, `subprojects`, `systemmap` for the app's jobs. Each profile gets only the rules it needs ([`plugin/skills/orchestrator/hooks/README.md`](plugin/skills/orchestrator/hooks/README.md)).
+- **Scope per task.** An executor may edit only the paths of its feature (`SCOPE.json`) and, when dispatched per task (`SCOPE_TASK: <slug>/<Tn>`), only the files of that task.
+- **No push except deliver.** Every `git push` and `gh` command is blocked inside the loop (`headless-push`, `headless-gh`); a push to the integration branch, `main` or a force push is blocked for any caller. Delivery belongs to the engine.
+- **PROD is read only.** A writing SQL statement through a production MCP tool is denied and no `PERMISSIONS.json` entry releases it (`prod-sql-write`); the production MCP tool is allowed only to the orchestrator and planning profiles.
+- **MCP and skill allowlists.** In the loop and in app jobs, any `mcp__*` tool outside the profile's list is denied (`mcp-allowlist`), and a `Skill` call outside the profile's list is denied (`skill-allowlist`). Allowed MCP and Skill calls are written to `guard.log` as `allow` lines for audit. Your interactive sessions are never limited by these two rules ([`app/docs/MONITOR.md`](app/docs/MONITOR.md), "Guard and access").
+- **Runtime isolation.** Every `claude -p` the app starts runs with `--setting-sources project,local` plus a bundle that holds only the 8 plugin agents and the allowlisted skills (20 with the defaults). Your user plugins, your ~100 other skills, your hooks and plugin MCP servers do not load. A real `init` probe under isolation showed no MCP server outside the app's generated config, only the bundle agents and skills plus Claude Code built-ins, and `/orchestrator` available; a real headless call had the guard deny a non-allowlisted skill (`[skill-allowlist]`). Kill switch: `"loop_isolation": false` in `~/.loop-harness/config.json` ([`app/docs/ARCHITECTURE.md`](app/docs/ARCHITECTURE.md), "Runtime isolation").
+- **See it, do not trust it.** `python app/harness.py doctor --access` prints, per profile, the MCP tools and skills allowed, the bundle contents, a probe of what the isolated `claude` really loads (flagging anything outside the allowlists) and a summary of the last 200 `guard.log` lines. It is read only ([`app/docs/HOW_TO_USE.md`](app/docs/HOW_TO_USE.md), "Isolation and access").
+
+![The panel after a loop: turn strip, pipeline of the roadmap by stage, the guard's blocks on the left, the selected agent on the right](docs/media/panel.jpg)
 
 Two honest notes:
 
@@ -51,7 +64,7 @@ The panel puts them in one view, and turns the engine commands into buttons that
 - **Graph engineering.** The roadmap is a graph: features grouped by stage, with dependency edges and status colours. The state machine shows how many features are in each node. Click a node to open that feature, turn or agent and act on that point: read its spec, inspect its log, chat about it, send an instruction, or answer its question.
 - **Loop engineering.** Watch the current turn by lane, the history of every agent with tokens and duration, the limits (cost, turns without progress), and the quarantine. The panel also lists the decisions the loop took for you to validate later.
 - **Any starting point.** Create a project from scratch (folder, git, `.specs/`), open an existing repo (map it, then plan the roadmap in the planning chat), or open a project whose loop stopped midway: the panel shows where it is and the next action.
-- **The roadmap gate stays yours.** A new project opens in planning mode: a live chat (`/orchestrator plan`) asks you questions and writes `PROJECT.md`, `ROADMAP.md` and `FLOWS.md` (the flow that proves each feature) while you watch them in a preview. **Approve roadmap** unlocks only when the checklist is green: prerequisites, a goal, valid features, no open question and a flow per feature. The loop does not start without an approved roadmap.
+- **Local and lean.** Python standard library only (**zero `pip install`**), ES modules served as-is (**no `npm`, no build step**), listening on `127.0.0.1` only, with your own plan through the `claude` CLI: no API key to manage and no hosted service.
 
 ## Layout
 
@@ -93,6 +106,7 @@ Open the panel (back end + front end, opens your browser):
 python app/harness.py serve                      # hub: your projects, create or open a folder
 python app/harness.py serve --project <repo>     # straight to one project
 python app/harness.py demo                       # a fake project with moving loop data; no claude, nothing of yours touched
+python app/harness.py doctor --access            # what a claude -p of the app can reach: MCP, skills, bundle, probe, guard.log
 ```
 
 `demo` creates a throwaway project (`acme-checkout`) in a temporary folder and animates a whole loop in about 2 minutes:
@@ -130,11 +144,11 @@ Everything is plain Markdown and Python:
   - phases in `plugin/skills/orchestrator/SKILL.md`;
   - guard profiles in `plugin/skills/orchestrator/hooks/guard.py`;
   - engine in `app/backend/harness_backend/engine/`.
-- **Settings:** the `LOOP_*` and `GUARD_PROD_HINTS` variables (see `app/.env.example`).
+- **Settings:** the `LOOP_*` and `GUARD_PROD_HINTS` variables (see `app/.env.example`), and the **Settings** button of the hub and the panel (isolation, caveman mode, extra skills, model, limits: saved in `~/.loop-harness/config.json`).
 
 ## Guard rules
 
-The guard is a `PreToolUse` hook on the orchestrator and its subagents. It blocks push to protected branches, force push, credential reads, installs, writes to loop state and more. You can add your own project rules on top. This rule in `.specs/project/loop/json/PERMISSIONS.json` blocks `terraform apply` and `terraform destroy` for the orchestrator and every subagent, and lets `terraform plan` through:
+The guard is a `PreToolUse` hook on the orchestrator, its subagents and the app's jobs. It blocks push to protected branches, force push, credential reads, installs, writes to loop state and more. You can add your own project rules on top. This rule in `.specs/project/loop/json/PERMISSIONS.json` blocks `terraform apply` and `terraform destroy` for the orchestrator and every subagent, and lets `terraform plan` through:
 
 ```json
 {"deny_bash_regex": ["\\bterraform\\s+(?:-\\S+\\s+)*(?:apply|destroy)\\b"]}
@@ -153,8 +167,9 @@ Every cookbook example is proven by `test_guard_cookbook.py`.
 
 - No subagent runs above Sonnet, even after a failure.
 - Only the orchestrator runs git. Only the feature branch is pushed, and only at the end. The integration branch (`LOOP_INTEGRATION_BRANCH`, default `developer`), `main` and force pushes are blocked.
+- Every `claude -p` the app starts runs isolated from your profile (`--setting-sources project,local` and a bundle of 8 agents and the allowlisted skills); the guard allows only the MCP tools and skills of each profile, and production SQL is read only. `harness.py doctor --access` shows it.
 - The panel listens only on `127.0.0.1`, checks the `Host` header and requires a per-run token on every write. Its chat is read-only (no tools that write, no MCP). Starting a loop, approving a roadmap and delivering always take your click.
-- The guard acts only on this plugin's subagents and the orchestrator skill. Your other work is unaffected.
+- The guard acts only on this plugin's subagents, the orchestrator skill and the app's own `claude -p` jobs. The MCP and skill allowlists apply only there (`LOOP_HEADLESS=1` or `LOOP_ISOLATED=1`); your interactive sessions are unaffected.
 
 ## Tests
 

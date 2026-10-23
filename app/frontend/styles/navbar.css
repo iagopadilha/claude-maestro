@@ -4,7 +4,7 @@
 #app>.header.navbar>.brand{flex:0 1 auto;min-width:0;max-width:340px;align-items:center;}
 #app>.header.navbar .brand-sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px;}
 #app>.header.navbar>.spacer{flex:1 1 0;min-width:0;}
-#app>.header.navbar>.header-actions{flex:none;flex-wrap:wrap;align-items:center;gap:8px;}
+#app>.header.navbar>.header-actions{flex:none;flex-wrap:wrap;align-items:center;gap:8px;max-width:100%;}
 
 /* repo chip: short name, full path and branch in the tooltip */
 .nb-repo{display:inline-flex;align-items:center;gap:6px;flex:0 1 auto;min-width:0;max-width:240px;height:24px;padding:0 4px 0 10px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);color:var(--text2);font-size:12px;}

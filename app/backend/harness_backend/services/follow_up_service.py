@@ -202,10 +202,10 @@ class FollowUpService:
             prompt = self.compose_fresh_prompt(round_number, text, context_block)
         thread["messages"].append({"role": "user", "text": text, "decisions": decision_ids, "at": now_iso()})
         self.follow_up_thread_repository.write_thread(work_dir, round_number, thread)
-        snapshot = self.workspace_file_guard.take_snapshot(work_dir, GUARD_IGNORED_PATHS)
-        turn = FollowUpTurn(round_number, snapshot, before, baseline, self.list_executed_slugs(baseline["roadmap"]), resumed,
-                            (context_block, text))
+        turn = FollowUpTurn(round_number, None, before, baseline, self.list_executed_slugs(baseline["roadmap"]), resumed,
+                            (context_block, text))  # the safety snapshot is taken in the job thread (`before_start`), never in the request
         command = ClaudeJobCommand(self.build_argv(session_id), prompt, timeout_seconds=FOLLOW_UP_TIMEOUT_SECONDS, work_dir=work_dir,
+                                   before_start=lambda update_progress: self.take_turn_snapshot(work_dir, turn),
                                    finalize=lambda result: self.finish_job(context, turn, result))
         self.write_draft_text(work_dir, text)  # kept if the job fails, so the user does not retype it
         job = self.claude_job_service.start_job(context.repo_path, JOB_TYPE_FOLLOW_UP, command)
@@ -213,6 +213,10 @@ class FollowUpService:
         self.log.info("follow_up_sent", project=context.project.id, job=job["id"], number=round_number, resumed=resumed,
                       decisions=len(decision_ids))
         return {"ok": True, "job": job}
+
+    def take_turn_snapshot(self, work_dir, turn):
+        """Job thread, before claude: the snapshot `finish_job` reverts to (walks and reads the whole work folder)."""
+        turn.snapshot = self.workspace_file_guard.take_snapshot(work_dir, GUARD_IGNORED_PATHS)
 
     def build_argv(self, session_id):
         allowed_tools = ["Read", "Grep", "Glob"] + ["Edit(/%s)" % path for path in EDITABLE_PATHS]

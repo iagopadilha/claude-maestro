@@ -37,7 +37,7 @@ Why a panel (base text of the front's "Why use the panel?" dialog):
   `loop_state.loop_path`, `loop_state.roadmap_approval`, `graph_view`...). Never rewrite the ROADMAP parser.
 - Security: listen only on 127.0.0.1, check `Host`, require the token on every method that changes something, JSON body
   up to 64 KB (exceptions per route), never return `.env`, credentials or the raw `guard.log`, read-only chat without
-  MCP, actions only from a whitelist with `confirm:true`. Claude (the orchestrator) never calls a trigger endpoint; the
+  MCP, every `claude -p` isolated from the user's profile with MCP and skill allowlists in the guard (see "Runtime isolation"), actions only from a whitelist with `confirm:true`. Claude (the orchestrator) never calls a trigger endpoint; the
   click is always the user's.
 - Tests: `unittest`, no network, no real `claude` (use `backend/tests/engine/fake_claude.py` or a fake script), never
   touching `~/.claude` or the real `~/.loop-harness` (use a temporary `LOOP_DATA_DIR` and `LOOP_SKILL_DIR` pointing to a
@@ -46,7 +46,7 @@ Why a panel (base text of the front's "Why use the panel?" dialog):
 ## Layout
 ```
 harness.py                          single CLI: serve | demo | loop | check | state | notify | summary | deliver | rules |
-                                    audit | graph | classify | scale | inventory | doctor | install
+                                    audit | graph | classify | scale | inventory | doctor [--access] | install
 backend/harness_backend/
   composition.py                    composition root (wires the three modules and the app controller)
   config/app_config.py              AppConfig + load_app_config (data folder, ports, engine, templates)
@@ -58,7 +58,8 @@ backend/harness_backend/
   api/controllers/                  one file per controller
   services/ repositories/           per module (table below)
   infrastructure/                   structured_log, activity_monitor, process_runner, claude_client, git_client
-  engine/                           run_loop, loop_state, notify, delivery, loop_summary, graph_view, audit_deps,
+  engine/                           run_loop (entry point) and the modules split out of it (see "Engine modules"), runtime_isolation,
+                                    access_report, loop_state, notify, delivery, loop_summary, graph_view, audit_deps,
                                     rules, scale, monitor_proc, classify_structure, app_paths, project_repos (REPOS.json),
                                     close_loop, repo_catalog, subprojects, code_inventory, context_files, context_block,
                                     system_map, readiness_checks, setup_files (uncommitted setup files: carry, commit, readiness block), decisions (VALIDATE.md grammar)
@@ -73,7 +74,7 @@ docs/                               ARCHITECTURE.md, API.md, HOW_TO_USE.md, MONI
 ## Modules and their files
 | Module | Files |
 |---|---|
-| Engine, infrastructure and CLI | `harness.py`, `engine/**`, `config/envload.py`, `infrastructure/process_runner.py`, `infrastructure/claude_client.py`, `infrastructure/git_client.py`, `services/app_diagnostics_service.py`, `api/controllers/app_controller.py`, `backend/tests/engine/**`, `backend/tests/infra/**`, `.env.example`, `docs/HOW_TO_USE.md` |
+| Engine, infrastructure and CLI | `harness.py`, `engine/**` (`run_loop.py` and its split modules, `runtime_isolation.py`, `access_report.py`), `config/envload.py`, `infrastructure/process_runner.py`, `infrastructure/claude_client.py`, `infrastructure/git_client.py`, `services/app_diagnostics_service.py`, `api/controllers/app_controller.py`, `backend/tests/engine/**`, `backend/tests/infra/**`, `.env.example`, `docs/HOW_TO_USE.md` |
 | Loop read | `services/loop_read_module.py`, `services/loop_status_service.py`, `services/loop_panel_service.py`, `services/agent_history_service.py`, `services/guard_event_service.py`, `services/error_center_service.py`, `services/error_event_sync_service.py`, `services/turn_timeline.py`, `services/launch_log_parser.py`, `repositories/error_event_repository.py`, `services/turn_service.py`, `services/roadmap_view_service.py`, `repositories/loop_file_repository.py`, `repositories/claude_transcript_repository.py`, `repositories/loop_read_formatting.py`, `api/controllers/loop_read_controller.py`, `backend/tests/api/test_read_*.py` |
 | Loop commands | `services/loop_commands_module.py`, `services/loop_control_service.py`, `services/chat_service.py`, `services/action_service.py`, `services/whiteboard_service.py`, `services/engine_script_service.py`, `services/loop_worktree_service.py`, `repositories/chat_repository.py`, `repositories/whiteboard_repository.py`, `repositories/answers_repository.py`, `repositories/loop_command_file_repository.py`, `repositories/agent_transcript_repository.py`, `api/controllers/loop_commands_controller.py`, `api/controllers/chat_controller.py`, `api/controllers/action_controller.py`, `backend/tests/api/test_commands_*.py` |
 | Projects, structure, roadmap and specs | `services/projects_module.py`, `services/project_service.py`, `services/specs_structure_service.py`, `services/project_progress_service.py`, `services/roadmap_service.py`, `services/spec_file_service.py`, `services/claude_job_service.py`, `services/folder_picker_service.py`, `services/planning_service.py`, `services/planning_gates.py`, `services/planning_requirement_service.py`, `services/subprojects_service.py`, `services/subproject_validation_service.py`, `services/subproject_map_service.py`, `services/system_map_service.py`, `services/code_inventory_service.py`, `services/context_block_service.py`, `services/map_job_runner.py`, `repositories/subprojects_file_repository.py`, `api/controllers/subprojects_controller.py`, `repositories/project_repository.py`, `repositories/specs_file_repository.py`, `repositories/planning_thread_repository.py`, `infrastructure/workspace_file_guard.py`, `domain/flows_document.py`, `domain/project_errors.py`, `api/controllers/planning_controller.py`, `api/controllers/project_responses.py`, `api/controllers/project_controller.py`, `api/controllers/roadmap_controller.py`, `api/controllers/specs_controller.py`, `templates/**`, `backend/tests/api/test_projects_*.py` |
@@ -420,6 +421,44 @@ which the guard rule `sql-write` keeps read only. Only those definitions are cop
 (`--mcp-config <file> --strict-mcp-config`; credentials stay in that file, under the folder the guard's `secrets` rule blocks; the argv carries only its path).
 A server that is not configured is just absent (no error); no server = the empty strict config. `run_loop.py --check --planning` warns when the plan names a server
 that is not configured. Spec subagents declare an explicit `tools:` list: to use these MCP tools their frontmatter must list them.
+
+## Runtime isolation of every `claude -p`
+A plain `claude -p` loads the user's whole profile: about a hundred skills (company PROD skills included), every enabled plugin, the user's hooks and the MCP servers that plugins add, even with `--strict-mcp-config`. The app does not want any of that in a loop turn or a panel job, so every `claude -p` it starts is isolated. `engine/runtime_isolation.py` (standard library, imported by the engine as a script sibling and by `infrastructure/claude_client.py`) owns it.
+
+- **Argv.** `--setting-sources project,local` (the project's own `CLAUDE.md` and settings still load; `~/.claude` does not), `--add-dir=<bundle>` and `--settings <file>`, placed before `--strict-mcp-config --mcp-config <generated>` (the app's generated MCP config stays; no plugin MCP joins). The loop turns get it from `engine/claude_turn.py` (`isolation_arguments`), the panel jobs from `ClaudeClient.build_command`. Fallback binaries (`claude_fallback_binaries`, e.g. `cc`) get the same flags; a batch wrapper keeps the prompt through stdin.
+- **Bundle.** `<data dir>/runtime/bundle/.claude/{skills,agents}`: the 8 plugin agents (from the plugin root that holds the orchestrator skill) under their plain names, and only the allowlisted skills. A skill comes from `~/.claude/skills/<name>` when present (`LOOP_CLAUDE_HOME` overrides the folder), else from `<plugin>/skills/<name>`; a missing skill is skipped and listed by `doctor --access`, never an error. `ensure_bundle` rebuilds only when the source signature (names, mtimes, sizes) changes, builds in a temp folder and swaps it in, so a concurrent run never sees a half bundle. `--plugin-dir` is not used because it namespaces agents as `<plugin>:<name>` and dispatch by plain name would break.
+- **Skills allowlist.** `skills_allowlist` returns `{profile: [skill, ...]}` (the keys are the guard's profile names plus `auto`, a mirror of `orchestrator`). The defaults are in `DEFAULT_ALLOWLIST` (20 skills in all); `spec` and `executor` also get every `skill` named in `.specs/project/SUBPROJECTS.json`, and every profile gets `loop_extra_skills` from `config.json`. The engine writes the table to `<data dir>/runtime/skills-allowlist.json` (a different table, e.g. with subproject skills, goes to `skills-allowlist-<hash>.json` so two projects never overwrite each other) and exports `LOOP_SKILLS_FILE` and `LOOP_ISOLATED=1` to the process.
+- **Guard hook.** The hook that used to come from `~/.claude/settings.json` goes through `--settings`: `python guard.py --profile auto` for the loop turns, the job's `hook_profile` for app jobs (a job with none gets `auto`, because the user's own hook, which isolation drops, was its only guard). The user's `autoMode` block is copied from `~/.claude/settings.json` so `--permission-mode auto` keeps its classifier context; the user's `permissions` are not carried. The settings JSON is written to `<data dir>/runtime/settings-<hash>.json` and passed by path: a batch fallback binary goes through `cmd.exe`, which splits an inline JSON on `&`, `|`, `<` and `>`.
+- **Guard side.** `mcp-allowlist` and `skill-allowlist` (both hard rules) read `LOOP_HEADLESS` / `LOOP_ISOLATED` and `LOOP_SKILLS_FILE`; see `MONITOR.md`, "Guard and access".
+- **Kill switch.** `"loop_isolation": false` in `<data dir>/config.json` (default true) gives back the old argv byte for byte (tested).
+- **Where it is built.** The bundle is prepared at loop start and checked at each turn (a signature compare, with a 30 s in-process memo); for panel jobs it is prepared in the job thread (`ClaudeClient.isolation_variables`), never in the request.
+- **Report.** `engine/access_report.py` (`harness.py doctor --access`) lists what the isolated process can reach and probes the real argv; see `HOW_TO_USE.md`, "Isolation and access".
+
+## Instant chat: the heavy part runs in the job thread
+Every chat send answers fast (target at most 300 ms) because the request does only the cheap work. `PlanningService.send_message` (the planning import send goes through it; `FollowUpService.send_follow_up` has the same shape, and the quarantine summary moved its `git status` and transcript reads into its own thread) does: validate, take the service lock, the cheap refusals (loop running, loop worktree, a job already running, and the planning prerequisites when the last gates computed within 10 s say red: `ProjectProgressService` keeps them per project), append the user message to the thread, `start_job`, answer `{"ok", "job_id"}`. The user message is persisted before the answer, so a reload never loses it.
+
+The rest is the job's `before_start` (`ClaudeJobCommand.before_start(update_progress)`, `services/claude_job_service.py`): the gates (a red gate raises `ClaudeJobError(message, "planning_prerequisites")`), the test-environment template, the credential names file, the safety snapshot of the repo, the MCP access build, the isolation bundle and the argv/prompt. `before_start` may return `{"argv": [...], "stdin_text": "..."}`, which replace the command's; the `finalize` closure reads the snapshot taken there. While it runs the job record says `progress: "preparing the safety snapshot"` and polls keep returning `running`. If `before_start` raises, claude never starts, `finalize` does not run, the job ends `error` with the message and, for a `ClaudeJobError`, a stable `code`, and an optional `on_prepare_failed(error)` undoes what the request persisted (the planning service removes the user message it appended). Map jobs use the same hook for their snapshot.
+
+The front end clears the input and shows the message at submit time (optimistic) and puts the text back if the send fails; a job error with a `code` goes through the same `SEND_ERRORS` table as the old 4xx. `ChatService.send_question` was already under the budget (48 to 179 ms depending on scope) and stays synchronous. Measured on a 5,000-file repo with the fake `claude` (`tests/api/test_chat_send_latency.py`, budget 300 ms): planning, import and follow-up sends 24 to 61 ms (were 2.2 to 2.8 s), the quarantine summary 17 ms; in the browser 2 to 12 ms from submit to the message visible. Behavior kept: guard revert after the reply, session resume, budgets, timeouts.
+
+## Engine modules (after the `run_loop.py` split)
+`engine/run_loop.py` was about 2,770 lines; it is now about 740 and stays the entry point (`main`, `preflight`, `finish`, the notices and the functions tests replace). Cohesive modules moved out of it as they were; `run_loop.py` re-exports every moved name, so `run_loop.<name>` (what tests, services and `harness.py` use, and what tests monkeypatch) still works.
+
+| Module | What it holds |
+|---|---|
+| `loop_io.py` | file, JSON, git and process helpers (`run`, `git`, `load_json`, `save_json`, `save_meta`, `kill_tree`, `pid_alive`) |
+| `claude_accounts.py` | which `claude` command and account a turn runs on: fallback order, unusable accounts, labels, usage windows in `meta.json` |
+| `limit_waits.py` | the PAUSE file, the wait until a usage window resets, the sleep a pause cuts short |
+| `claude_turn.py` | the `claude -p` call of a turn: argv (model, MCP, isolation, disallowed tools), environment with the push lock, run and parse |
+| `permission_denials.py` | which denials always stop the loop, how a tolerated one is written to `VALIDATE.md`, whether the turn advanced |
+| `worktree_state.py` | what the loop reads between turns (roadmap score, fingerprint, new commits, leftovers), `--rewind`, the lock |
+| `worktrees.py` | creating and re-attaching the loop worktrees: base branch, carried setup files, local copies, one worktree per extra repo |
+| `auto_answers.py` | automatic answers of the headless loop and the tiebreak of a spec stuck on wording |
+| `turn_gates.py` | the checks between turns: scheduler flags, forgotten dependencies, quarantine and critical-decision pauses, spend cap, E2E marks, contract merge |
+| `preflight_checks.py` | the checks of `--check` and of every run (environment, ROADMAP, approval, test environment, notice channels, push, setup, `--planning` readiness) |
+| `loop_cli.py` | `build_parser()`, the argparse parser of `run_loop.py` (same flags, defaults and help) |
+
+Functions that call something tests replace (`notify_wait`, `ensure_worktrees`, `planning_readiness`) stayed in `run_loop.py` so the replacement still takes effect.
 
 ## Bridge with the skill
 `SKILL_BRIDGE.md`: how the plugin skill finds the app (`LOOP_APP_HOME`, else `~/.loop-harness/config.json` ->

@@ -1,6 +1,7 @@
 """SystemMapService: the root `docs/codebase/SYSTEM.md` of a confirmed monorepo (last step of "map all", own action, refusals,
 revert outside SYSTEM.md, no root CLAUDE.md write, older_than_list) and the run_hints rule that the root map folder of a confirmed
 monorepo is never "the map". A fake claude writes SYSTEM.md (at the root) or STACK.md (in a subproject) in its cwd."""
+from tests import settings_text
 import os
 import shutil
 import tempfile
@@ -154,7 +155,7 @@ class SystemMapServiceTests(unittest.TestCase):
         argv = call["argv"]
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
         self.assertNotIn("--max-budget-usd", argv)  # no spend cap: budget_usd is ignored
-        self.assertIn("systemmap", " ".join(argv))
+        self.assertIn("systemmap", settings_text(argv))
         self.assertEqual(os.path.normcase(call["folder"]), os.path.normcase(self.repo))
 
     def test_single_path_map_does_not_start_the_system_map(self):

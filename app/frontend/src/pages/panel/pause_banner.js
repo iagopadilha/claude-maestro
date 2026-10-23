@@ -3,10 +3,10 @@
    A loop that waits for an answer without any quarantine keeps the existing answer UI (the Alert band at the top of the page). */
 import { html } from '../../util/preact.js';
 import { list, firstLine, DASH } from '../../util/format.js';
-import { ctx, ui, status, loop } from './context.js';
-import { renderAll } from '../project_panel.js';
+import { ctx, status, loop } from './context.js';
 import { pipe } from './pipeline_model.js';
 import { openPauseDialog } from './dialogs/index.js';
+import { openStatusDialog } from './alert.js';
 import { FeatureLabel } from './feature_label.js';
 
 const REASON_CLIP = 140;
@@ -17,12 +17,8 @@ export function pauseBannerVisible() {
   return !!ctx.state && (list(ctx.state.quarantine).length > 0 || status() === 'awaiting_user');
 }
 
-/** Opens the answer band of the page top (the question of an awaiting loop) and scrolls to it. */
-function showAnswer() {
-  ui.det.awaiting_user = true; renderAll();
-  const zone = document.getElementById('alert-zone');
-  if (zone) zone.scrollIntoView({ block: 'nearest' });
-}
+/** Opens the question dialog (the same one the "waiting for you" chip opens); it used to flip a flag nobody read and scroll to an element that does not exist. */
+const showAnswer = openStatusDialog;
 
 export function PauseBanner() {
   if (!pauseBannerVisible()) return null;

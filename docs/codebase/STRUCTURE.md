@@ -22,7 +22,7 @@ app/                       the control panel ("runtime")
   frontend/                index.html, src/, styles/, vendor/
   templates/               .specs templates copied into managed projects
   docs/                    ARCHITECTURE, API, HOW_TO_USE, MONITOR, SKILL_BRIDGE
-docs/                      repo-level docs (media; codebase/ = these maps)
+docs/                      repo-level docs (media/ = demo.gif, panel.jpg, make_gif.py; codebase/ = these maps)
 .specs/                    loop state of THIS repo (gitignored)
 ```
 
@@ -32,6 +32,7 @@ docs/                      repo-level docs (media; codebase/ = these maps)
 - `repositories/`: file access (`*_repository.py`). `infrastructure/`: process, git, claude CLI, logging, file guard.
 - `domain/`: entities and errors. `config/`: app config, skill locator, env loading.
 - `engine/`: the loop itself (`run_loop.py`, `loop_state.py`, `delivery.py`...), run as CLI subprocess or imported for pure reads. `decisions.py` owns the `VALIDATE.md` line grammar (AI decisions: parse, append, critical detection) for the engine and the services. Monorepo pieces: `subprojects.py` (list, owner of a path), `code_inventory.py` (giant files), `context_block.py` / `context_files.py` (the `maestro:context` block of `CLAUDE.md`, uncommitted context files), `system_map.py` (contract merge into `SYSTEM.md`), `readiness_checks.py`. Setup files: `setup_files.py` (the uncommitted maps, app `CLAUDE.md` blocks and `.specs` plan files of a repository: carried into a new worktree, committed by Commit setup files, one readiness block per repo).
+- `engine/` modules split out of `run_loop.py` (it stays the entry point and re-exports them): `loop_io.py`, `claude_accounts.py`, `limit_waits.py`, `claude_turn.py`, `permission_denials.py`, `worktree_state.py`, `worktrees.py`, `auto_answers.py`, `turn_gates.py`, `preflight_checks.py`, `loop_cli.py`. Isolation and access: `runtime_isolation.py` (bundle, skills allowlist, inline settings, kill switch) and `access_report.py` (`harness.py doctor --access`).
 - `demo/`: scripted demo (never runs a real loop). `composition.py` is the composition root.
 
 ## Frontend (`app/frontend/src/`)
@@ -41,14 +42,15 @@ docs/                      repo-level docs (media; codebase/ = these maps)
 
 ## Where Things Live
 **A new HTTP route:** controller in `api/controllers/`, service in `services/`, file access in `repositories/`, wired in the module's `build_*_module` and `composition.py`; document in `app/docs/API.md`.
-**Repositories, workspace and setup files:** `services/repo_registry_service.py` (list, role, reason), `workspace_service.py` (`GET workspace`, branches, setup state), `setup_commit_service.py` + `api/controllers/setup_commit_controller.py` (Commit setup files and push), `engine/setup_files.py`, base branch and carry in `engine/run_loop.py` (`choose_base`, `carry_setup_into`).
+**Repositories, workspace and setup files:** `services/repo_registry_service.py` (list, role, reason), `workspace_service.py` (`GET workspace`, branches, setup state), `setup_commit_service.py` + `api/controllers/setup_commit_controller.py` (Commit setup files and push), `engine/setup_files.py`, base branch and carry in `engine/worktrees.py` (`choose_base`, `carry_setup_into`).
 **Monorepo subprojects:** `services/subprojects_service.py` (list, Conformance), `subproject_validation_service.py`, `subproject_map_service.py` (parallel map queue), `system_map_service.py`, `map_job_runner.py` (every map job), `code_inventory_service.py`, `context_block_service.py`; routes in `api/controllers/subprojects_controller.py`; front end `pages/panel/subprojects.js` and `components/subprojects_table.js`.
 **Loop behavior:** prompt in `plugin/skills/orchestrator/` (SKILL.md, references/); runtime in `engine/`.
-**Agent write limits / safety:** `plugin/skills/orchestrator/hooks/guard.py`, `infrastructure/workspace_file_guard.py`.
+**Agent write limits / safety:** `plugin/skills/orchestrator/hooks/guard.py` (profiles, `mcp-allowlist`, `skill-allowlist`, `guard.log` audit lines), `infrastructure/workspace_file_guard.py`, `engine/runtime_isolation.py` (what an app `claude -p` loads), `engine/access_report.py`.
+**Instant chat (job preparation):** `services/claude_job_service.py` (`ClaudeJobCommand.before_start`, `ClaudeJobError` with `code`, `on_prepare_failed`), `planning_service.prepare_reply`, `follow_up_service`; gates cache in `project_progress_service` (`read_cached_planning_gates`).
 **A panel screen:** `app/frontend/src/pages/panel/`; styles in `styles/`.
 **Project templates:** `app/templates/`.
 **Tests:** `app/backend/tests/{api,engine,infra,demo}`; hook tests next to `guard.py`.
-**Run settings, spend cap, decisions, wrap-up:** ROADMAP header parser `domain/roadmap_settings.py`; `loop_control_service.py` (`loop/settings`, `loop/raise-limit`, `read_delivery`); `engine/run_loop.py` (`--max-cost`, `--orchestrator-model`, critical pause); `engine/decisions.py`; `decisions_service.py`, `wrap_up_service.py`, `follow_up_service.py`.
+**Run settings, spend cap, decisions, wrap-up:** ROADMAP header parser `domain/roadmap_settings.py`; `loop_control_service.py` (`loop/settings`, `loop/raise-limit`, `read_delivery`); `engine/run_loop.py` and `engine/turn_gates.py` (`--max-cost`, `--orchestrator-model`, critical pause); `engine/decisions.py`; `decisions_service.py`, `wrap_up_service.py`, `follow_up_service.py`.
 
 ## Special Directories
 - `app/backend/tests/engine/fixtures/`: CLI fixtures. `engine/local_ext/`: machine-local extensions, gitignored.

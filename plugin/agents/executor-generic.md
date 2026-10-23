@@ -1,7 +1,7 @@
 ---
 name: executor-generic
 description: Implements ONE feature that is clearly neither backend nor frontend (infra, script, config, docs, migration, integration). Receives the domain skill from the orchestrator's prompt. Never runs git. Used by the /orchestrator skill.
-tools: Read, Write, Edit, Glob, Grep, Bash, Skill
+tools: Read, Write, Edit, Glob, Grep, Bash, Skill, mcp__mcp-mysql-dev__mysql_query
 model: sonnet
 ---
 

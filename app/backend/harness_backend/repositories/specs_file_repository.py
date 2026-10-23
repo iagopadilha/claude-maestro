@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import threading
+import time
 from typing import Protocol
 
 from ..domain.project_errors import PathOutsideSpecsError
@@ -23,6 +24,8 @@ import run_hints  # noqa: E402  (How to run section of CLAUDE.md)
 import test_env_fallback  # noqa: E402  (default .env.test from the machine-level TEST values)
 
 TEXT_ENCODING = "utf-8"
+REPLACE_RETRIES = 20  # x REPLACE_RETRY_SECONDS: up to ~1 s for a reader to let go of the file
+REPLACE_RETRY_SECONDS = 0.05
 
 
 def list_test_environment_problems(work_dir, with_e2e=False):
@@ -121,7 +124,14 @@ class SpecsFileRepository:
         with self.write_lock:
             with open(temporary, "wb") as handle:
                 handle.write(content)
-            os.replace(temporary, path)
+            for attempt in range(REPLACE_RETRIES):  # Windows: the replace fails while a reader (a poll) holds the target open
+                try:
+                    os.replace(temporary, path)
+                    return
+                except PermissionError:
+                    if attempt == REPLACE_RETRIES - 1:
+                        raise
+                    time.sleep(REPLACE_RETRY_SECONDS)
 
     def create_file_if_missing(self, path, text):
         """True if it created the file; False if it already existed (never overwrites)."""

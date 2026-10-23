@@ -1,4 +1,5 @@
 """Roadmap: read, approval (accepted by the engine --check) and jobs of the FAKE claude."""
+from tests import settings_text
 import json
 import os
 import time
@@ -147,7 +148,7 @@ class TestClaudeJobs(ProjectsTestCase):
             return self.read_claude_calls()[-1]["argv"]
 
         def profile(argv):
-            command = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            command = json.loads(settings_text(argv))["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
             return command.rsplit("--profile ", 1)[1]
 
         def tools(argv, flag, stop):
@@ -204,7 +205,7 @@ class TestClaudeJobs(ProjectsTestCase):
         argv = self.read_claude_calls()[-1]["argv"]
         self.assertEqual(argv[argv.index("-p") + 1], "/orchestrator map --inventory .specs/project/loop/internal/inventory/_root.json")  # INV-06
         self.assertIn("--strict-mcp-config", argv, "mapping runs without MCP")
-        hook_command = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        hook_command = json.loads(settings_text(argv))["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         self.assertTrue(hook_command.endswith('guard.py" --profile spec'), "the map agents write only inside .specs/ and docs/codebase/ (PreToolUse hook)")
         self.assertTrue(os.path.isfile(os.path.join(repo, "docs", "codebase", "STACK.md")))
         self.assertFalse(os.path.exists(os.path.join(repo, ".specs", "codebase", "STACK.md")), "the map is no longer under .specs/")

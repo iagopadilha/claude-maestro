@@ -127,7 +127,12 @@ async function chatSend(text, again) {
     const r = await ctx.api.post('chat/send', { thread: c.thread, scope: { type: sc.type, agent_id: sc.agent_id, turn: sc.turn }, text });
     if (c.job !== job) return;
     c.thread = r.thread || c.thread; job.id = r.job; chatPoll(sc.key, job);
-  } catch (e) { if (c.job === job) { c.job = null; c.err = e.message; chatRefresh(); } }
+  } catch (e) {
+    if (c.job !== job) return;
+    c.job = null; c.err = e.message;
+    if (!again) { const box = $('cp-text'); if (box && !box.value) box.value = text; } // the text goes back only if the user typed nothing new
+    chatRefresh();
+  }
 }
 function chatRetry(key) { const c = getChat(key); if (c.lastQ) chatSend(c.lastQ, true); }
 function chatPoll(key, job) {

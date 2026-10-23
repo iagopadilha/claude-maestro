@@ -9,7 +9,6 @@ import os
 from ..api.controllers.planning_controller import PlanningController
 from ..api.controllers.project_controller import ProjectController
 from ..api.controllers.roadmap_controller import RoadmapController
-from ..api.controllers.spec_change_controller import SpecChangeController
 from ..api.controllers.specs_controller import SpecsController
 from ..api.controllers.subprojects_controller import SubprojectsController
 from ..api.controllers.test_environment_controller import TestEnvironmentController
@@ -19,7 +18,6 @@ from ..infrastructure.process_runner import ProcessRunner
 from ..infrastructure.workspace_file_guard import WorkspaceFileGuard
 from ..repositories.planning_thread_repository import PlanningThreadRepository
 from ..repositories.project_repository import ProjectRepository
-from ..repositories.spec_change_thread_repository import SpecChangeThreadRepository
 from ..repositories.specs_file_repository import SpecsFileRepository
 from ..repositories.subprojects_file_repository import SubprojectsFileRepository
 from ..repositories.test_environment_repository import TestEnvironmentRepository
@@ -36,7 +34,6 @@ from .project_progress_service import ProjectProgressService
 from .project_service import ProjectService
 from .readiness_service import ReadinessService
 from .roadmap_service import RoadmapService
-from .spec_change_service import SpecChangeService
 from .spec_file_service import SpecFileService
 from .loop_worktree_removal_service import LoopWorktreeRemovalService
 from .specs_reset_service import SpecsResetService
@@ -161,8 +158,6 @@ def build_projects_module(config, log, get_app_url, folder_dialog_argv=None, job
                                        project_capabilities_service=project_capabilities_service, readiness_service=readiness_service)
     planning_import_service = PlanningImportService(specs_file_repository, planning_service, log)
     project_progress_service.coverage_recorder = planning_import_service.record_coverage
-    spec_change_service = SpecChangeService(SpecChangeThreadRepository(), specs_file_repository, project_progress_service,
-                                            claude_job_service, claude_client, WorkspaceFileGuard(), log)
     spec_file_service = SpecFileService(specs_file_repository, project_progress_service, log)
     specs_reset_service = SpecsResetService(specs_file_repository, specs_structure_service, project_progress_service, claude_job_service, log,
                                             LoopWorktreeRemovalService(git_client, specs_file_repository, log))
@@ -176,7 +171,6 @@ def build_projects_module(config, log, get_app_url, folder_dialog_argv=None, job
         RoadmapController(project_service, roadmap_service, claude_job_service, build_shared_claude_call_log_service(config)),
         SpecsController(project_service, spec_file_service),
         PlanningController(project_service, planning_service, planning_import_service, readiness_service),
-        SpecChangeController(project_service, spec_change_service),
         TestEnvironmentController(project_service, test_environment_service),
         SubprojectsController(project_service, subprojects_service, subproject_validation_service, subproject_map_service,
                               system_map_service, claude_job_service),

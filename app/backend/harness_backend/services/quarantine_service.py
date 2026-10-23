@@ -205,23 +205,28 @@ class QuarantineService:
 
     # ------------------------------------------------ summary job (read-only claude, polled through chat/job/<job>)
     def start_summary(self, context, slug):
-        detail = self.build_detail(context, slug)
-        if detail is None:
+        """Answers at once: only the cheap checks run here; the detail (transcripts, `git status`), the argv and the prompt are built
+        in the job thread (`run_summary_job`)."""
+        if self.build_detail_or_none(context, slug) is None:
             return 404, {"ok": False, "error": NOT_QUARANTINED_ERROR}
         job_id, reason = self.chat_job_repository.reserve_job(context.project.id, SUMMARY_JOB_THREAD_PREFIX + slug, MAX_CONCURRENT_JOBS)
         if job_id is None:
             return 409, {"ok": False, "error": "a summary of this feature is already being written" if reason == THREAD_BUSY_REASON
                          else busy_jobs_error()}
-        argv = self.claude_client.build_command(CHAT_MODEL, CHAT_BUDGET_USD, CHAT_ALLOWED_TOOLS, CHAT_DISALLOWED_TOOLS, no_mcp=True)
-        stdin_text = READ_ONLY_PREFIX + "\n\n" + build_context_text(detail, context.work_dir) + "\n\n" + SUMMARY_INSTRUCTION
-        run_dir = context.work_dir if os.path.isdir(context.work_dir) else context.repo_path
         self.log.info("quarantine_summary_started", project=context.project.id, job=job_id, feature=slug)
-        threading.Thread(target=self.run_summary_job, args=(context, job_id, detail, argv, stdin_text, run_dir), daemon=True).start()
+        threading.Thread(target=self.run_summary_job, args=(context, job_id, slug), daemon=True).start()
         return 202, {"ok": True, "job": job_id}
 
-    def run_summary_job(self, context, job_id, detail, argv, stdin_text, run_dir):
+    def run_summary_job(self, context, job_id, slug):
         result = {"state": JOB_STATE_ERROR, "reply": None, "cost_usd": None, "error": UNEXPECTED_FAILURE, "thread": None}
         try:
+            detail = self.build_detail(context, slug)
+            if detail is None:  # unblocked between the request and the job
+                result["error"] = NOT_QUARANTINED_ERROR
+                return
+            argv = self.claude_client.build_command(CHAT_MODEL, CHAT_BUDGET_USD, CHAT_ALLOWED_TOOLS, CHAT_DISALLOWED_TOOLS, no_mcp=True)
+            stdin_text = READ_ONLY_PREFIX + "\n\n" + build_context_text(detail, context.work_dir) + "\n\n" + SUMMARY_INSTRUCTION
+            run_dir = context.work_dir if os.path.isdir(context.work_dir) else context.repo_path
             with call_kind("quarantine"):
                 returned = self.claude_client.run_prompt(argv, run_dir, stdin_text, self.timeout_seconds)
             if returned["ok"]:

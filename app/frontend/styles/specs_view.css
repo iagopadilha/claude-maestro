@@ -5,13 +5,11 @@
 .sv-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
 .sv-hint{margin-left:auto;}
 .sv-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(190px,270px) minmax(0,1fr);grid-template-rows:minmax(0,1fr);gap:10px;}
-.sv-body>.rc{grid-column:1/-1;min-height:0;}
 .sv-side{display:flex;flex-direction:column;gap:6px;min-height:0;overflow:auto;border:1px solid var(--line2);border-radius:8px;background:var(--panel);padding:8px;}
 .sv-side .files-side-h{position:sticky;top:-8px;background:var(--panel);padding:2px 0;}
 .sv-side .frow{min-width:0;}
 .sv-side .frow .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .sv-side .frow.sel{box-shadow:inset 2px 0 0 var(--amber);}
-.sv-side .rc-stage .small-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .sv-main{min-height:0;min-width:0;overflow:auto;border:1px solid var(--line2);border-radius:8px;background:var(--panel);padding:12px 14px;}
 .sv-detail{display:flex;flex-direction:column;gap:12px;min-width:0;}
 .sv-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}

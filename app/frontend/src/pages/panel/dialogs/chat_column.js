@@ -25,16 +25,26 @@ function conversationFor(scopeKey) {
 
 const notifyListeners = (conversation) => conversation.listeners.forEach((listener) => listener());
 
-/** Sends one question and waits for the answer. Lives at module level so it survives the dialog being closed meanwhile. */
-async function sendQuestion(conversation, scope, text, isRetry) {
+/** Sends one question and waits for the answer. Lives at module level so it survives the dialog being closed meanwhile.
+ *  `restoreText(text)` (optional) runs when the POST itself fails: it puts the text back into the input if the user typed nothing new. */
+async function sendQuestion(conversation, scope, text, isRetry, restoreText) {
   if (conversation.pending) return;
   conversation.error = null;
   conversation.lastText = text;
   if (!isRetry) conversation.messages.push({ role: 'user', text });
   conversation.pending = { startedAt: Date.now() };
   notifyListeners(conversation);
+  let sent;
   try {
-    const sent = await ctx.api.post('chat/send', { thread: conversation.thread, scope, text });
+    sent = await ctx.api.post('chat/send', { thread: conversation.thread, scope, text });
+  } catch (error) {
+    conversation.error = error.message;
+    conversation.pending = null;
+    if (restoreText) restoreText(text);
+    notifyListeners(conversation);
+    return;
+  }
+  try {
     conversation.thread = sent.thread || conversation.thread;
     const finished = await followJob(ctx.api, 'chat/job/' + encodeURIComponent(sent.job), { intervalMs: CHAT_POLL_INTERVAL_MS, giveUpMs: CHAT_GIVE_UP_MS }).promise;
     if (finished.state === 'ok') {
@@ -81,15 +91,17 @@ export function ChatColumn({ chat }) {
     if (element) element.scrollTop = element.scrollHeight;
   }, [messageCount, isPending, conversation.error]);
 
-  const ask = (text) => {
+  const ask = (text, restoreText) => {
     const question = String(text == null ? '' : text).trim();
     if (!question || conversation.pending) return false;
-    sendQuestion(conversation, chat.scope, question, false);
+    sendQuestion(conversation, chat.scope, question, false, restoreText);
     return true;
   };
+  // the input is cleared and the message shown BEFORE the POST goes out (sendQuestion pushes it synchronously); a failed POST puts the text back
+  const putBackInInput = (text) => { const input = inputRef.current; if (input && !input.value) input.value = text; };
   const sendFromInput = () => {
     const input = inputRef.current;
-    if (input && ask(input.value)) input.value = '';
+    if (input && ask(input.value, putBackInInput)) input.value = '';
   };
   const onInputKeyDown = (event) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendFromInput(); }

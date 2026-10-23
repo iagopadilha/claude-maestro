@@ -8,14 +8,15 @@ No database, no queue, no inbound webhooks. Everything is local files, subproces
 ## Claude Code CLI
 
 **Purpose:** executes every loop turn, planning and chat (`claude -p ... --output-format stream-json --verbose`; its `rate_limit_event` gives the 5-hour and weekly usage).
-**Implementation:** `infrastructure/claude_client.py` (argv builder, no shell, env without secrets), `engine/cli_output.py` (tolerant parser), `services/claude_job_service.py`.
-**Configuration:** binary from app config (`config/app_config.py`); `harness.py doctor` checks it is on PATH.
+**Implementation:** `infrastructure/claude_client.py` (argv builder, no shell, env without secrets), `engine/claude_turn.py` (argv of a loop turn), `engine/runtime_isolation.py` (isolation flags, bundle, skills allowlist), `engine/cli_output.py` (tolerant parser), `services/claude_job_service.py` (jobs, `before_start`, coded errors).
+**Isolation:** every `claude -p` runs with `--setting-sources project,local`, `--add-dir=<data dir>/runtime/bundle` (the 8 plugin agents and the allowlisted skills only) and `--settings <data dir>/runtime/settings-<hash>.json` (the guard hook plus the user's `autoMode`), so the user's plugins, skills, hooks and plugin MCP servers do not load. `"loop_isolation": false` in `~/.loop-harness/config.json` turns it off. `harness.py doctor --access` probes the real argv (`init` event only) and flags anything outside the allowlists.
+**Configuration:** binary from app config (`config/app_config.py`, `claude_binary`, `claude_fallback_binaries`); extra skills for every profile in `loop_extra_skills`; `harness.py doctor` checks the binary is on PATH.
 **Authentication:** the user's own Claude subscription; no API token.
 
 ## MCP servers
 
-**Purpose:** sessions run with `--strict-mcp-config` and an empty config by default. A project may opt in (`ACCESS.json` `grafana_read`) to read-only Grafana/Loki.
-**Implementation:** `engine/grafana_access.py` copies only the user's `grafana` definition from `~/.claude.json` into `<data dir>/.secrets/`, with an allow list of read tools and a deny list of write tools. `engine/access_settings.py` holds the per-project opt-in.
+**Purpose:** sessions run with `--strict-mcp-config` and a generated config that holds only the read access the user already has. No plugin MCP server joins an isolated session.
+**Implementation:** `engine/mcp_access.py` copies only the user's `grafana`, `mcp-mysql-dev` and `mcp-mysql-prod` definitions from `~/.claude.json` into `<data dir>/.secrets/mcp-access.json`, with read tools allowed and known writers denied; a server that is not configured is simply absent. (`engine/access_settings.py` and `ACCESS.json` are legacy: their keys are ignored.) On top of that the guard's `mcp-allowlist` rule (isolated or headless sessions only) denies any `mcp__*` tool outside the profile's list: Grafana reads for every profile, DEV SQL for the querying profiles, PROD SQL only for `orchestrator` and `planning`, and production SQL never writes (`prod-sql-write`). Agents that query list the DEV tool in their `tools:` (`executor-back`, `executor-generic`, `verifier`, `spec-writer`).
 **Authentication:** the user's own MCP credentials; content never reaches argv, logs or responses.
 
 ## Git and GitHub
@@ -43,6 +44,7 @@ No database, no queue, no inbound webhooks. Everything is local files, subproces
 
 **Purpose:** the plugin's guard hook blocks unsafe tool calls in agent sessions.
 **Implementation:** `plugin/hooks/hooks.json` (PreToolUse, `guard.py --profile auto`), `plugin/skills/orchestrator/hooks/guard.py`; app side in `config/skill_locator.py`, `services/guard_event_service.py`. Contract in `app/docs/SKILL_BRIDGE.md`.
+**Allowlists:** `skill-allowlist` reads the table the engine writes to `<data dir>/runtime/skills-allowlist.json` (`LOOP_SKILLS_FILE`); allowed MCP and Skill calls are audited as `allow` lines in `guard.log`, which the panel's guard feed ignores (it counts blocks only).
 
 ## Test environment credentials
 

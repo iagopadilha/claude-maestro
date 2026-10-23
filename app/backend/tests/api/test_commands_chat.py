@@ -149,8 +149,10 @@ class ChatTests(CommandsTestCase):
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
         self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "1")
         allowed = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
-        denied = argv[argv.index("--disallowedTools") + 1:argv.index("--strict-mcp-config")]
+        denied = argv[argv.index("--disallowedTools") + 1:argv.index("--setting-sources")]
         self.assertEqual((allowed, denied), (["Read", "Grep", "Glob"], ["Bash", "Edit", "Write", "NotebookEdit"]))
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "project,local")  # runtime isolation (default on) sits between the tools and the MCP flags
+        self.assertLess(argv.index("--settings"), argv.index("--strict-mcp-config"))
         self.assertEqual(argv[argv.index("--strict-mcp-config") + 1:], ["--mcp-config", '{"mcpServers":{}}'])
         self.assertNotIn("--resume", argv)
         self.assertFalse(any("SECRET-IN-THE-QUESTION" in item for item in argv), "the user's text never goes on the command line")

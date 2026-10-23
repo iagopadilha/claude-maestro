@@ -1,0 +1,34 @@
+/* Settings dialog (components/settings_dialog.js): one section per setting. Colors only from the tokens of base.css. */
+.set-btn{display:inline-flex;align-items:center;gap:6px;}
+.set-gear{flex:none;}
+.dlg-settings .dlg-body{gap:0;}
+.set-list{display:flex;flex-direction:column;}
+.set-row{display:flex;flex-direction:column;gap:6px;padding:14px 0;border-top:1px solid var(--line);}
+.set-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.set-label{font-size:13px;font-weight:600;color:var(--text);}
+.set-tag{font:500 10px var(--mono);letter-spacing:.04em;text-transform:uppercase;padding:1px 6px;border-radius:999px;border:1px solid var(--line3);color:var(--muted);}
+.set-restart{color:var(--amber);border-color:var(--amber-line);background:var(--amber-bg);}
+.set-custom{color:var(--cyan);border-color:var(--blue-line);background:var(--blue-bg);}
+.set-desc{margin:0;font-size:12px;line-height:1.5;color:var(--text2);}
+.set-edit{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;}
+.set-edit .set-input{flex:1 1 220px;min-width:0;width:auto;}
+.set-edit textarea.set-input{min-height:64px;}
+.set-toggle{min-height:28px;}
+.set-when{font-size:11px;}
+.set-note{color:var(--amber);}
+.set-caveman{display:flex;flex-direction:column;gap:8px;margin-top:4px;padding:10px 12px;border:1px solid var(--line2);border-radius:8px;background:var(--panel0);}
+.set-nodata{font-size:12px;color:var(--text2);}
+.set-compare{border-collapse:collapse;font-size:12px;width:100%;max-width:420px;}
+.set-compare th,.set-compare td{padding:4px 8px;text-align:left;border-bottom:1px solid var(--line);}
+.set-compare thead th{font:500 10px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--dim);}
+.set-compare tbody th{font-weight:500;color:var(--text2);}
+.set-info{padding-top:14px;border-top:1px solid var(--line);}
+.set-info-list{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px;margin:0;font-size:12px;}
+.set-info-list dt{color:var(--muted);}
+.set-info-list dd{margin:0;color:var(--text2);overflow-wrap:anywhere;font-size:11px;}
+@media (max-width:600px){
+  .set-btn span{display:inline;}
+  .set-info-list{grid-template-columns:1fr;gap:0;}
+  .set-info-list dd{margin-bottom:6px;}
+  .set-edit .set-input{flex-basis:100%;}
+}

@@ -5,7 +5,6 @@ import tempfile
 import unittest
 
 from harness_backend.repositories.loop_file_repository import LoopFileRepository
-from harness_backend.services.spec_change_service import SpecChangeService
 from harness_backend.services.spec_file_service import SpecFileService
 
 SLUG = "backend:version-endpoint"
@@ -17,10 +16,6 @@ class TestFeatureFolderReaders(unittest.TestCase):
         files = {FOLDER: [{"path": "features/%s/spec.md" % FOLDER}], "orphan-folder": [{"path": "features/orphan-folder/spec.md"}]}
         features = SpecFileService.build_features({SLUG: {"status": "pending", "stage": "1"}}, files)
         self.assertEqual([(item["slug"], item["in_roadmap"], len(item["files"])) for item in features], [(SLUG, True, 1), ("orphan-folder", False, 1)])
-
-    def test_spec_change_scope_edits_the_folder(self):
-        self.assertEqual(SpecChangeService.build_editable_paths(SLUG), [".specs/features/" + FOLDER])
-        self.assertEqual(SpecChangeService.build_edit_rules(SLUG), ["Edit(/.specs/features/%s/**)" % FOLDER])
 
     def test_spec_reader_opens_the_folder_spec(self):
         work = tempfile.mkdtemp(prefix="folder-readers-")

@@ -1,6 +1,7 @@
 """SubprojectValidationService: argv (model ceiling, guard profile), budget limits, refusals, and the validation and merge of the
 AI suggestion (skip, stack change, rejected entries, confirmed stays false, failure keeps the script list). No real claude runs:
 a fake job service runs the job synchronously with a fake claude that writes (or breaks) the suggestion file."""
+from tests import settings_text
 import json
 import os
 import shutil
@@ -102,7 +103,7 @@ class SubprojectValidationTests(unittest.TestCase):
         argv = command.argv
         self.assertEqual(job_type, JOB_TYPE_SUBPROJECTS)
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
-        self.assertIn("--profile subprojects", argv[argv.index("--settings") + 1])
+        self.assertIn("--profile subprojects", settings_text(argv))
         self.assertNotIn("--max-budget-usd", argv)
         self.assertIn("--strict-mcp-config", argv)
         prompt = argv[argv.index("-p") + 1]

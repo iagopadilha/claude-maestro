@@ -85,7 +85,7 @@ class TestCostCapPause(LoopCase):
         self.assertEqual(run_loop.cost_cap_reason(0.3, 0.25), "cost cap reached: US$ 0.30 of 0.25")
 
     def test_default_option_is_50(self):
-        source = open(run_loop.__file__, encoding="utf-8").read()
+        source = open(os.path.join(os.path.dirname(run_loop.__file__), "loop_cli.py"), encoding="utf-8").read()  # the parser lives in loop_cli.py
         self.assertEqual(float(re.search(r'"--max-cost", type=float, default=([\d.]+)', source).group(1)), 50.0)
 
 

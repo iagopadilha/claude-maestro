@@ -26,7 +26,7 @@ class StubPlanning:
     def __init__(self):
         self.messages = []
 
-    def send_message(self, context, message):
+    def send_message(self, context, message, on_prepare_failed=None):
         self.messages.append(message)
         return {"ok": True, "job_id": "job-1"}
 

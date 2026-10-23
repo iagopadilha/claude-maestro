@@ -12,6 +12,8 @@
   python harness.py state|notify|summary|deliver|rules|audit|graph|classify|scale|inventory|tasks [args...]   passed on to the engine scripts
       tasks waves <slug> [--max N] | set <slug> <Tn> <status> [--note] | mirror <slug>   task waves of one feature (--root DIR)
   python harness.py doctor [--json] [--project <repo>]                   diagnostics (the same as GET /api/app/info)
+  python harness.py doctor --access [--project <repo>] [--json] [--no-probe]   what a `claude -p` can reach: MCP, skills, bundle, probe, guard.log
+      (the probe starts the real isolated claude with a 0.05 USD cap and kills it at the init event; always exit 0, it is a report)
   python harness.py install [--data-dir D] [--skill-dir S]   writes ~/.loop-harness/config.json (app_root_dir and the skill
                                                       folder); this is how the skill finds the app. Does not touch ~/.claude.
 Exit code: the one of the script passed on; `serve` 0 when it ends; `doctor` 1 when there is a problem.
@@ -166,8 +168,15 @@ def run_doctor(args):
     parser.add_argument("--json", action="store_true", help="JSON output")
     parser.add_argument("--data-dir", default="")
     parser.add_argument("--project", default="", help="repo folder whose loop files tell the 5-hour/weekly usage (default: usage unknown)")
+    parser.add_argument("--access", action="store_true", help="access report (MCP, skills, bundle, probe of the isolated claude, guard.log)")
+    parser.add_argument("--no-probe", action="store_true", help="with --access: do not start claude")
     options = parser.parse_args(args)
     apply_data_dir(options.data_dir)
+    if options.access:
+        import access_report
+        report = access_report.build_report(options.project or os.getcwd(), probe=not options.no_probe)
+        print(json.dumps(report, ensure_ascii=False, indent=2) if options.json else access_report.format_report(report))
+        return EXIT_OK
     diagnostics = build_diagnostics([os.path.abspath(options.project)] if options.project else [])
     if options.json:
         print(json.dumps(diagnostics, ensure_ascii=False, indent=2))

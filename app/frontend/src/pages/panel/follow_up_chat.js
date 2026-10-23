@@ -54,7 +54,9 @@ export function FollowUpChat({ followUp, decisions, reload, locked }) {
   const draft = data.draft || {};
   const thread = data.thread || {};
   const caps = data.caps || {};
-  const messages = list(thread.messages);
+  const [pending, setPending] = useState(null); // the message being sent: shown at once, until the server's thread has it
+  const serverMessages = list(thread.messages);
+  const messages = pending && serverMessages.length === pending.base ? [...serverMessages, { role: 'user', text: pending.text, decisions: pending.decisions }] : serverMessages;
   const [text, setText] = useState('');
   const [picked, setPicked] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -68,9 +70,17 @@ export function FollowUpChat({ followUp, decisions, reload, locked }) {
   const choices = list(decisions).filter((item) => !item.reviewed || picked.includes(item.id) || item.change_requested);
   const toggle = (id) => { touched.current = true; setPicked((current) => (current.includes(id) ? current.filter((x) => x !== id) : [...current, id])); };
   const call = async (route, body, doneText) => {
+    const isSend = route === 'follow-up/send', before = { text, picked };
     setBusy(true);
-    try { await ctx.api.post(route, body, 30000); toast(doneText, 'ok'); if (route === 'follow-up/send') { touched.current = false; setText(''); setPicked([]); } await reload(); schedulePoll(300); renderAll(); }
-    catch (failure) { toast((failure.status === 409 ? 'Not right now: ' : 'Not done: ') + failure.message, 'err'); await reload(); } finally { setBusy(false); }
+    if (isSend) { // optimistic: the input is cleared and the message shown before the POST goes out (`touched` keeps the saved draft from refilling it)
+      touched.current = true; setText(''); setPicked([]); setPending({ base: serverMessages.length, text: body.text, decisions: body.decisions });
+    }
+    try { await ctx.api.post(route, body, 30000); toast(doneText, 'ok'); await reload(); schedulePoll(300); renderAll(); }
+    catch (failure) {
+      // the text goes back only when the user typed nothing new meanwhile
+      if (isSend) { setText((current) => current || before.text); setPicked((current) => (current.length ? current : before.picked)); }
+      toast((failure.status === 409 ? 'Not right now: ' : 'Not done: ') + failure.message, 'err'); await reload();
+    } finally { setBusy(false); if (isSend) setPending(null); }
   };
 
   const sendGate = data.can_send || {}, continueGate = data.can_continue || {};

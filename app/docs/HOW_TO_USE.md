@@ -12,6 +12,7 @@ python <app>/harness.py doctor      # checks the skill, the guard blocking `git 
 - Python 3.10+ only (standard library). No pip, no npm.
 - `install` is how the skill finds the app (`app_root_dir`). It does not touch `~/.claude`. The skill is found in this order: `LOOP_SKILL_DIR`, `orchestrator_skill_dir` in `config.json`, the plugin next to the app in this clone (`<repo>/plugin/skills/orchestrator`), the installed plugin (Claude Code plugin cache). Skill somewhere else: `--skill-dir <folder>` or `LOOP_SKILL_DIR`.
 - `doctor` shows only channel **names** and whether they are configured, never values. It exits with code 1 when there is a problem.
+- `doctor --access` is a separate read-only report of what the `claude -p` of the app can reach (MCP, skills, bundle, guard log); see "Isolation and access" below.
 
 ## In 1 minute (read this first)
 
@@ -117,6 +118,11 @@ A missing line takes the default shown; an invalid value takes the default and s
 ### Orchestrator model
 The orchestrator turn of the loop runs on **Opus** (`claude --model opus`, the alias of the latest Opus), the subagents on **Sonnet**. To change the orchestrator model put `"orchestrator_model": "<alias or model id>"` in `~/.loop-harness/config.json` (`""` = pass no `--model`, the account default applies); the Start dialog shows what will be used. Panel jobs (chat, planning, follow-up, maps) never go above Sonnet.
 
+### Settings (the Settings button)
+The **Settings** button (gear icon) in the hub header and in the project header opens one dialog with the app settings of `~/.loop-harness/config.json`: isolation, caveman mode, extra skills, orchestrator model, Claude command and fallbacks, parallel subproject maps, idle shutdown, the giant-file limits and the output folder, plus the read-only data folder, plugin folder, guard path and port range. A switch saves when you flip it; the other fields show **Save** once you change them. **Reset to default** removes the key from the file, and a setting you never touch stays out of it. A **restart** tag means the app reads it only at start (restart the app); the others apply to the next `claude -p`.
+
+**Caveman mode** (off by default): with isolation on, it carries your `SessionStart` hook whose command mentions `caveman` (from `~/.claude/settings.json`) into the isolated runs. Without such a hook the row says "Not installed" and cannot be turned on. Each loop turn records whether caveman was on (`caveman` in `turns/NNN.json`), and the dialog compares the average cost per turn with and without it over every project's recorded turns ("Not enough data yet" below 3 turns on either side).
+
 ### Demo mode (see the panel before wiring a real repo)
 ```
 python <app>/harness.py demo [--port N] [--no-browser] [--speed S] [--data-dir D] [--loop] [--keep]
@@ -185,6 +191,7 @@ You can leave it running and walk away. There is nothing to answer: if it needs 
 | `harness.py tasks waves <slug> [--max N] \| set <slug> <Tn> <status> [--note TEXT] \| mirror <slug>` | `task_waves.py` | task waves and task status of one feature (`--root DIR`) |
 | `harness.py check <repo> [--json]` | `run_loop.py` | readiness check; `--json` adds one `[check] JSON:` line with the readiness items |
 | `harness.py doctor [--json]` | - | diagnostics (the same as `GET /api/app/info`) |
+| `harness.py doctor --access [--project <repo>] [--json] [--no-probe]` | - | what a `claude -p` of the app can reach: MCP, skills, bundle, probe of the isolated `claude`, `guard.log` summary (see "Isolation and access") |
 
 ## What happens underneath
 - The script creates **once** the worktree `../<project>-worktree-loop` (its own) on a `loop/<date>` branch and copies `.specs/` and `CLAUDE.md` there. Your folder and your branch are not touched. A multi-repo project gets one worktree per repo (see below).
@@ -395,6 +402,29 @@ The engine exports `LOOP_HEADLESS=1` to the loop session. In it every `git push`
 **Turn environment.** The engine reads the app `.env` into its own process, but the loop turn does not get the secrets from it: a variable whose value came from the app `.env` and whose name contains `PASSWORD`, `PASSWD`, `SECRET`, `TOKEN`, `API_KEY`, `APIKEY`, `PRIVATE_KEY`, `WEBHOOK` or `CREDENTIAL` is left out (notices are sent by the engine, not by the turn). A real variable you had with a different value, `TEST_USER_*` and any `$NAME` / `${NAME}` written in the project's `TEST-ENVIRONMENT.md` stay. On the first turn of a run the log shows `[loop] turn environment: N secret-looking variable(s) from the app .env left out (NAMES)`: names only, never a value. If the filter fails, the turn gets the full environment and one warning is printed.
 
 **Your own secret paths.** `GUARD_SECRET_PATHS` (a variable or a line in the app `.env`, paths separated by commas) adds files and folders the guard treats like the built-in credential files: reading or changing them from the loop is blocked by the `secrets` rule. Use it for private keys or credential files specific to your machine.
+
+## Isolation and access (what a `claude -p` of the app can reach)
+Every `claude -p` the app starts (loop turns, correction and resume turns, planning, import, chat, follow-up, quarantine summary, roadmap, map jobs) runs **isolated from your Claude profile**: `--setting-sources project,local` plus a bundle with only the 8 plugin agents and the allowlisted skills. Your user plugins, your other skills, your hooks and plugin MCP servers do not load; the project's own `CLAUDE.md` still does, and `~/.claude/CLAUDE.md` does not. The guard hook rides along through `--settings`, and in this mode it also allows only the MCP tools and skills of each profile. How it is built: `ARCHITECTURE.md`, "Runtime isolation". The rules: `MONITOR.md`, "Guard and access".
+
+**See it.** Read only, CLI only (nothing in the panel):
+```
+python <app>/harness.py doctor --access [--project <repo>] [--json] [--no-probe]
+```
+- *static part:* the MCP servers found in your `~/.claude.json` (read tools only), the MCP tools each guard profile may call, the skills allowlist per profile, the bundle (path, agents, skills, and the **skipped** skills that exist neither in `~/.claude/skills` nor in the plugin) and whether isolation is on;
+- *probe:* the real isolated argv with the prompt `reply only: ok`, `--model haiku` and `--max-budget-usd 0.05`; the report reads only the `system/init` event (tools, MCP servers, agents, skills, plugins the process loaded) and kills the process. An account that is refused still prints `init` first, so the probe then costs nothing. Anything outside the allowlists prints as `FLAG: ...`; no flags means everything loaded is inside them. `--no-probe` skips the call (no `claude` is started);
+- *guard.log:* the last 200 lines of the project's `guard.log` counted by decision, rule and agent, and the last 10 denials.
+
+It always exits 0: it is a report, not a gate.
+
+**Skills the loop may load.** The defaults per profile live in `engine/runtime_isolation.py` (`DEFAULT_ALLOWLIST`). To let every profile load an extra skill (for example your company style guide), list it in `~/.loop-harness/config.json`:
+```json
+{"loop_extra_skills": ["idata-guia-estilo"]}
+```
+The skill must exist in `~/.claude/skills/<name>` or in `plugin/skills/<name>`; the next `claude -p` rebuilds the bundle by itself (it rebuilds only when a source changed). A skill named in `.specs/project/SUBPROJECTS.json` (`skill` of a subproject) is added to the `spec` and `executor` profiles of that project without any config. `doctor --access` lists what ended up in the bundle and what was skipped. A skill that is in the bundle but not on a profile's list is still denied for that profile by the guard (`[skill-allowlist]`).
+
+**Turn it off.** `"loop_isolation": false` in `~/.loop-harness/config.json` gives back the old argv exactly: your whole profile loads again, and the skill allowlist is inactive (no `LOOP_SKILLS_FILE`); the MCP allowlist still applies inside the headless loop turns (`LOOP_HEADLESS=1`), and the rest of the guard keeps working. Use it only to compare or to debug a skill that does not load; `doctor --access` prints `isolation OFF` then. Default is on.
+
+**A chat send is instant.** The panel clears the input at submit time and the server answers before the heavy work: the safety snapshot, the prerequisites check and the prompt are built in the job thread. A prerequisite that fails there ends the job as an error with the code `planning_prerequisites` and the panel shows the same message the old refusal gave. While it runs the job record says `progress: "preparing the safety snapshot"`.
 
 ## Push identity
 The push uses the git identity configured on the machine. To require a specific account: `--git-user <account>` or `LOOP_GIT_USER=<account>` in the `.env`. The check verifies it and also reports a plugin hook that points the guard at a path that does not exist on the machine.

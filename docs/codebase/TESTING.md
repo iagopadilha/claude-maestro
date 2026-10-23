@@ -6,7 +6,7 @@
 ## How to run
 - Back end and engine (Python 3.10+, standard library only, `unittest`):
   `python -m unittest discover -s backend/tests -t backend` from `app/` (see `app/README.md`).
-- Plugin guard hook: tests live next to the hook, `plugin/skills/orchestrator/hooks/test_guard.py` and `test_guard_cookbook.py`. How to run them: unclear (no runner documented).
+- Plugin guard hook: tests live next to the hook, `plugin/skills/orchestrator/hooks/test_guard.py` and `test_guard_cookbook.py`; run them with `python -m unittest discover -s plugin/skills/orchestrator/hooks -p "test_guard*.py"` from the repo root.
 - No CI config found (no `.github/workflows`).
 - `pytest` is not installed: every suite, the guard tests included, runs with `python -m unittest discover` (give `-s <folder> -t <top>` as above, or `-s plugin/skills/orchestrator/hooks -p "test_guard*.py"` for the guard).
 
@@ -23,6 +23,15 @@
 ## Doubles
 - `engine/fake_claude.py` stands in for the `claude` CLI; `engine/fake_app.py` for the app. Tests do not call the real model. Scenario keys (JSON) include `argv_log` (a file that gets one JSON line with the whole argv of every call, used to check `--model`) and `decision_lines` (`{"<turn>": ["- [slug] turn=.. level=.. doubt | chose: .. | revert: .."]}`, lines that turn appends to `VALIDATE.md`).
 
+## Isolation, allowlists and instant chat tests
+- Engine: `test_runtime_isolation` (bundle build from plugin and user skills, signature cache and atomic swap, skills allowlist defaults and keys, subproject and `loop_extra_skills`, inline settings with the user's `autoMode`, loop argv with isolation on and the kill switch giving the old argv), `test_access_report` (static part, probe parsing and flags driven by a fake `claude` script that prints an `init` event, `guard.log` summary).
+- Infra: `test_runtime_isolation_client` (`ClaudeClient.build_command` and `run_prompt` with isolation on and off, a job with no `hook_profile` gets `--profile auto`, off is the old argv byte for byte).
+- API: `test_claude_job_before_start` (`before_start` may return `argv`/`stdin_text`, a `ClaudeJobError` ends the job with its `code` and claude never starts), `test_chat_send_latency` (CHT-01: every chat send route times only its handler on a temp repo with 5,000 files and asserts 300 ms; the new files are read once first because the Windows antivirus scan of a fresh file would be measured instead of the app).
+- Guard: `test_guard.py` covers `mcp-allowlist` and `skill-allowlist` per profile, the `plugin:` prefix strip, fail closed on an unreadable skills file, no release through `PERMISSIONS.json`, the `allow` audit lines, and no effect without `LOOP_HEADLESS` / `LOOP_ISOLATED` / `LOOP_SKILLS_FILE`.
+- The access probe is not a test: `python app/harness.py doctor --access` starts the real isolated `claude` (cap US$ 0.05, killed at the `init` event) and flags what is outside the allowlists. It was run once by hand with the configured binary for this feature; a refused account still prints `init`.
+- The `run_loop.py` split is covered by the existing engine suite: the same tests pass before and after, because `run_loop.<name>` is still defined or re-exported.
+- Browser E2E of the panel (demo mode and the fake `claude`, localhost only) was done once with Playwright CLI; findings are in `CONCERNS.md`, screenshots under the git-ignored `.playwright-cli/imagens/`.
+
 ## Loop panel feature tests
 - Back end `api` (run from `app/backend` as `python -m unittest tests.api.<module>`, or from `app` with `discover -s backend/tests/api -t backend -p <file>`): `test_loop_settings`, `test_roadmap_loop_settings_parser`, `test_loop_raise_limit`, `test_decisions_service`, `test_wrap_up_service`, `test_follow_up_service`, `test_codebase_tree`, `test_chat_plan_scope`, `test_feature_routes_wiring`.
 - Engine: `test_decisions`, `test_critical_decision_pause`, `test_cost_cap_pause`, `test_orchestrator_model`, `test_meta_and_paused_status`, `test_close_loop_force_remove`.
@@ -33,7 +42,7 @@
 
 ## Missing
 - Front end (`app/frontend`, Preact ES modules, no npm): no unit or component tests found.
-- Browser e2e: not found in tracked tests (the one-off fake-claude runs above leave only git-ignored Playwright artifacts).
+- Browser e2e: not found in tracked tests (the one-off fake-claude and demo-mode runs above leave only git-ignored Playwright artifacts).
 - Coverage measurement, lint and type-check config: not found.
 - Real end-to-end loop against a live `claude` subscription: not covered (by design, needs the user's account).
 

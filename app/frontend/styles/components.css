@@ -194,7 +194,7 @@
 .conf-d{font-size:12px;color:var(--muted);line-height:1.45;}
 
 /* ---------- why use this panel ---------- */
-.why-diagram{width:100%;height:auto;background:var(--bg);border:1px solid var(--line2);border-radius:8px;padding:6px;}
+.why-diagram{display:block;flex:none;width:100%;height:auto;aspect-ratio:660/92;background:var(--bg);border:1px solid var(--line2);border-radius:8px;padding:6px;}
 .why-list{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;line-height:1.55;color:var(--text2);}
 .why-list strong{color:var(--text);}
 .why-glossary{margin:0;display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;font-size:12px;line-height:1.5;}

@@ -38,6 +38,13 @@ class ClaudeClientCase(unittest.TestCase):
         with open(self.binary, "w", encoding="utf-8") as handle:
             handle.write(FAKE_CLAUDE)
         self.client = ClaudeClient(ProcessRunner(), self.binary)
+        self.data_dir = os.path.join(self.folder, "app-data")  # nothing reads or writes the real ~/.loop-harness
+        os.makedirs(self.data_dir)
+        self.set_variable("LOOP_DATA_DIR", self.data_dir)
+
+    def set_isolation(self, enabled):
+        with open(os.path.join(self.data_dir, "config.json"), "w", encoding="utf-8") as handle:
+            json.dump({"loop_isolation": enabled}, handle)
 
     def set_variable(self, name, value):
         previous = os.environ.get(name)
@@ -65,6 +72,7 @@ class TestBuildCommand(ClaudeClientCase):
         self.assertIn("--strict-mcp-config", argv)
 
     def test_without_optionals_adds_no_empty_flags(self):
+        self.set_isolation(False)  # about empty flags, not about isolation (see test_runtime_isolation_argv)
         argv = self.client.build_command("", 0, no_mcp=False)
         self.assertEqual(argv, [sys.executable, self.binary, "-p", "--output-format", "stream-json", "--verbose"])
 

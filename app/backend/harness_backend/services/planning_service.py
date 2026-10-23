@@ -25,7 +25,7 @@ from ..repositories.loop_command_file_repository import now_iso
 from ..repositories.specs_file_repository import loop_state, run_hints
 import mcp_access  # noqa: E402  (engine folder is on sys.path through specs_file_repository)
 import project_repos  # noqa: E402
-from .claude_job_service import JOB_STATE_ERROR, JOB_STATE_OK, JOB_TYPE_PLANNING, ClaudeJobCommand
+from .claude_job_service import JOB_STATE_ERROR, JOB_STATE_OK, JOB_TYPE_PLANNING, ClaudeJobCommand, ClaudeJobError
 from .planning_gates import PREREQUISITE_GATES, are_gates_ok, are_prerequisites_ok, describe_gates_for_ai, read_roadmap_loop_settings
 from .project_capabilities_service import END_MARKER, PROJECT_FILE_PARTS, START_MARKER, ProjectCapabilitiesService
 from .roadmap_service import extract_open_questions
@@ -76,13 +76,20 @@ ROLE_AI = "ai"
 PUBLIC_MESSAGE_FIELDS = ("role", "text", "at", "cost_usd")
 
 
+class PlanningTurn:
+    """What `prepare_reply` (job thread) hands to `finish_reply`: the safety snapshot taken before claude started."""
+
+    def __init__(self):
+        self.snapshot = None
+
+
 def is_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 class IPlanningService(Protocol):
     def get_planning(self, context) -> dict: ...
-    def send_message(self, context, text) -> dict: ...
+    def send_message(self, context, text, on_prepare_failed=None) -> dict: ...
     def get_planning_job(self, context, job_id) -> dict: ...
     def reset_conversation(self, context, confirm) -> dict: ...
 
@@ -143,6 +150,8 @@ class PlanningService:
             result["reply"] = job.get("reply") or ""
         elif job["state"] == JOB_STATE_ERROR:
             result["error"] = job.get("error") or "claude finished with an error"
+            if job.get("code"):
+                result["code"] = job["code"]
         return result
 
     def get_running_planning_job(self, context):
@@ -150,34 +159,23 @@ class PlanningService:
         return job if job and job.get("type") == JOB_TYPE_PLANNING else None
 
     # ------------------------------------------------ send
-    def send_message(self, context, text):
+    def send_message(self, context, text, on_prepare_failed=None):
+        """Answers at once (CHT-01): only the cheap refusals and the persisting of the user message happen in the request; the gates,
+        test-environment template, credential names file, safety snapshot, MCP access and the argv/prompt are built in the job thread
+        (`prepare_reply`, the job's `before_start`)."""
         message = self.validate_text(text)
         with self.thread_lock:
-            gates = self.ensure_can_send(context)
+            self.ensure_can_send(context)
             work_dir = context.work_dir
             thread = self.planning_thread_repository.read_thread(work_dir)
             session = thread.get("session_id") or ""
-            self.project_progress_service.ensure_test_environment_template(context)  # before the snapshot: it is the app's file, not the AI's
-            names_file = self.test_environment_service.write_credential_names_file(context) if self.test_environment_service else ""
-            snapshot = self.workspace_file_guard.take_snapshot(work_dir, GUARD_IGNORED_PATHS)
-            allowed_tools, disallowed_tools, mcp_config, mcp_tools = self.build_mcp_read_access()
-            argv = self.claude_client.build_command(PLANNING_MODEL, PLANNING_BUDGET_USD, allowed_tools, disallowed_tools,
-                                                    no_mcp=True, resume_session=session, permission_mode=PLANNING_PERMISSION_MODE,
-                                                    hook_profile=PLANNING_HOOK_PROFILE, mcp_config_path=mcp_config)
-            argv += self.build_reference_repo_arguments(context)
-            # every turn: the AI sees which documents and gates are still red, the repositories the app refused and the readiness
-            subprojects = self.project_progress_service.read_subproject_facts(context).get("subprojects")  # None for a single project
-            status = describe_gates_for_ai(gates, work_dir=context.work_dir, subprojects=subprojects,
-                                           loop_settings=read_roadmap_loop_settings(context.work_dir))
-            if names_file:
-                status += "\n\n" + PLANNING_CREDENTIALS_NOTE
-            if mcp_tools:
-                status += PLANNING_MCP_NOTE % ", ".join(mcp_tools)
-            stdin_text = status + "\n\n" + message if session else PLANNING_FIRST_PROMPT + "\n" + status + "\n\n" + message
             thread["messages"].append({"role": ROLE_USER, "text": message, "at": now_iso(), "cost_usd": None})
             self.planning_thread_repository.write_thread(work_dir, thread)
-            command = ClaudeJobCommand(argv, stdin_text, session, timeout_seconds=PLANNING_TIMEOUT_SECONDS,
-                                       finalize=lambda result: self.finish_reply(context, snapshot, result))
+            turn = PlanningTurn()
+            command = ClaudeJobCommand([], "", session, timeout_seconds=PLANNING_TIMEOUT_SECONDS,
+                                       before_start=lambda update_progress: self.prepare_reply(context, session, message, turn),
+                                       on_prepare_failed=lambda failure: self.undo_unsent_message(context, message, on_prepare_failed, failure),
+                                       finalize=lambda result: self.finish_reply(context, turn.snapshot, result))
             try:
                 job = self.claude_job_service.start_job(context.repo_path, JOB_TYPE_PLANNING, command)
             except Exception:
@@ -186,6 +184,44 @@ class PlanningService:
                 raise
         self.log.info("planning_message_sent", project=context.project.id, job=job["id"], resuming_session=bool(session))
         return {"ok": True, "job_id": job["id"]}
+
+    def undo_unsent_message(self, context, message, on_prepare_failed, failure):
+        """The job ended in `before_start` (claude never started): the user message goes out of the thread, as when the old request refused."""
+        with self.thread_lock:
+            thread = self.planning_thread_repository.read_thread(context.work_dir)
+            last = thread["messages"][-1] if thread["messages"] else None
+            if last and last.get("role") == ROLE_USER and last.get("text") == message:
+                thread["messages"].pop()
+                self.planning_thread_repository.write_thread(context.work_dir, thread)
+        if on_prepare_failed:
+            on_prepare_failed(failure)
+
+    def prepare_reply(self, context, session, message, turn):
+        """Job thread, before claude: the heavy part of a send. Returns the final argv and stdin; a red prerequisite gate ends the job as
+        an error with the code `planning_prerequisites` (what the synchronous 409 used to say)."""
+        work_dir = context.work_dir
+        gates = self.project_progress_service.build_planning_gates(context)
+        missing = self.describe_missing_prerequisites(gates)
+        if missing:
+            raise ClaudeJobError(missing, PLANNING_PREREQUISITES_CODE)
+        self.project_progress_service.ensure_test_environment_template(context)  # before the snapshot: it is the app's file, not the AI's
+        names_file = self.test_environment_service.write_credential_names_file(context) if self.test_environment_service else ""
+        turn.snapshot = self.workspace_file_guard.take_snapshot(work_dir, GUARD_IGNORED_PATHS)
+        allowed_tools, disallowed_tools, mcp_config, mcp_tools = self.build_mcp_read_access()
+        argv = self.claude_client.build_command(PLANNING_MODEL, PLANNING_BUDGET_USD, allowed_tools, disallowed_tools,
+                                                no_mcp=True, resume_session=session, permission_mode=PLANNING_PERMISSION_MODE,
+                                                hook_profile=PLANNING_HOOK_PROFILE, mcp_config_path=mcp_config)
+        argv += self.build_reference_repo_arguments(context)
+        # every turn: the AI sees which documents and gates are still red, the repositories the app refused and the readiness
+        subprojects = self.project_progress_service.read_subproject_facts(context).get("subprojects")  # None for a single project
+        status = describe_gates_for_ai(gates, work_dir=context.work_dir, subprojects=subprojects,
+                                       loop_settings=read_roadmap_loop_settings(context.work_dir))
+        if names_file:
+            status += "\n\n" + PLANNING_CREDENTIALS_NOTE
+        if mcp_tools:
+            status += PLANNING_MCP_NOTE % ", ".join(mcp_tools)
+        stdin_text = status + "\n\n" + message if session else PLANNING_FIRST_PROMPT + "\n" + status + "\n\n" + message
+        return {"argv": argv, "stdin_text": stdin_text}
 
     @staticmethod
     def build_mcp_read_access():
@@ -213,19 +249,27 @@ class PlanningService:
         return arguments
 
     def ensure_can_send(self, context):
-        """Order of the refusals: loop running, loop worktree, prerequisites (git/structure/conformance/map), a job running."""
+        """The cheap refusals of the request, in the order of the old ones: loop running, loop worktree, prerequisites (only from the gates
+        computed within the last 10 s: a red one refuses here; with none, the job thread checks them), a job running."""
         if self.project_progress_service.is_loop_running(context):
             raise LoopRunningError("loop running: planning happens with the loop stopped", code=LOOP_RUNNING_CODE)
         if os.path.normcase(os.path.abspath(context.work_dir)) != os.path.normcase(os.path.abspath(context.repo_path)):
             raise LoopWorktreeExistsError("the loop worktree already exists (%s): edit the roadmap in Files" % context.work_dir)
-        gates = self.project_progress_service.build_planning_gates(context)
-        if not are_prerequisites_ok(gates):
-            failing = [gate["label"] for gate in gates if gate["id"] in PREREQUISITE_GATES and not gate["ok"] and not gate["optional"]]
-            raise PlanningGatesError("prerequisites missing before planning: %s" % ", ".join(failing), gates, PLANNING_PREREQUISITES_CODE)
+        cached_gates = self.project_progress_service.read_cached_planning_gates(context)
+        missing = self.describe_missing_prerequisites(cached_gates) if cached_gates is not None else ""
+        if missing:
+            raise PlanningGatesError(missing, cached_gates, PLANNING_PREREQUISITES_CODE)
         if self.claude_job_service.get_running_job(context.repo_path):
             raise JobInProgressError("a reply (or another claude job) is already in progress in this project: wait for it to finish",
                                      code=PLANNING_BUSY_CODE)
-        return gates
+
+    @staticmethod
+    def describe_missing_prerequisites(gates):
+        """The refusal text of the red prerequisite gates ('' when every one is green)."""
+        if are_prerequisites_ok(gates):
+            return ""
+        failing = [gate["label"] for gate in gates if gate["id"] in PREREQUISITE_GATES and not gate["ok"] and not gate["optional"]]
+        return "prerequisites missing before planning: %s" % ", ".join(failing)
 
     def finish_reply(self, context, snapshot, result):
         """Runs in the job thread: undoes changes outside the documents, then records the reply and the session."""
