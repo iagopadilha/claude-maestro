@@ -15,7 +15,7 @@ The process ends on its own when the orchestrator gives its final reply. There i
 |---|---|
 | `--headless` | no user. Do not ask, do not use `AskUserQuestion`, do not end the reply with a question. The checkpoint mode is `autopilot`. |
 | `--turn N` | number of this turn. Goes in `LOOP.json`. |
-| `--wave W` | how many features (lanes) move in parallel per turn (default 1), each with its own agent at every step. Executions only with `PATHS` disjoint from each other and from any `building` feature; otherwise that feature waits (stays `approved`) and the others carry on. |
+| `--wave W` | how many features (lanes) move in parallel per turn (default 3, `Dispatch` in the ROADMAP header), each with its own agent at every step. Executions only with `PATHS` disjoint from each other and from any `building` feature; otherwise that feature waits (stays `approved`) and the others carry on. |
 | `--branch B` | the loop branch. Check `git branch --show-current`; if it is another one, write `error` and stop. |
 | `--e2e` | the user authorized the final flow-validation phase (Phase 6b), headless. |
 | `--lanes a:spec,b:gate,c:execute` | the lanes the **engine** chose (`loop_state.py next`): one per feature, each at ITS OWN step: `spec` (spec-writer), `gate` (spec-reviewer), `execute` (executor, then verifier), `recover` (lost dispatch of a `building`/`speccing` feature, Phase 0). Start each lane at that step and advance it by itself (`SKILL.md`, "Lanes"). |
