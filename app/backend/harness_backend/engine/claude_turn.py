@@ -66,6 +66,11 @@ def isolation_arguments(opts):
     return runtime_isolation.isolation_argv(prepared["bundle"]["path"], runtime_isolation.guard_settings(guard, "auto"))
 
 
+def is_caveman_on():
+    """True when the turn just run carried the user's caveman hooks (`loop_caveman` on, isolation on, a hook installed): recorded in the turn log."""
+    return bool(runtime_isolation.caveman_hooks_to_carry())
+
+
 def isolation_environment(cwd):
     """LOOP_ISOLATED and LOOP_SKILLS_FILE of the turn environment ({} when isolation is off)."""
     config = runtime_isolation.read_config()

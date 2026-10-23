@@ -252,6 +252,65 @@ class TestSettings(World):
         self.assertEqual(iso.isolation_env("/f.json"), {"LOOP_ISOLATED": "1", "LOOP_SKILLS_FILE": "/f.json"})
 
 
+CAVEMAN_HOOK = {"type": "command", "command": 'cat "C:/Users/x/.claude/Caveman-sessionstart.json"'}
+OTHER_HOOK = {"type": "command", "command": "echo hello"}
+
+
+def user_settings_with_caveman():
+    return {"hooks": {"SessionStart": [{"matcher": "startup", "hooks": [OTHER_HOOK, CAVEMAN_HOOK]}, {"hooks": [OTHER_HOOK]}],
+                      "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "caveman-pre"}]}]}}
+
+
+class TestCavemanCarry(World):
+    """CAV-01/02: the caveman SessionStart hooks join the isolated --settings only with `loop_caveman` on and isolation on."""
+    GUARD = TestSettings.GUARD
+
+    def configure(self, **config):
+        self.set_env(LOOP_DATA_DIR=self.data)
+        write(os.path.join(self.data, "config.json"), json.dumps(config))
+
+    def test_find_keeps_only_caveman_session_start_hooks_case_insensitive(self):
+        found = iso.find_caveman_hooks(user_settings_with_caveman())
+        self.assertEqual(found, [{"matcher": "startup", "hooks": [CAVEMAN_HOOK]}])
+        self.assertEqual(iso.find_caveman_hooks({}), [])
+        self.assertEqual(iso.find_caveman_hooks({"hooks": {"SessionStart": [{"hooks": [OTHER_HOOK]}]}}), [])
+        self.assertEqual(iso.find_caveman_hooks({"hooks": {"SessionStart": "bad"}}), [])
+
+    def test_off_by_default_carries_nothing(self):
+        self.configure()
+        parsed = json.loads(iso.guard_settings(self.GUARD, "auto", user_settings_with_caveman()))
+        self.assertEqual(list(parsed["hooks"]), ["PreToolUse"])
+
+    def test_on_carries_the_hook_and_leaves_the_guard_untouched(self):
+        self.configure(loop_caveman=True)
+        off_guard = json.loads(iso.guard_settings(self.GUARD, "auto", {}))["hooks"]["PreToolUse"]
+        parsed = json.loads(iso.guard_settings(self.GUARD, "auto", user_settings_with_caveman()))
+        self.assertEqual(parsed["hooks"]["SessionStart"], [{"matcher": "startup", "hooks": [CAVEMAN_HOOK]}])
+        self.assertEqual(parsed["hooks"]["PreToolUse"], off_guard, "the guard hook stays exactly as it was")
+
+    def test_on_without_a_guard_still_carries_it(self):
+        self.configure(loop_caveman=True)
+        parsed = json.loads(iso.guard_settings("", "auto", user_settings_with_caveman()))
+        self.assertEqual(list(parsed["hooks"]), ["SessionStart"])
+
+    def test_on_but_not_installed_carries_nothing(self):
+        self.configure(loop_caveman=True)
+        self.assertEqual(iso.caveman_hooks_to_carry(user_settings={"hooks": {"SessionStart": [{"hooks": [OTHER_HOOK]}]}}), [])
+        self.assertEqual(iso.guard_settings("", "auto", {}), "")
+
+    def test_isolation_off_or_non_boolean_value_carries_nothing(self):
+        self.configure(loop_caveman=True, loop_isolation=False)
+        self.assertEqual(iso.caveman_hooks_to_carry(user_settings=user_settings_with_caveman()), [])
+        self.configure(loop_caveman="yes")
+        self.assertEqual(iso.caveman_hooks_to_carry(user_settings=user_settings_with_caveman()), [])
+
+    def test_reads_the_user_settings_of_loop_claude_home(self):
+        self.configure(loop_caveman=True)
+        self.set_env(LOOP_CLAUDE_HOME=os.path.join(self.root, "home", ".claude"))
+        write(os.path.join(self.root, "home", ".claude", "settings.json"), json.dumps(user_settings_with_caveman()))
+        self.assertEqual(len(json.loads(iso.guard_settings(self.GUARD, "auto"))["hooks"]["SessionStart"]), 1)
+
+
 class Opts:
     claude = "claude"
     permission_mode = "auto"
@@ -335,6 +394,31 @@ class TestLoopArgv(LoopCase):
             self.assertEqual(argv[argv.index("--setting-sources") + 1], "project,local", argv)
             self.assertTrue([item for item in argv if item.startswith("--add-dir=") and "bundle" in item], argv)
 
+    def run_turn_log(self, caveman, with_hook):
+        """Runs one loop turn with the fake claude and returns the first turn record (`turns/001.json`)."""
+        home = os.environ["LOOP_CLAUDE_HOME"]
+        settings_path = os.path.join(home, "settings.json")
+        self.addCleanup(lambda: os.path.exists(settings_path) and os.remove(settings_path))
+        if os.path.exists(settings_path):
+            os.remove(settings_path)
+        if with_hook:
+            write(settings_path, json.dumps(user_settings_with_caveman()))
+        with open(self.config, "w", encoding="utf-8") as handle:
+            json.dump({"loop_caveman": caveman}, handle)
+        iso.clear_memo()
+        scenario = {"features": {"a": {"paths": "apps/a"}}}
+        project = self.make(ROAD, scenario)
+        self.done(project.run("--wave", "1"), 0)
+        with open(os.path.join(run_loop.loop_state.turns_dir(project.work), "001.json"), encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def test_turn_record_says_whether_caveman_was_on(self):
+        self.assertIs(self.run_turn_log(True, True)["caveman"], True)
+
+    def test_turn_record_caveman_false_when_off_or_not_installed(self):
+        self.assertIs(self.run_turn_log(False, True)["caveman"], False)
+        self.assertIs(self.run_turn_log(True, False)["caveman"], False)
+
     def test_kill_switch_off_sends_no_isolation_flag_on_any_turn(self):
         self.set_isolation(False)
         argvs = self.run_logged({"forget_loop_json": True})
@@ -345,3 +429,11 @@ class TestLoopArgv(LoopCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCavemanSkillAllowed(unittest.TestCase):
+    def test_caveman_on_adds_the_skill_to_every_profile_and_off_does_not(self):
+        on = iso.skills_allowlist(None, {"loop_caveman": True})
+        self.assertTrue(all("caveman" in skills for skills in on.values()))
+        off = iso.skills_allowlist(None, {})
+        self.assertFalse(any("caveman" in skills for skills in off.values()))

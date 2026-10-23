@@ -9,6 +9,7 @@ import { openDialog } from '../components/dialog.js';
 import { pickFolderNativeFirst } from '../components/folder_browser.js';
 import { Conformance, conformanceDefault } from '../components/conformance.js';
 import { openWhyOnFirstVisit, WhyButton } from '../components/why_panel.js';
+import { SettingsButton } from '../components/settings_dialog.js';
 
 const MODE = {
   new: ['new project', '#8AA4FF'], no_specs: ['no .specs', '#8B9098'], planning: ['planning', '#A58BFF'],
@@ -370,6 +371,7 @@ export function Hub() {
         </div>
       </div>
       <div class="spacer" />
+      <${SettingsButton} />
       <${WhyButton} />
     </header>
 

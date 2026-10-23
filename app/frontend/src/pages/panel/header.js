@@ -16,6 +16,7 @@ import { costCapPause, costNumbers, openNewLoop, openStatusDialog, statusHasDial
 import { openReopenPlanning } from './reopen_planning.js';
 import { openFinishDialog } from './wrap_up.js';
 import { openWorkspaceDialog } from './workspace_dialog.js';
+import { SettingsButton } from '../../components/settings_dialog.js';
 
 const meta = () => (ctx.state && ctx.state.meta) || {};
 const PAUSED_STATUS = { label: 'Paused', c: '#F2B544', bg: '#2A2416', line: '#4A3D1C' }; // context.js STATUS has no `paused` yet; used by the planning pill and the title
@@ -193,8 +194,8 @@ function askShutdown() {
 /** Content of #header-actions. mode 'loop' = the navbar order (NAV-04); 'planning' = as before. */
 export function HeaderActions({ mode = 'loop' }) {
   return mode === 'planning'
-    ? html`<${PrChip} /><${WorkspaceButton} /><${PauseButton} /><${ShutdownControl} />`
-    : html`<${PrChip} /><${PauseButton} /><${StartLoopButton} /><${BackToPlanningButton} /><${FinishButton} /><${ShutdownControl} />`;
+    ? html`<${PrChip} /><${WorkspaceButton} /><${PauseButton} /><${SettingsButton} /><${ShutdownControl} />`
+    : html`<${PrChip} /><${PauseButton} /><${StartLoopButton} /><${BackToPlanningButton} /><${FinishButton} /><${SettingsButton} /><${ShutdownControl} />`;
 }
 
 export function cancelShutdown() {

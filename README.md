@@ -144,7 +144,7 @@ Everything is plain Markdown and Python:
   - phases in `plugin/skills/orchestrator/SKILL.md`;
   - guard profiles in `plugin/skills/orchestrator/hooks/guard.py`;
   - engine in `app/backend/harness_backend/engine/`.
-- **Settings:** the `LOOP_*` and `GUARD_PROD_HINTS` variables (see `app/.env.example`).
+- **Settings:** the `LOOP_*` and `GUARD_PROD_HINTS` variables (see `app/.env.example`), and the **Settings** button of the hub and the panel (isolation, caveman mode, extra skills, model, limits: saved in `~/.loop-harness/config.json`).
 
 ## Guard rules
 

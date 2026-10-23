@@ -16,9 +16,13 @@ from .api.http_server import AppHttpServer
 from .config.app_config import load_app_config
 from .infrastructure.structured_log import StructuredLog
 from .infrastructure.activity_monitor import ActivityMonitor
+from .repositories.app_config_repository import AppConfigRepository
+from .repositories.loop_file_repository import LoopFileRepository
 from .api.controllers.app_controller import AppController
+from .api.controllers.app_settings_controller import AppSettingsController
 from .domain.project import ProjectContext
 from .services.app_diagnostics_service import build_app_diagnostics_service
+from .services.app_settings_service import AppSettingsService
 from .services.claude_account_service import build_shared_claude_account_service
 from .services.claude_call_log_service import build_shared_claude_call_log_service
 from .services.decisions_service import DecisionsService
@@ -98,6 +102,8 @@ def build_application(config=None, **config_overrides):
     app_controller = AppController(config, log, server, activity_monitor, projects_module.project_service,
                                    app_diagnostics_service=build_app_diagnostics_service(
                                        config, lambda: list_usage_folders(projects_module.project_service)))
+    app_settings_controller = AppSettingsController(log, AppSettingsService(config, AppConfigRepository(config.user_data_dir),
+                                                                           projects_module.project_service, LoopFileRepository()))
 
     for module in (projects_module, loop_read_module, loop_commands_module, multi_repo_module, quarantine_module):
         for controller in module.controllers:
@@ -105,6 +111,7 @@ def build_application(config=None, **config_overrides):
         for provider in module.busy_providers:
             activity_monitor.add_busy_provider(provider)
     app_controller.register_routes(router)
+    app_settings_controller.register_routes(router)
     return AssembledApplication(config, log, server, activity_monitor, projects_module, loop_read_module, loop_commands_module,
                                 multi_repo_module)
 

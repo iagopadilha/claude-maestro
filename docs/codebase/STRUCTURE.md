@@ -46,7 +46,7 @@ docs/                      repo-level docs (media/ = demo.gif, panel.jpg, make_g
 **Monorepo subprojects:** `services/subprojects_service.py` (list, Conformance), `subproject_validation_service.py`, `subproject_map_service.py` (parallel map queue), `system_map_service.py`, `map_job_runner.py` (every map job), `code_inventory_service.py`, `context_block_service.py`; routes in `api/controllers/subprojects_controller.py`; front end `pages/panel/subprojects.js` and `components/subprojects_table.js`.
 **Loop behavior:** prompt in `plugin/skills/orchestrator/` (SKILL.md, references/); runtime in `engine/`.
 **Agent write limits / safety:** `plugin/skills/orchestrator/hooks/guard.py` (profiles, `mcp-allowlist`, `skill-allowlist`, `guard.log` audit lines), `infrastructure/workspace_file_guard.py`, `engine/runtime_isolation.py` (what an app `claude -p` loads), `engine/access_report.py`.
-**Instant chat (job preparation):** `services/claude_job_service.py` (`ClaudeJobCommand.before_start`, `ClaudeJobError` with `code`, `on_prepare_failed`), `planning_service.prepare_reply`, `spec_change_service`, `follow_up_service`; gates cache in `project_progress_service` (`read_cached_planning_gates`).
+**Instant chat (job preparation):** `services/claude_job_service.py` (`ClaudeJobCommand.before_start`, `ClaudeJobError` with `code`, `on_prepare_failed`), `planning_service.prepare_reply`, `follow_up_service`; gates cache in `project_progress_service` (`read_cached_planning_gates`).
 **A panel screen:** `app/frontend/src/pages/panel/`; styles in `styles/`.
 **Project templates:** `app/templates/`.
 **Tests:** `app/backend/tests/{api,engine,infra,demo}`; hook tests next to `guard.py`.

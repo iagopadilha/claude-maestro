@@ -13,7 +13,6 @@ from . import test_commands_quarantine as quarantine_tests
 from . import test_follow_up_service as follow_up_base
 from .test_planning_import import SPEC_TEXT
 from .test_projects_planning import PlanningTestCase
-from .test_projects_spec_change import FAKE_SPEC_CLAUDE
 
 FILE_COUNT = 5000
 BUDGET_MS = 300
@@ -100,52 +99,6 @@ class TestPlanningLatency(PlanningTestCase):
         _, listed = self.request("GET", "/p/%s/api/planning/imports" % self.project_id)
         self.assertIsNone(listed["imports"][0]["sent_at"])
         self.assertEqual(self.get_planning(self.project_id)["thread"]["messages"], [])
-
-
-class TestSpecChangeLatency(PlanningTestCase):
-    def setUp(self):
-        super().setUp()
-        from .support_projects import read_file  # noqa: F401
-        write_file(self.fake_claude_path, FAKE_SPEC_CLAUDE)
-        self.repo, self.project_id = self.create_ready_project()
-        write_file(os.path.join(self.repo, ".specs", "features", "api-base", "spec.md"), "# api-base spec\n")
-        fill_with_files(self.repo)
-
-    def test_spec_change_send(self):
-        started = time.perf_counter()
-        status, body = self.request("POST", "/p/%s/api/spec-change/api-base/send" % self.project_id, {"text": "add a rule"})
-        self.assertLess(report("spec-change/send", started), BUDGET_MS)
-        self.assertEqual(status, 202, body)
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            _, job = self.request("GET", "/p/%s/api/spec-change-job/%s" % (self.project_id, body["job_id"]))
-            if job["state"] != "running":
-                break
-            time.sleep(0.1)
-        self.assertEqual(job["state"], "ok", job)
-
-
-class TestSpecChangeCodedError(PlanningTestCase):
-    def test_a_coded_before_start_error_takes_the_user_message_out_of_the_thread(self):
-        from harness_backend.services.claude_job_service import ClaudeJobError
-        write_file(self.fake_claude_path, FAKE_SPEC_CLAUDE)
-        _, project_id = self.create_ready_project()
-
-        def refuse(*arguments):
-            raise ClaudeJobError("refused in the job thread", "some_code")
-
-        service = next(c.spec_change_service for c in self.module.controllers if hasattr(c, "spec_change_service"))
-        service.prepare_reply = refuse
-        status, body = self.request("POST", "/p/%s/api/spec-change/_project/send" % project_id, {"text": "change it"})
-        self.assertEqual(status, 202, body)
-        jobs = self.module.claude_job_service  # waits on the registry, then reads once (polling the file races the job's own rewrite on Windows)
-        deadline = time.time() + 30
-        while body["job_id"] in jobs.running_jobs and time.time() < deadline:
-            time.sleep(0.05)
-        _, job = self.request("GET", "/p/%s/api/spec-change-job/%s" % (project_id, body["job_id"]))
-        self.assertEqual((job["state"], job.get("code")), ("error", "some_code"), job)
-        _, scope = self.request("GET", "/p/%s/api/spec-change/_project" % project_id)
-        self.assertEqual(scope["thread"]["messages"], [])
 
 
 class TestFollowUpLatency(follow_up_base.FollowUpTestCase):

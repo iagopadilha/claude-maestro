@@ -182,8 +182,8 @@ class PlanningImportService:
         earlier = self.find_earlier_import(context, source, slug)
         if earlier:
             raise RepoConflictError(
-                "this spec feature was already imported (%s): see the log %s. A changed spec is updated through the "
-                "spec-change flow, not by importing again" % (earlier["import_id"], earlier["log_path"]),
+                "this spec feature was already imported (%s): see the log %s. A changed spec goes through the "
+                "planning chat (Back to planning), not a second import" % (earlier["import_id"], earlier["log_path"]),
                 code=ALREADY_IMPORTED_CODE, extras=earlier)
         if self.feature_folder_exists(context, slug):
             raise RepoConflictError(

@@ -42,7 +42,6 @@ Five small front end defects were fixed in that pass; these were reported and le
 - F-04 (low): in the Start loop dialog the primary buttons sit at the end of the scrolling body (not sticky), and "Branch base" appears twice.
 - F-05 (low): the "Pause requested" toast covers the header buttons while it lives.
 - F-06 (low): agent dialog for `gate @ api-base` says DONE with 1 run while its chat greeting says it has not run; the inspector shows "NOW . T-" with no turn.
-- F-07 (medium): `RoadmapChat` (`app/frontend/src/pages/panel/roadmap_chat.js`) is dead code: nothing imports it, so the "change a spec with the AI" chat cannot be opened from the panel. Mount it or delete it with its CSS.
 - F-08 (medium, coverage): decisions with items, the critical-decision pause, a blocked feature and errors > 0 were never exercised by the pass (needs the engine fake scenario keys `decision_lines` and `features.<slug>.exec = fail`).
 - F-09 (low): layout is computed at render time; resizing from 1280 to 390 without a reload keeps the wide split (no resize listener).
 - F-10 (low): pipeline "Fit" at 30-35% for 9 features leaves large margins and unreadable node text until zoomed.

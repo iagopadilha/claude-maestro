@@ -20,7 +20,6 @@ JOB_TYPE_ROADMAP = "roadmap"
 JOB_TYPE_ROADMAP_REFINE = "roadmap_refine"
 JOB_TYPE_MAP = "map"
 JOB_TYPE_PLANNING = "planning"
-JOB_TYPE_SPEC_CHANGE = "spec_change"
 JOB_TYPE_WORKSPACE_CREATE = "workspace-create"  # not a claude run: a task (see start_task_job)
 ROADMAP_JOB_TYPES = (JOB_TYPE_ROADMAP, JOB_TYPE_ROADMAP_REFINE)
 JOB_STATE_RUNNING = "running"

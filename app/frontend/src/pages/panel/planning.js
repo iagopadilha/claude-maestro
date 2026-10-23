@@ -190,7 +190,7 @@ function ImportForm({ api }) {
     ${err ? html`<div class="nl-box nl-bad" role="alert" id="plan-imp-err">${err}</div>` : null}
     ${prev ? html`<div class="plan-imp-prev" id="plan-imp-prev" role="status"><b>Spec feature ${prev.slug || importName(prev)}: ${files.length} file${files.length === 1 ? '' : 's'} found</b>
       ${refused ? html`<div class="nl-box nl-bad" id="plan-imp-refused" role="alert">Refused: ${refused.reason || 'this folder cannot be imported.'}</div>` : null}
-      ${earlier ? html`<div class="nl-box nl-bad" id="plan-imp-earlier" role="alert">This spec feature was already imported (${earlier.import_id}). See the log <code>${earlier.log_path}</code>. A changed spec goes through the spec-change flow, not a second import.</div>` : null}
+      ${earlier ? html`<div class="nl-box nl-bad" id="plan-imp-earlier" role="alert">This spec feature was already imported (${earlier.import_id}). See the log <code>${earlier.log_path}</code>. A changed spec goes through the planning chat (Back to planning, then ask it to update the feature), not a second import.</div>` : null}
       <ul>${files.map((f, i) => html`<li key=${i}><code>${f.relative_path}</code>${f.relative_path === 'spec.md' ? html` <span class="plan-imp-main">main</span>` : null}</li>`)}</ul>
       ${skipped.length ? html`<div><b>Skipped (${skipped.length})</b><ul id="plan-imp-skipped">${skipped.map((f, i) => html`<li key=${i}><code>${f.relative_path}</code> <span class="plan-env-note">${f.reason || f.status || ''}</span></li>`)}</ul></div>` : null}
       <div class="plan-env-note" id="plan-imp-counts">${COUNT_LABELS.filter(([k]) => counts[k] != null).map(([k, label]) => counts[k] + ' ' + label).join(' · ')}</div>

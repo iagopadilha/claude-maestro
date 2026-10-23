@@ -150,7 +150,8 @@
   .bd-body{flex:none;overflow:visible;}
   .bd-chat{width:auto;border-left:none;border-top:1px solid #23272e;min-height:420px;}
   .bd-deps-hints{display:none;}
-  .bd-attempt{grid-template-columns:40px 1fr;}
+  .bd-attempt{grid-template-columns:40px minmax(0,1fr) auto;}
+  .bd-attempt-out{grid-column:1 / -1;}
 }
 @media (prefers-reduced-motion:reduce){.bd-thinking{animation:none;}}
 

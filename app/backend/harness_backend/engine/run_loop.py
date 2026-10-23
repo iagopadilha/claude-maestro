@@ -90,7 +90,7 @@ from limit_waits import (  # noqa: E402,F401  (re-exported: tests, services and 
 from claude_turn import (  # noqa: E402,F401  (re-exported: tests, services and `harness.py` keep using `run_loop.<name>`)
     DEFAULT_ORCHESTRATOR_MODEL, DISABLED_PUSH_URL, LOOP_DISALLOWED_TOOLS, EMPTY_MCP_CONFIG, mcp_read_arguments, model_arguments,
     isolation_arguments, isolation_environment, claude_command, loop_json_correction_prompt, TURN_ENVIRONMENT_REPORTED,
-    turn_environment_for, push_lock_env, run_turn, parse_result, unrecognized_output,
+    turn_environment_for, push_lock_env, run_turn, parse_result, unrecognized_output, is_caveman_on,
 )
 from permission_denials import (  # noqa: E402,F401  (re-exported: tests, services and `harness.py` keep using `run_loop.<name>`)
     RISKY_DENIAL_RE, SECRET_LIKE_RE, prod_hint_patterns, project_deny_patterns, is_risky_denial, denial_text,
@@ -541,6 +541,7 @@ def main():
             if err:
                 log["stderr"] = err[-2000:]
             log["exit_code"], log["timeout"], log["turn"], log["claude"] = code, timed_out, turn, claude_name
+            log["caveman"] = is_caveman_on()  # CAV-03: lets the settings screen compare the cost with and without it
             log["claude_account"] = claude_account(opts, claude_name, err)
             log.update(claude_auth_fields(log["claude_account"]))
             meta["claude"], meta["claude_account"] = claude_name, log["claude_account"]

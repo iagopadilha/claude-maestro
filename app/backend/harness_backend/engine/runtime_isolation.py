@@ -14,9 +14,9 @@ Allowlist keys (one per profile name the guard can resolve; `LOOP_SKILLS_FILE` i
   orchestrator, planning, roadmapmap, subprojects, systemmap, spec, executor, verifier   (the keys of guard.py `PROFILES`)
   auto = orchestrator   (inline hook `--profile auto` of the loop turns and of app jobs with no `hook_profile`; the guard resolves it to
                          the agent's profile or, for the main session, to `orchestrator`, so the key is only a safety net)
-App job `hook_profile` values found in services/: planning (planning chat, roadmap, spec-change, follow-up), roadmapmap (roadmap with
+App job `hook_profile` values found in services/: planning (planning chat, roadmap, follow-up), roadmapmap (roadmap with
 `--map-first`), spec (map jobs and subproject maps), subprojects, systemmap. Chat-like jobs with no hook profile (read-only chat,
-quarantine summary) run under `auto`. Follow-up and spec-change reuse `planning` (their services say so), so they map to the planning list.
+quarantine summary) run under `auto`. Follow-up reuses `planning` (its service says so), so it maps to the planning list.
 
 Environment: `LOOP_CLAUDE_HOME` (default `~/.claude`) names the user's Claude folder (skills, `settings.json`); tests point it at a temp dir.
 """
@@ -34,6 +34,9 @@ DEFAULT_DATA_DIR_NAME = ".loop-harness"
 CLAUDE_HOME_VARIABLE = "LOOP_CLAUDE_HOME"
 CONFIG_KEY = "loop_isolation"
 EXTRA_SKILLS_KEY = "loop_extra_skills"
+CAVEMAN_KEY = "loop_caveman"
+CAVEMAN_MARKER = "caveman"
+SESSION_START_EVENT = "SessionStart"
 RUNTIME_DIR_NAME = "runtime"
 BUNDLE_DIR_NAME = "bundle"
 SIGNATURE_FILE_NAME = ".signature.json"
@@ -119,7 +122,10 @@ def skills_allowlist(project_root=None, config=None):
     for profile in SUBPROJECT_SKILL_PROFILES:
         allowlist[profile] += [name for name in project_skill_names(project_root) if name not in allowlist[profile]]
     extra = config.get(EXTRA_SKILLS_KEY)
-    for name in [str(item).strip() for item in extra if str(item).strip()] if isinstance(extra, list) else []:
+    names = [str(item).strip() for item in extra if str(item).strip()] if isinstance(extra, list) else []
+    if config.get(CAVEMAN_KEY, False) is True:
+        names.append(CAVEMAN_MARKER)  # the carried hook tells the model to load the `caveman` skill: allow it (and bundle it) everywhere
+    for name in names:
         for skills in allowlist.values():
             if name not in skills:
                 skills.append(name)
@@ -306,14 +312,40 @@ def read_user_settings():
         return {}
 
 
+def find_caveman_hooks(user_settings):
+    """The user's `SessionStart` hook groups reduced to the hooks whose command mentions `caveman` (case-insensitive); a group with no such
+    hook is dropped and the other fields of a group (`matcher`) are kept. [] when the user has none (the option is then "not installed")."""
+    events = user_settings.get("hooks") if isinstance(user_settings, dict) else None
+    groups = events.get(SESSION_START_EVENT) if isinstance(events, dict) else None
+    found = []
+    for group in groups if isinstance(groups, list) else []:
+        hooks = group.get("hooks") if isinstance(group, dict) else None
+        kept = [hook for hook in hooks if isinstance(hook, dict) and CAVEMAN_MARKER in str(hook.get("command") or "").lower()]             if isinstance(hooks, list) else []
+        if kept:
+            found.append(dict(group, hooks=kept))
+    return found
+
+
+def caveman_hooks_to_carry(config=None, user_settings=None):
+    """The caveman hook groups a `claude -p` carries: only with isolation on AND `loop_caveman` true (boolean) in config.json, else []."""
+    config = read_config() if config is None else config
+    if not isolation_enabled(config) or config.get(CAVEMAN_KEY, False) is not True:
+        return []
+    return find_caveman_hooks(read_user_settings() if user_settings is None else user_settings)
+
+
 def guard_settings(guard_path, profile, user_settings=None):
     """Inline `--settings` JSON: the guard as a PreToolUse hook (`--profile <profile>`) plus the user's `autoMode` block copied from
     `~/.claude/settings.json` (or from `user_settings` when given) so `--permission-mode auto` keeps its classifier context.
-    '' when there is neither a guard nor an `autoMode`. The user's `permissions` are not carried (the app passes `--permission-mode`)."""
+    '' when there is neither a guard nor an `autoMode`. The user's `permissions` are not carried (the app passes `--permission-mode`).
+    With `loop_caveman` on (config.json) the user's caveman `SessionStart` hooks join the same file (`caveman_hooks_to_carry`)."""
     user_settings = read_user_settings() if user_settings is None else user_settings
     settings = {}
     if guard_path:
         settings["hooks"] = hook_block(guard_command(guard_path, profile))
+    caveman_hooks = caveman_hooks_to_carry(None, user_settings)
+    if caveman_hooks:
+        settings.setdefault("hooks", {})[SESSION_START_EVENT] = caveman_hooks
     if isinstance(user_settings, dict) and "autoMode" in user_settings:
         settings["autoMode"] = user_settings["autoMode"]
     return json.dumps(settings) if settings else ""

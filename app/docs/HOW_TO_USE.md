@@ -118,6 +118,11 @@ A missing line takes the default shown; an invalid value takes the default and s
 ### Orchestrator model
 The orchestrator turn of the loop runs on **Opus** (`claude --model opus`, the alias of the latest Opus), the subagents on **Sonnet**. To change the orchestrator model put `"orchestrator_model": "<alias or model id>"` in `~/.loop-harness/config.json` (`""` = pass no `--model`, the account default applies); the Start dialog shows what will be used. Panel jobs (chat, planning, follow-up, maps) never go above Sonnet.
 
+### Settings (the Settings button)
+The **Settings** button (gear icon) in the hub header and in the project header opens one dialog with the app settings of `~/.loop-harness/config.json`: isolation, caveman mode, extra skills, orchestrator model, Claude command and fallbacks, parallel subproject maps, idle shutdown, the giant-file limits and the output folder, plus the read-only data folder, plugin folder, guard path and port range. A switch saves when you flip it; the other fields show **Save** once you change them. **Reset to default** removes the key from the file, and a setting you never touch stays out of it. A **restart** tag means the app reads it only at start (restart the app); the others apply to the next `claude -p`.
+
+**Caveman mode** (off by default): with isolation on, it carries your `SessionStart` hook whose command mentions `caveman` (from `~/.claude/settings.json`) into the isolated runs. Without such a hook the row says "Not installed" and cannot be turned on. Each loop turn records whether caveman was on (`caveman` in `turns/NNN.json`), and the dialog compares the average cost per turn with and without it over every project's recorded turns ("Not enough data yet" below 3 turns on either side).
+
 ### Demo mode (see the panel before wiring a real repo)
 ```
 python <app>/harness.py demo [--port N] [--no-browser] [--speed S] [--data-dir D] [--loop] [--keep]
@@ -399,7 +404,7 @@ The engine exports `LOOP_HEADLESS=1` to the loop session. In it every `git push`
 **Your own secret paths.** `GUARD_SECRET_PATHS` (a variable or a line in the app `.env`, paths separated by commas) adds files and folders the guard treats like the built-in credential files: reading or changing them from the loop is blocked by the `secrets` rule. Use it for private keys or credential files specific to your machine.
 
 ## Isolation and access (what a `claude -p` of the app can reach)
-Every `claude -p` the app starts (loop turns, correction and resume turns, planning, import, spec change, chat, follow-up, quarantine summary, roadmap, map jobs) runs **isolated from your Claude profile**: `--setting-sources project,local` plus a bundle with only the 8 plugin agents and the allowlisted skills. Your user plugins, your other skills, your hooks and plugin MCP servers do not load; the project's own `CLAUDE.md` still does, and `~/.claude/CLAUDE.md` does not. The guard hook rides along through `--settings`, and in this mode it also allows only the MCP tools and skills of each profile. How it is built: `ARCHITECTURE.md`, "Runtime isolation". The rules: `MONITOR.md`, "Guard and access".
+Every `claude -p` the app starts (loop turns, correction and resume turns, planning, import, chat, follow-up, quarantine summary, roadmap, map jobs) runs **isolated from your Claude profile**: `--setting-sources project,local` plus a bundle with only the 8 plugin agents and the allowlisted skills. Your user plugins, your other skills, your hooks and plugin MCP servers do not load; the project's own `CLAUDE.md` still does, and `~/.claude/CLAUDE.md` does not. The guard hook rides along through `--settings`, and in this mode it also allows only the MCP tools and skills of each profile. How it is built: `ARCHITECTURE.md`, "Runtime isolation". The rules: `MONITOR.md`, "Guard and access".
 
 **See it.** Read only, CLI only (nothing in the panel):
 ```
