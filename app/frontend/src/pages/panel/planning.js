@@ -327,7 +327,7 @@ function followJob(id, since) {
       const r = await ctx.api.get('planning/job/' + encodeURIComponent(id), 10000);
       if (pl.job !== job) return;
       if (r.state === 'ok') { done(null); return; }
-      if (r.state === 'error') { done(r.error || 'The AI failed while writing the reply.'); return; }
+      if (r.state === 'error') { done(SEND_ERRORS[r.code] || r.error || 'The AI failed while writing the reply.'); return; } // a coded error = the refusal the 4xx used to give
     } catch (e) {
       if (pl.job !== job) return;
       if (e.status === 404) { done('The reply job was not found on the server.'); return; }
@@ -349,12 +349,15 @@ function inputLock() {
   return f.length ? `Finish the prerequisites first: ${f.map((g) => g.label || g.id).join(', ')}.` : null;
 }
 
-async function send(text) {
+/** `input` (optional, from submit): `clear()` empties the textarea and draft the moment the message is accepted for sending (before the POST),
+ *  `back()` puts the text back after a failed POST, only if the user typed nothing new meanwhile. */
+async function send(text, input) {
   const lock = inputLock();
   if (lock) { toast(lock, 'err'); return false; }
   if (busyNow() || pl.sending) { toast(SEND_ERRORS.planning_busy, 'err'); return false; }
   if (text.length > MAX_TEXT) { toast(`The message has ${text.length} characters; the limit is ${MAX_TEXT}.`, 'err'); return false; }
   pl.sending = true; pl.err = null; pl.lastText = text; pl.pending = { role: 'user', text, at: new Date().toISOString() };
+  if (input) input.clear();
   renderAll();
   let ok = false;
   try {
@@ -364,6 +367,7 @@ async function send(text) {
   } catch (e) {
     const code = e.body && e.body.code;
     pl.pending = null;
+    if (input) input.back();
     pl.err = SEND_ERRORS[code] || (e.status === 400 ? 'Not sent: ' + e.message : 'Not sent: ' + e.message);
     toast(pl.err, 'err');
     if (code) loadPlanning();
@@ -375,7 +379,10 @@ async function submit(ev) {
   const ta = document.getElementById('plan-text');
   const text = ta ? ta.value.trim() : '';
   if (!text) { if (ta) ta.focus(); return; }
-  if (await send(text)) { if (ta) ta.value = ''; pl.draft = ''; renderAll(); }
+  await send(text, {
+    clear: () => { if (ta) ta.value = ''; pl.draft = ''; },
+    back: () => { if (pl.draft) return; pl.draft = text; const now = document.getElementById('plan-text'); if (now) now.value = text; },
+  });
 }
 function keyDown(e) {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); const f = document.getElementById('plan-form'); if (f) f.requestSubmit(); }

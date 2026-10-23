@@ -133,7 +133,7 @@ NULL_TARGETS = {"/dev/null", "$null", "nul", "null"}
 # rules that not even PERMISSIONS.json releases: workflows never push to the integration branch/main nor force, and the
 # roadmap approval and the panel's trigger endpoints are only ever the user's click
 HARD = {"push-protected", "push-force", "approval-write", "panel-trigger", "grafana-write", "headless-push", "headless-gh", "permissions-write",
-        "prod-sql-write", "agent-allowlist", "model-ceiling"}
+        "prod-sql-write", "agent-allowlist", "model-ceiling", "mcp-allowlist", "skill-allowlist"}
 
 # headless loop (LOOP_HEADLESS=1, exported by the engine): delivery belongs to the engine, so the session only commits;
 # PERMISSIONS.json holds the user's releases, so the session never writes it (any profile, HARD)
@@ -280,7 +280,7 @@ def describe_attempt(payload):
         return ""
 
 
-def log(specs_dir, profile, rule, decision, detail, attempt=None):
+def log(specs_dir, profile, rule, decision, detail, attempt=None, extra=None):
     if not specs_dir:
         return
     try:
@@ -294,6 +294,8 @@ def log(specs_dir, profile, rule, decision, detail, attempt=None):
         }
         if attempt:
             line["attempt"] = attempt
+        if extra:
+            line.update(extra)
         log_path = loop_file(specs_dir, "guard.log")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         with open(log_path, "a", encoding="utf-8") as handle:
@@ -1386,6 +1388,96 @@ def prod_sql_reason(tool_name, tool_input):
     return ""
 
 
+# ---- isolated / headless loop session (LOOP_HEADLESS=1 or LOOP_ISOLATED=1): the MCP tools and the skills are an allowlist per profile.
+# `mcp-allowlist`: Grafana reads for every profile, DEV SQL for the profiles that query, PROD SQL for the orchestrator and planning only
+# (the `sql-write` / `prod-sql-write` rules still filter the statements); any other mcp__ tool is denied. `skill-allowlist`: only when
+# LOOP_SKILLS_FILE is set (JSON {profile: [skill names]}, written by the app engine); unreadable file or missing profile = deny.
+DEV_SQL_TOOL = "mcp__mcp-mysql-dev__mysql_query"
+PROD_SQL_TOOL = "mcp__mcp-mysql-prod__mysql_query"
+_DEV_SQL_PROFILES = ("executor", "verifier", "spec", "orchestrator", "planning", "roadmapmap", "subprojects", "systemmap")
+MCP_ALLOW = {name: {DEV_SQL_TOOL} for name in _DEV_SQL_PROFILES}
+MCP_ALLOW["orchestrator"] = {DEV_SQL_TOOL, PROD_SQL_TOOL}
+MCP_ALLOW["planning"] = {DEV_SQL_TOOL, PROD_SQL_TOOL}
+
+
+def isolated_or_headless():
+    return is_headless() or os.environ.get("LOOP_ISOLATED") == "1"
+
+
+def mcp_allowlist_reason(tool_name, tool_input, profile):
+    """Reason when an mcp__ tool is outside the profile's allowlist (only meaningful in an isolated/headless session), else ''."""
+    if not tool_name.lower().startswith("mcp__") or not isolated_or_headless():
+        return ""
+    if tool_name.lower().startswith(GRAFANA_PREFIX):
+        return ""  # reads pass here; writes are `grafana-write`
+    allowed = MCP_ALLOW.get(profile, MCP_ALLOW["executor"])
+    if tool_name in allowed:
+        return ""
+    return "%s is not on the %s profile's MCP allowlist (%s)" % (tool_name, profile, ", ".join(sorted(allowed)) or "none")
+
+
+def normalize_skill_name(value):
+    name = str(value or "").strip().lstrip("/")
+    return name.rsplit(":", 1)[-1].strip().lstrip("/").lower()
+
+
+def skill_call_name(tool_input):
+    if not isinstance(tool_input, dict):
+        return ""
+    for key in ("skill", "name", "command"):
+        if isinstance(tool_input.get(key), str) and tool_input[key].strip():
+            return normalize_skill_name(tool_input[key])
+    return ""
+
+
+def skill_allowlist_reason(tool_name, tool_input, profile):
+    """Reason when a Skill call is outside LOOP_SKILLS_FILE for the profile (fail closed), else ''. Inactive without LOOP_SKILLS_FILE."""
+    if tool_name != "Skill":
+        return ""
+    path = os.environ.get("LOOP_SKILLS_FILE")
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            table = json.load(handle)
+        if not isinstance(table, dict):
+            raise ValueError("not an object")
+    except Exception as error:
+        return "LOOP_SKILLS_FILE is set but unreadable or invalid (%s): skills are denied" % type(error).__name__
+    names = table.get(profile)
+    if not isinstance(names, list):
+        return "profile %r is not in LOOP_SKILLS_FILE: skills are denied" % profile
+    skill = skill_call_name(tool_input)
+    if skill and skill in {normalize_skill_name(item) for item in names}:
+        return ""
+    return "skill %r is not on the %s profile's skill allowlist" % (skill or "(none)", profile)
+
+
+def audit_allowed(specs_dir, profile, payload):
+    """AUD-01: one `allow` line in guard.log for an allowed mcp__ or Skill call while the allowlists are active. Never raises."""
+    try:
+        tool = str(payload.get("tool_name") or "")
+        tool_input = payload.get("tool_input") or {}
+        if tool == "Skill":
+            if not os.environ.get("LOOP_SKILLS_FILE"):
+                return
+            rule, subject = "skill-allowlist", skill_call_name(tool_input)
+        elif tool.lower().startswith("mcp__"):
+            if not isolated_or_headless():
+                return
+            rule, subject = "mcp-allowlist", ""
+            if SQL_MCP_TOOL.match(tool) and isinstance(tool_input, dict):
+                text = next((tool_input[key] for key in ("query", "sql", "statement") if isinstance(tool_input.get(key), str)), "")
+                words = re.findall(r"[a-z_]+", (sql_statements(text) or [""])[0])
+                subject = words[0].upper() if words else ""
+        else:
+            return
+        agent = str(payload.get("agent_type") or "").rsplit(":", 1)[-1].strip()
+        log(specs_dir, profile, rule, "allow", "%s %s" % (tool, subject), extra={"tool": tool, "agent": agent, "subject": subject})
+    except Exception:
+        pass
+
+
 # ---- migrations: allowed on DEV for the executor/verifier, blocked when the command or the environment points to production
 MIGRATION_CMD_RE = re.compile(
     r"(?:^|[\s(;&|])(?:\S*[\\/])?dotnet(?:\.exe)?\s+(?:ef\s+(?:migrations\s+(?:add|remove|list|script|bundle)|database\s+(?:update|drop))\b"
@@ -1578,10 +1670,13 @@ def main():
     if profile == "auto":
         profile = profile_for_agent(payload)
         if not profile:
-            if not is_headless():
+            has_agent = bool(str(payload.get("agent_type") or "").strip())
+            if not is_headless() and not (os.environ.get("LOOP_ISOLATED") == "1" and not has_agent):
                 return 0
+            if not has_agent and not is_headless():
+                profile = "planning"  # isolated app job (chat, summary) without hook_profile: the read-mostly job profile
             # inside the loop: an agent with no profile is confined like an executor; the orchestrator's own session has no agent_type
-            profile = "executor" if str(payload.get("agent_type") or "").strip() else "orchestrator"
+            profile = profile or ("executor" if has_agent else "orchestrator")
     profile_rules = list(PROFILES.get(profile, PROFILES["executor"]))
     if is_headless():
         profile_rules += [rule for rule in HEADLESS_RULES if rule not in profile_rules]
@@ -1605,6 +1700,12 @@ def main():
                     pass
         allowed = {entry["rule"] if isinstance(entry, dict) else entry for entry in permissions.get("allow", [])}
         hits = unique(check_tool(payload.get("tool_name", ""), payload.get("tool_input", {}) or {}, profile_rules, permissions))
+        reason = mcp_allowlist_reason(payload.get("tool_name", ""), payload.get("tool_input", {}) or {}, profile)
+        if reason:
+            hits.append(("mcp-allowlist", reason))
+        reason = skill_allowlist_reason(payload.get("tool_name", ""), payload.get("tool_input", {}) or {}, profile)
+        if reason:
+            hits.append(("skill-allowlist", reason))
     except Exception as error:
         alert(specs_dir, profile, "%s: %s" % (type(error).__name__, str(error)))
         return 0
@@ -1613,6 +1714,7 @@ def main():
         if rule in allowed and rule not in HARD:
             log(specs_dir, profile, rule, "allowed-by-user", why)
     if not blocked:
+        audit_allowed(specs_dir, profile, payload)
         return 0
     attempt = describe_attempt(payload)
     for rule, why in blocked:

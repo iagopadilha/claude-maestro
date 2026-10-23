@@ -81,6 +81,27 @@ with `LOOP_MONITOR_URL=<panel url>`: the loop checks `GET <url>api/health` (only
 and, when it answers, reuses that panel instead of starting another one (the URL goes to `meta.monitor_url` and to the
 notifications); when it does not answer, it falls back to the normal order above.
 
+## Guard and access
+The guard (`plugin/skills/orchestrator/hooks/guard.py`) is a `PreToolUse` hook. It runs on the orchestrator, on every plugin subagent and, through the inline `--settings` of the isolation, on every `claude -p` job of the app. The built-in rules and their profiles are in `plugin/skills/orchestrator/hooks/README.md`; this section is what the app adds around them. The panel's guard feed (`guard_events` and `guard_counts` of the state, the Errors tab, the pipeline marks) counts only `blocked` decisions and never returns the raw `guard.log`.
+
+**Two allowlist rules** (both HARD: no `PERMISSIONS.json` entry releases them):
+
+| Rule | Active when | Denies |
+|---|---|---|
+| `mcp-allowlist` | `LOOP_HEADLESS=1` (loop turns) or `LOOP_ISOLATED=1` (isolated app jobs) | any `mcp__*` tool that is not on the caller profile's list. Grafana read tools pass for every profile (the writers are `grafana-write`). `mcp__mcp-mysql-dev__mysql_query` is allowed to `executor`, `verifier`, `spec`, `orchestrator`, `planning`, `roadmapmap`, `subprojects` and `systemmap`; `mcp__mcp-mysql-prod__mysql_query` only to `orchestrator` and `planning`. The statements still go through `sql-write` / `prod-sql-write`, so production stays read only. |
+| `skill-allowlist` | `LOOP_SKILLS_FILE` points to a file (the engine writes `<data dir>/runtime/skills-allowlist.json` and exports it with `LOOP_ISOLATED=1`) | a `Skill` call whose `skill` (a `plugin:` prefix removed, lower case) is not in the list of the caller's profile. Fail closed: the variable set with an unreadable or invalid file, or a profile missing from it, denies every skill. |
+
+Without those variables (your interactive sessions, any use of the plugin outside the app) neither rule is evaluated and the guard behaves as before. The skills of each profile are the defaults of `engine/runtime_isolation.py` plus `loop_extra_skills` and the skills of `SUBPROJECTS.json` (see `HOW_TO_USE.md`, "Isolation and access"). Subagents have an explicit `tools:` list: `executor-back`, `executor-generic`, `verifier` and `spec-writer` list the DEV SQL tool, nobody lists the production one.
+
+**Audit lines.** While the two rules are active, every **allowed** `mcp__*` call and every allowed `Skill` call adds one JSON line to `.specs/project/loop/internal/guard.log` (no line for the other allowed tools, so the log stays small):
+```json
+{"t": "2026-10-22T20:21:07", "turn": 4, "profile": "executor", "rule": "skill-allowlist", "decision": "allow",
+ "detail": "Skill backend-dev", "tool": "Skill", "agent": "executor-back", "subject": "backend-dev"}
+```
+For an MCP SQL call `rule` is `mcp-allowlist` and `subject` is the statement's first verb in capitals (`SELECT`); for other MCP tools `subject` is empty. A denial is the usual `decision: "blocked"` line with the rule name. `harness.py doctor --access` summarizes the last 200 lines by decision, rule and agent and lists the last denials.
+
+**What the app does around the hook.** Isolation (`--setting-sources project,local`, the bundle of agents and allowlisted skills, the guard passed by `--settings`) is described in `ARCHITECTURE.md`; `harness.py doctor --access` shows what a real isolated `claude -p` loads. Turn it off with `"loop_isolation": false` in `~/.loop-harness/config.json`.
+
 ## Security
 - Listens **only on 127.0.0.1**; rejects a `Host` other than `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding).
   No CORS.

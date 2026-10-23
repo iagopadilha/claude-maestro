@@ -18,8 +18,7 @@ const stepsText = (turn) => { const k = stepsInTurn(turn); return k == null ? ''
 
 function TurnCard({ turn, on, isLive }) {
   const claudeTip = (describeClaude(turn) || {}).title;
-  const tip = `Turn ${turn.n}${isLive ? ' (latest)' : ''} · ${turn.label || turn.status || ''}${claudeTip ? '
-' + claudeTip : ''}`;
+  const tip = `Turn ${turn.n}${isLive ? ' (latest)' : ''} · ${turn.label || turn.status || ''}${claudeTip ? '\n' + claudeTip : ''}`;
   return html`<button type="button" class=${'z-turn' + (on ? ' is-on' : '') + (isLive ? ' is-live' : '')} title=${tip} aria-pressed=${String(on)}
     onClick=${() => selectTurn(isLive ? null : turn.n)}>
     <span class="z-turn-top"><span class="z-turn-n mono">${'T' + turn.n}</span><span class="z-turn-dot" style=${{ background: turn.dot || FALLBACK_DOT }}></span></span>

@@ -15,6 +15,7 @@ from typing import Protocol
 from ..config import skill_locator
 from ..engine import claude_binaries  # engine/ has no __init__.py: it imports as a namespace package (stdlib only modules)
 from ..engine import cli_output
+from ..engine import runtime_isolation
 from ..engine import usage_windows
 from .process_runner import TIMEOUT_CODE, TIMEOUT_MESSAGE
 
@@ -118,8 +119,20 @@ class ClaudeClient:
         if not guard:
             logger.warning("guard.py not found: the `%s` job runs without the PreToolUse hook (only the snapshot revert confines it)", hook_profile)
             return ""
-        command = 'python "%s" --profile %s' % (os.path.abspath(guard).replace("\\", "/"), hook_profile)
-        return json.dumps({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": command}]}]}})
+        return json.dumps({"hooks": runtime_isolation.hook_block(runtime_isolation.guard_command(guard, hook_profile))})
+
+    def plugin_root(self):
+        """Plugin root of the guard this client uses (<plugin>/skills/orchestrator/hooks/guard.py), '' when there is no guard."""
+        guard = self.locate_guard()
+        return os.path.abspath(os.path.join(os.path.dirname(guard), "..", "..", "..")) if guard else ""
+
+    def build_isolation_settings(self, hook_profile):
+        """Inline `--settings` of an isolated job: the guard with the job's profile (`auto` when the job has none: the user's own settings
+        hook, which isolation drops, was its only guard) plus the user's `autoMode`."""
+        guard = self.locate_guard()
+        if not guard:
+            logger.warning("guard.py not found: the `%s` job runs without the PreToolUse hook (only the snapshot revert confines it)", hook_profile or "auto")
+        return runtime_isolation.guard_settings(guard, hook_profile or "auto")
 
     def build_command(self, model, budget_usd, allowed_tools=None, disallowed_tools=None, no_mcp=True,
                       resume_session="", fork_session=False, prompt_argument="", permission_mode="", hook_profile="",
@@ -147,9 +160,14 @@ class ClaudeClient:
             argv += ["--allowedTools"] + list(allowed_tools)
         if disallowed_tools:
             argv += ["--disallowedTools"] + list(disallowed_tools)
-        hook_settings = self.build_hook_settings(hook_profile) if hook_profile else ""
-        if hook_settings:
-            argv += ["--settings", hook_settings]
+        if runtime_isolation.isolation_enabled():
+            # the bundle itself is built in `run_prompt` (job thread); here only its fixed path is named, so a request never waits for a build
+            bundle_path = os.path.join(runtime_isolation.data_dir(), runtime_isolation.RUNTIME_DIR_NAME, runtime_isolation.BUNDLE_DIR_NAME)
+            argv += runtime_isolation.isolation_argv(bundle_path, self.build_isolation_settings(hook_profile))
+        else:
+            hook_settings = self.build_hook_settings(hook_profile) if hook_profile else ""
+            if hook_settings:
+                argv += ["--settings", hook_settings]
         if no_mcp:
             argv += ["--strict-mcp-config", "--mcp-config", mcp_config_path or EMPTY_MCP_CONFIG]
         if resume_session:
@@ -187,6 +205,7 @@ class ClaudeClient:
           binary      the command name that produced this result
           account     the `cc` account that ran it ('' for any other command)
         """
+        extra_env = self.isolation_variables(folder, extra_env)
         names = claude_binaries.ordered(self.claude_binary, self.fallback_binaries)
         result = {}
         for position, name in enumerate(names):
@@ -201,6 +220,21 @@ class ClaudeClient:
         if self.call_recorder is not None:
             self.call_recorder(folder, getattr(_call_context, "kind", ""), result)
         return result
+
+    def isolation_variables(self, folder, extra_env):
+        """`extra_env` plus LOOP_ISOLATED / LOOP_SKILLS_FILE when isolation is on; builds the bundle (signature check, usually a no-op) here,
+        in the thread that runs the job."""
+        config = runtime_isolation.read_config()
+        if not runtime_isolation.isolation_enabled(config):
+            return extra_env
+        try:
+            prepared = runtime_isolation.prepare(runtime_isolation.project_root_of(folder), config, self.plugin_root())
+        except OSError as error:
+            logger.warning("runtime isolation bundle not prepared: %s", error)
+            return extra_env
+        if prepared["bundle"].get("error"):
+            logger.warning(prepared["bundle"]["error"])
+        return dict(extra_env or {}, **runtime_isolation.isolation_env(prepared["allowlist_file"]))
 
     def run_once(self, argv, folder, stdin_text, timeout_seconds, extra_env):
         """(result dict of `run_prompt`, why the next command should run: LIMIT_CAUSE for an account usage limit, UNUSABLE_CAUSE for an

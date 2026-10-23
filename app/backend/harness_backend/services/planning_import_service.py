@@ -248,10 +248,20 @@ class PlanningImportService:
         message = IMPORT_MESSAGE.format(main="%s/%s" % (folder, meta.get("main")), files=files, slug=slug,
                                         feature_dir=meta.get("feature_dir") or self.feature_relative_folder(slug),
                                         detected=describe_detected(meta.get("items") or {}))
-        reply = self.planning_service.send_message(context, message)
-        meta["sent_at"] = now_iso()
-        self.specs_file_repository.write_text_atomic(meta_path, json.dumps(meta, indent=2))
-        self.append_to_log(os.path.join(os.path.dirname(meta_path), IMPORT_LOG_NAME), "Sent: %s" % meta["sent_at"])
+        log_path = os.path.join(os.path.dirname(meta_path), IMPORT_LOG_NAME)
+        sent_meta = dict(meta, sent_at=now_iso())
+        self.specs_file_repository.write_text_atomic(meta_path, json.dumps(sent_meta, indent=2))  # before the send: a job that fails at once unmarks it
+
+        def unmark(failure):
+            self.specs_file_repository.write_text_atomic(meta_path, json.dumps(meta, indent=2))
+            self.append_to_log(log_path, "Not sent: %s" % str(failure)[:200])
+
+        try:
+            reply = self.planning_service.send_message(context, message, on_prepare_failed=unmark)
+        except Exception:
+            self.specs_file_repository.write_text_atomic(meta_path, json.dumps(meta, indent=2))
+            raise
+        self.append_to_log(log_path, "Sent: %s" % sent_meta["sent_at"])
         return reply
 
     def meta_path(self, context, import_id):

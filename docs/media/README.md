@@ -1,0 +1,1 @@
+demo.gif and panel.jpg: Playwright CLI (1280x800, headless) driving `python app/harness.py demo --no-browser`; the GIF was assembled with `make_gif.py` (Python standard library only; no Pillow or ffmpeg GIF encoder was available) and panel.jpg is a Chromium JPEG screenshot.

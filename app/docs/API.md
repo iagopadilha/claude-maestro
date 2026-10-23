@@ -157,8 +157,8 @@ Derivation rules (server):
 - `answers`: parse of the `## Answer <date> [marker]` blocks of `ANSWERS.md`; `[automatic answer from the loop...]` =
   `automatic`.
 - `guard_events`: the last 20 `blocked` decisions of `internal/guard.log` (written by the plugin's `PreToolUse` guard),
-  newest first, as `{t, profile, rule, detail}`; `detail` clipped to 200 characters and credential-redacted. Info and
-  `allowed-by-user` lines are left out and the raw file is never returned. `guard_counts` = blocks per rule over the whole
+  newest first, as `{t, profile, rule, detail}`; `detail` clipped to 200 characters and credential-redacted. Info,
+  `allowed-by-user` and `allow` lines (the audit lines of allowed MCP and Skill calls, see `MONITOR.md`) are left out and the raw file is never returned. `guard_counts` = blocks per rule over the whole
   log. No `guard.log` = `[]` and `{}`.
 - `agents[].log` items read from `turns/NNN.events.jsonl` come from the turn in progress when its file exists (the turn after
   the last finished one), otherwise from the last finished turn. An event of `type: "guard"` keeps its `rule` and `reason`.
@@ -228,6 +228,13 @@ Token required; planning mode = 409. Throws away the uncommitted changes of the 
 ### GET jobs (project route)
 `{"jobs": [...], "calls": [{"at": "ISO", "kind": "chat|roadmap|roadmap_refine|map|planning|spec_change|follow_up|action|quarantine|catalog|panel", "claude": "claude|cc", "auth_method": "login|token|api_key|''", "auth_email": "...", "auth_plan": "team", "cc_account": "claude2|''", "cost_usd": 0.02|null, "ok": true}]}`.
 `calls` is the call log of every `claude -p` the panel itself runs (not the loop turns): one line per `ClaudeClient.run_prompt`, newest first, up to 50 here. It is stored in `<work>/.specs/project/loop/internal/claude_calls.jsonl`, bounded (trimmed to the newest 400 lines once it passes 500). A line never holds the prompt, the reply or a secret. The sign-in method comes from the account cache of the loop panel (`auth status`); it is `''` until that cache has been read once. Recording never fails a call.
+
+### Chat sends and jobs: what changed in the contract (instant chat)
+The chat sends answer at once: `POST planning/send`, `planning/import/<id>/send`, `spec-change/<scope>/send`, `follow-up/send` and `quarantine/<slug>/summary` do only the cheap work in the request (validation, the refusals below and persisting the user message) and return 202 with the job id. The safety snapshot, the prerequisites check, the credential names file, the MCP access and the prompt are built in the job thread (`ClaudeJobCommand.before_start`). `chat/send` was already fast and is unchanged.
+- **Synchronous refusals keep their status and `code`:** `loop_running`, the loop worktree already exists (planning sends only), a job already running (`planning_busy` on the planning sends), invalid text (400). For the follow-up send they are the ones listed under it. The planning prerequisites refusal (409 `planning_prerequisites`) is synchronous only when the last gates computed within 10 s are red; otherwise it is checked in the job thread.
+- **A refusal can now be a job error.** When `before_start` raises a coded error the job ends `state: "error"` with the message in `error` and a stable `code` (today: `planning_prerequisites`); the user message the request appended is taken back out of the thread, and claude never starts. The job record in `internal/jobs/<id>.json` carries `code` only for such a job.
+- **Poll responses.** `GET planning/job/<id>` and `GET spec-change-job/<id>` return `{ok, state, cost_usd}` plus `reply` (when `ok`) or `error` and, when the job has one, `code`. The panel maps `code` with the same table it uses for the old 4xx. While `before_start` runs the job record (and `GET jobs`) says `progress: "preparing the safety snapshot"` and `state` stays `running`.
+- **`GET jobs`** items carry `progress` (only jobs with a preparation step) and `code` (only a job that ended with a coded error), next to the existing fields.
 
 ### Agent history (per turn): source = Claude Code transcripts
 Each `turns/NNN.json` has a `session_id`. Transcripts live in `<claude_transcripts_dir>/<slug>/<session_id>.jsonl`

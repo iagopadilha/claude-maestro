@@ -12,6 +12,7 @@
 .sl-note{color:var(--muted);font-size:11px;}
 .sl-bad{color:var(--red-text);}
 .sl-muted{font-size:12px;color:var(--muted);line-height:1.5;}
+.plan-rm-settings{display:flex;flex-direction:column;gap:8px;margin:10px 0;}
 .sl-models{font:500 12px var(--mono);color:var(--text2);padding:6px 10px;border:1px solid var(--line2);border-radius:8px;background:var(--panel0);}
 .sl-choice{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border:1px solid var(--line2);border-radius:8px;background:var(--panel0);cursor:pointer;line-height:1.4;}
 .sl-choice input{width:16px;height:16px;margin-top:2px;accent-color:var(--amber);flex:none;}

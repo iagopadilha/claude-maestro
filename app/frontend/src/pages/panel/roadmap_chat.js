@@ -59,7 +59,7 @@ function followJob(scope, id, since) {
       const r = await ctx.api.get('spec-change-job/' + encodeURIComponent(id), 10000);
       if (s.job !== job) return;
       if (r.state === 'ok') { done(null); return; }
-      if (r.state === 'error') { done(r.error || 'The AI failed while writing the reply.'); return; }
+      if (r.state === 'error') { done(SEND_ERRORS[r.code] || r.error || 'The AI failed while writing the reply.'); return; } // a coded error = the refusal the 4xx used to give
     } catch (e) {
       if (s.job !== job) return;
       if (e.status === 404) { done('The reply job was not found on the server.'); return; }
@@ -79,12 +79,15 @@ function inputLock(s) {
   return null;
 }
 
-async function send(scope, text) {
+/** `input` (optional, from submit): `clear()` empties the textarea and draft when the message is accepted (before the POST), `back()` puts
+ *  the text back after a failed POST only if the user typed nothing new meanwhile. */
+async function send(scope, text, input) {
   const s = st(scope), lock = inputLock(s);
   if (lock) { toast(lock, 'err'); return false; }
   if (busyNow(s) || s.sending) { toast(SEND_ERRORS.spec_change_busy, 'err'); return false; }
   if (text.length > MAX_TEXT) { toast(`The message has ${text.length} characters; the limit is ${MAX_TEXT}.`, 'err'); return false; }
   s.sending = true; s.err = null; s.lastText = text; s.pending = { role: 'user', text, at: new Date().toISOString() };
+  if (input) input.clear();
   renderAll();
   let ok = false;
   try {
@@ -93,7 +96,8 @@ async function send(scope, text) {
     if (r.job_id) followJob(scope, r.job_id, Date.now()); else load(scope);
   } catch (e) {
     const code = e.body && e.body.code;
-    s.pending = null; s.err = SEND_ERRORS[code] || 'Not sent: ' + e.message;
+    s.pending = null; if (input) input.back();
+    s.err = SEND_ERRORS[code] || 'Not sent: ' + e.message;
     toast(s.err, 'err');
     if (code) load(scope);
   } finally { s.sending = false; renderAll(); }
@@ -104,7 +108,10 @@ async function submit(ev, scope) {
   const ta = document.getElementById('rc-text'), s = st(scope);
   const text = ta ? ta.value.trim() : '';
   if (!text) { if (ta) ta.focus(); return; }
-  if (await send(scope, text)) { if (ta) ta.value = ''; s.draft = ''; renderAll(); }
+  await send(scope, text, {
+    clear: () => { if (ta) ta.value = ''; s.draft = ''; },
+    back: () => { if (s.draft) return; s.draft = text; const now = document.getElementById('rc-text'); if (now) now.value = text; },
+  });
 }
 async function resetConversation(scope) {
   const s = st(scope);

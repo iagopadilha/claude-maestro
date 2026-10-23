@@ -6,28 +6,44 @@
 Short, evidence-based. Not a backlog.
 
 ## Size and concentration
-- `app/backend/harness_backend/engine/run_loop.py` is about 2,370 lines and `engine/loop_state.py` about 850: the loop engine is concentrated in few big modules, harder to change safely.
-- `plugin/skills/orchestrator/hooks/guard.py` is about 1,335 lines (the 1,500-line limit is near) and every new rule (headless, per-task scope) lands there: split it before adding more.
+- `engine/run_loop.py` was split (2,770 lines to about 740; `loop_io`, `claude_accounts`, `limit_waits`, `claude_turn`, `permission_denials`, `worktree_state`, `worktrees`, `auto_answers`, `turn_gates`, `preflight_checks`, `loop_cli` hold the rest), but `run_loop.py` still re-exports every moved name so tests can patch `run_loop.<name>`: a function that calls something tests replace has to stay there. `engine/loop_state.py` is about 850 lines.
+- `plugin/skills/orchestrator/hooks/guard.py` is about 1,730 lines, past the 1,500-line limit the map used to warn about (the allowlist rules and their audit lines landed there). Split it before adding more rules.
 
 ## Duplicated logic
 - Credential layers are resolved twice, with the same 5-layer order: `plugin/shared/testenv.py` (stdlib, used by the skills) and `app/backend/harness_backend/engine/credential_check.py` (the app). Nothing enforces that they stay equal (the blank-value rule and the user shared folder lookup were copied by hand): change both together.
 
 ## Containment is logical, not a sandbox
 - A loop turn is held by its worktree, the `claude -p` flags (permission mode, push disabled through `GIT_CONFIG_*`) and the text rules of `plugin/skills/orchestrator/hooks/guard.py` (`loop-guard-hardening`: production SQL writes, credential files, HTTP uploads, agent allowlist and model ceiling, shell delete/copy/move targets, unreadable `SCOPE.json`, secret-looking variables of the app `.env` left out of the turn by `engine/turn_environment.py`). It runs as the user, with the user's network and files: anything the text analysis cannot see (a target in a variable, `python -c` opening a file, a symlink) stays possible.
+- Isolation of the `claude -p` environment (`runtime_isolation.py`) removes the user's plugins, skills, hooks and plugin MCP servers from app sessions, and the guard's `mcp-allowlist` / `skill-allowlist` deny the rest by name. It is still the guard's text analysis, not a sandbox, and Claude Code's built-in skills stay visible (they cannot be hidden by a flag without losing `/orchestrator`; the guard denies them per profile). The bundle copies skills from `~/.claude/skills` when present, so an edited skill reaches the loop only after the bundle signature changes (names, mtimes, sizes) and the next `claude -p` rebuilds it.
+- `--setting-sources project,local` also drops `~/.claude/CLAUDE.md` in app sessions (intended); the user's `autoMode` block is copied into the inline settings, the user's `permissions` are not.
 - The one lock that does not depend on a regex is the database grant: the production MCP user should be SELECT-only in MySQL itself (the user's own setting, outside the repo).
 - Next step when this is not enough: run each turn in a container or as a separate OS user with a network allowlist.
 
 ## Shell execution
-- `app/backend/harness_backend/engine/run_loop.py:767` and `:827` run a setup command with `shell=True`; `plugin/shared/verify.py:130` does the same for verify commands. The command comes from project config/spec, so it is trusted input: unclear whether that is validated anywhere.
+- `app/backend/harness_backend/engine/worktrees.py:368` and `:431` run a setup command with `shell=True`; `plugin/shared/verify.py:130` does the same for verify commands. The command comes from project config/spec, so it is trusted input: unclear whether that is validated anywhere.
 
 ## Broad exception handling
-- About 40 `except Exception` sites across 26 files in `app/backend/harness_backend` (e.g. `services/claude_job_service.py` has 5, `engine/run_loop.py` has 5). Can hide failures; check each when debugging a silent problem.
+- About 100 lines with `except Exception` across 50 files in `app/backend/harness_backend` (e.g. `services/claude_job_service.py` has 7, `engine/run_loop.py` has 5). Can hide failures; check each when debugging a silent problem.
 
 ## Test gaps
-- No front end tests, no browser e2e, no CI config found. See `TESTING.md`.
+- No front end tests, no tracked browser e2e, no CI config found. See `TESTING.md`.
 - Task waves are shown in the pipeline List view (a `tasks` block on features being built) but not in the Diagram view.
 
 ## Process and tooling
 - The guard blocks some shell commands by text match: a read-only command that merely contained a loop-related file name was blocked for a mapper agent. Expect false positives; use dedicated Read/Grep/Glob tools.
 - `CLAUDE.md` says `Stack: unknown` and `.specs/project/RULES.md` is still the empty template (placeholders only), so no architecture limits are enforced from there.
 - `__pycache__` folders exist in the working tree (root and `app/backend/tests`); whether they are ignored by `.gitignore`: not verified.
+
+## Panel findings not fixed (E2E pass of 2026-10-22)
+Five small front end defects were fixed in that pass; these were reported and left. Full table with evidence: `.specs/features/loop-isolation-and-instant-chat/E2E-FINDINGS.md` (git-ignored).
+- F-01 (low): the panel has only a dark theme (no `prefers-color-scheme`); light/dark parity cannot be met without a theme system.
+- F-02 (low-medium): the wrap-up banner (max 55% of the loop column) with an open follow-up thread leaves about 100 px for the pipeline at 1280x800; collapse the thread.
+- F-03 (low): header `running . turn 2` while the strip shows `T1 in progress`; "RUNNING . 0 / No agent running. Waiting for your decision." shows while a loop runs and when none exists.
+- F-04 (low): in the Start loop dialog the primary buttons sit at the end of the scrolling body (not sticky), and "Branch base" appears twice.
+- F-05 (low): the "Pause requested" toast covers the header buttons while it lives.
+- F-06 (low): agent dialog for `gate @ api-base` says DONE with 1 run while its chat greeting says it has not run; the inspector shows "NOW . T-" with no turn.
+- F-07 (medium): `RoadmapChat` (`app/frontend/src/pages/panel/roadmap_chat.js`) is dead code: nothing imports it, so the "change a spec with the AI" chat cannot be opened from the panel. Mount it or delete it with its CSS.
+- F-08 (medium, coverage): decisions with items, the critical-decision pause, a blocked feature and errors > 0 were never exercised by the pass (needs the engine fake scenario keys `decision_lines` and `features.<slug>.exec = fail`).
+- F-09 (low): layout is computed at render time; resizing from 1280 to 390 without a reload keeps the wide split (no resize listener).
+- F-10 (low): pipeline "Fit" at 30-35% for 9 features leaves large margins and unreadable node text until zoomed.
+- F-11 (info): in the demo, the hub card says `next action follow the loop` while `done`, and Pause shows a toast instead of its dialog.

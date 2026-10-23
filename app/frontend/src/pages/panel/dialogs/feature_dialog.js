@@ -74,7 +74,7 @@ function Header({ slug, detail }) {
     <${Fact} label="CURRENT STEP">${txt(detail && detail.current_step)}<//>
     <${Fact} label="DEPENDS ON">${deps.length ? deps.join(', ') : 'nothing'}<//>
     <${Fact} label="PATHS">${list(base.paths).length ? list(base.paths).join(', ') : '—'}<//>
-    <${Fact} label="LAST TURN RAN WITH">${claude ? html`<${ClaudeBadge} source=${{ ...claude, claude_account: claude.account }} /> ${(describeClaude({ ...claude, claude_account: claude.account }) || {}).words || ''}` : '—'}<//>
+    <${Fact} label="LAST TURN RAN WITH">${claude && describeClaude({ ...claude, claude_account: claude.account }) ? html`<${ClaudeBadge} source=${{ ...claude, claude_account: claude.account }} /> ${describeClaude({ ...claude, claude_account: claude.account }).words || ''}` : '—'}<//>
   </div>`;
 }
 

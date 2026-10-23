@@ -61,6 +61,16 @@ Rules:
 - Reply short: what you changed (file and feature slugs) and which features are likely affected."""
 
 
+class SpecChangeTurn:
+    """What `prepare_reply` (job thread) hands to `finish_reply`: the state of the scope before claude started."""
+
+    def __init__(self):
+        self.snapshot = None
+        self.before_texts = {}
+        self.rows_before = None
+        self.roadmap_before = None
+
+
 class ISpecChangeService(Protocol):
     def get_scope(self, context, scope) -> dict: ...
     def send_message(self, context, scope, text) -> dict: ...
@@ -150,6 +160,8 @@ class SpecChangeService:
             result["reply"] = job.get("reply") or ""
         elif job["state"] == JOB_STATE_ERROR:
             result["error"] = job.get("error") or "claude finished with an error"
+            if job.get("code"):
+                result["code"] = job["code"]
         return result
 
     # ------------------------------------------------ send
@@ -161,19 +173,14 @@ class SpecChangeService:
             work_dir = context.work_dir
             thread = self.spec_change_thread_repository.read_thread(work_dir, scope)
             session = thread.get("session_id") or ""
-            snapshot = self.workspace_file_guard.take_snapshot(work_dir, GUARD_IGNORED_PATHS)
-            before_texts = self.read_scope_texts(work_dir, scope)
-            rows_before, roadmap_before = read_roadmap_rows(work_dir)
-            allowed_tools = ["Read", "Grep", "Glob"] + self.build_edit_rules(scope)
-            argv = self.claude_client.build_command(SPEC_CHANGE_MODEL, SPEC_CHANGE_BUDGET_USD, allowed_tools, SPEC_CHANGE_DISALLOWED_TOOLS,
-                                                    no_mcp=True, resume_session=session, permission_mode=SPEC_CHANGE_PERMISSION_MODE,
-                                                    hook_profile=SPEC_CHANGE_HOOK_PROFILE)
-            stdin_text = self.compose_prompt(scope, message, include_rules=not session)
             thread["messages"].append({"role": ROLE_USER, "text": message, "at": now_iso(), "cost_usd": None, "changed": []})
             self.spec_change_thread_repository.write_thread(work_dir, scope, thread)
+            turn = SpecChangeTurn()  # filled by `prepare_reply` in the job thread, read by `finish_reply`
             command = ClaudeJobCommand(
-                argv, stdin_text, session, timeout_seconds=SPEC_CHANGE_TIMEOUT_SECONDS, work_dir=work_dir,
-                finalize=lambda result: self.finish_reply(context, scope, snapshot, before_texts, rows_before, roadmap_before, result))
+                [], "", session, timeout_seconds=SPEC_CHANGE_TIMEOUT_SECONDS, work_dir=work_dir,
+                before_start=lambda update_progress: self.prepare_reply(context, scope, session, message, turn),
+                on_prepare_failed=lambda failure: self.undo_unsent_message(context, scope, message),
+                finalize=lambda result: self.finish_reply(context, scope, turn, result))
             try:
                 job = self.claude_job_service.start_job(context.repo_path, JOB_TYPE_SPEC_CHANGE, command)
             except Exception:
@@ -182,6 +189,27 @@ class SpecChangeService:
                 raise
         self.log.info("spec_change_message_sent", project=context.project.id, scope=scope, job=job["id"], resuming_session=bool(session))
         return {"ok": True, "job_id": job["id"]}
+
+    def undo_unsent_message(self, context, scope, message):
+        """`before_start` failed (claude never started): the user message goes out of the thread, as when the old request refused."""
+        with self.thread_lock:
+            thread = self.spec_change_thread_repository.read_thread(context.work_dir, scope)
+            last = thread["messages"][-1] if thread["messages"] else None
+            if last and last.get("role") == ROLE_USER and last.get("text") == message:
+                thread["messages"].pop()
+                self.spec_change_thread_repository.write_thread(context.work_dir, scope, thread)
+
+    def prepare_reply(self, context, scope, session, message, turn):
+        """Job thread, before claude: the safety snapshot, the texts to compare after the reply, the argv and the prompt."""
+        work_dir = context.work_dir
+        turn.snapshot = self.workspace_file_guard.take_snapshot(work_dir, GUARD_IGNORED_PATHS)
+        turn.before_texts = self.read_scope_texts(work_dir, scope)
+        turn.rows_before, turn.roadmap_before = read_roadmap_rows(work_dir)
+        allowed_tools = ["Read", "Grep", "Glob"] + self.build_edit_rules(scope)
+        argv = self.claude_client.build_command(SPEC_CHANGE_MODEL, SPEC_CHANGE_BUDGET_USD, allowed_tools, SPEC_CHANGE_DISALLOWED_TOOLS,
+                                                no_mcp=True, resume_session=session, permission_mode=SPEC_CHANGE_PERMISSION_MODE,
+                                                hook_profile=SPEC_CHANGE_HOOK_PROFILE)
+        return {"argv": argv, "stdin_text": self.compose_prompt(scope, message, include_rules=not session)}
 
     @staticmethod
     def compose_prompt(scope, message, include_rules):
@@ -198,9 +226,10 @@ class SpecChangeService:
             raise JobInProgressError("a reply (or another claude job) is already in progress in this project: wait for it to finish",
                                      code=SPEC_CHANGE_BUSY_CODE)
 
-    def finish_reply(self, context, scope, snapshot, before_texts, rows_before, roadmap_before, result):
+    def finish_reply(self, context, scope, turn, result):
         """Runs in the job thread: undoes changes outside the scope, protects the ROADMAP rows, records the reply and the changed files."""
         work_dir = context.work_dir
+        snapshot, before_texts, rows_before, roadmap_before = turn.snapshot, turn.before_texts, turn.rows_before, turn.roadmap_before
         report = self.workspace_file_guard.revert_unexpected_changes(snapshot, self.build_editable_paths(scope))
         touched = report["reverted"] + report["removed"] + report["unrestorable"]
         if touched:

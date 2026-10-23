@@ -1,5 +1,6 @@
 """Planning mode (`/p/<id>/api/planning*`) with the FAKE claude: gates, the live chat that writes the three documents, the
 file guard, busy/reset, the approval refusal and the CLI permission flags of the reply job."""
+from tests import settings_text
 import json
 import os
 import time
@@ -169,7 +170,7 @@ class TestPlanningConversation(PlanningTestCase):
         self.assertIn("--strict-mcp-config", argv, "planning runs without MCP")
         self.assertNotIn("--model", argv, "the account's default model")
         self.assertNotIn("--resume", argv)
-        hook_command = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        hook_command = json.loads(settings_text(argv))["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         self.assertTrue(hook_command.endswith('guard.py" --profile planning'), "the deterministic PreToolUse hook confines the chat to .specs/")
 
         planning = self.get_planning(project_id)

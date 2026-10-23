@@ -1,7 +1,7 @@
 ---
 name: spec-writer
 description: Writes the spec of ONE feature using the tlc-spec-driven engine and saves it to .specs/features/<slug>/. Returns only pointers, affected paths and open questions — never the spec content. Used by the /orchestrator skill.
-tools: Read, Write, Edit, Glob, Grep, Bash, Skill, mcp__grafana__query_loki_logs, mcp__grafana__list_loki_label_names, mcp__grafana__list_loki_label_values, mcp__grafana__query_loki_stats, mcp__grafana__query_loki_patterns, mcp__grafana__find_error_pattern_logs, mcp__grafana__list_datasources
+tools: Read, Write, Edit, Glob, Grep, Bash, Skill, mcp__grafana__query_loki_logs, mcp__grafana__list_loki_label_names, mcp__grafana__list_loki_label_values, mcp__grafana__query_loki_stats, mcp__grafana__query_loki_patterns, mcp__grafana__find_error_pattern_logs, mcp__grafana__list_datasources, mcp__mcp-mysql-dev__mysql_query
 model: sonnet
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: executor-back
 description: Implements ONE backend feature (.NET / NestJS) from an already approved spec, restricted to the declared paths. Always loads the backend skill (backend-dev-skill if installed, else backend-dev). Never runs git. Used by the /orchestrator skill.
-tools: Read, Write, Edit, Glob, Grep, Bash, Skill
+tools: Read, Write, Edit, Glob, Grep, Bash, Skill, mcp__mcp-mysql-dev__mysql_query
 model: sonnet
 ---
 

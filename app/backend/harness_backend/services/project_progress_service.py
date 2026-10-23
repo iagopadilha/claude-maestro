@@ -7,6 +7,8 @@ The planning gates (what "Approve roadmap" requires) are built from the same fac
 """
 import os
 import re
+import threading
+import time
 from types import SimpleNamespace
 from typing import Protocol
 
@@ -50,6 +52,7 @@ MISSING_ITEMS_SHOWN = 6
 ACTION_REPOS = "repos"
 ACTION_BY_FAILING_GATE = {GATE_STRUCTURE: ACTION_STRUCTURE, GATE_SUBPROJECTS: ACTION_SUBPROJECTS, GATE_CONFORMANCE: ACTION_CONFORMANCE, GATE_MAP: ACTION_MAP,
                           GATE_REPOS: ACTION_REPOS, GATE_FLOWS: ACTION_FLOWS}
+PLANNING_GATES_CACHE_SECONDS = 10  # how long the last gates may answer a chat send's prerequisites refusal without a new check
 NAMES_THAT_ARE_NOT_CODE = {".git", ".specs", ".claude", ".vscode", ".idea", "claude.md", "readme.md", ".gitignore",
                            ".gitattributes", "license", "license.md"}
 
@@ -60,6 +63,7 @@ class IProjectProgressService(Protocol):
     def get_loop_status(self, work_dir) -> dict: ...
     def is_loop_running(self, context) -> bool: ...
     def build_planning_gates(self, context) -> list: ...
+    def read_cached_planning_gates(self, context, max_age_seconds=10) -> list | None: ...
 
 
 def create_step(step_id, title, ok, detail, optional=False):
@@ -74,6 +78,8 @@ class ProjectProgressService:
         self.process_runner = process_runner
         self.claude_job_service = claude_job_service
         self.log = log
+        self.gates_cache = {}  # project id -> (monotonic time, gates): the last planning gates computed, for the chat send's cheap refusal
+        self.gates_cache_lock = threading.Lock()
         self.readiness_provider = None  # set by the projects module: `provider(context) -> readiness result | None` (None = the gate `ready` is absent)
         self.subprojects_provider = None  # set by the projects module: `provider(context) -> SubprojectsService.describe dict | None`
         self.repo_readiness_provider = None  # set by the multi-repo module: `provider(context) -> [{name, missing, detail}]` of the extra edit repos
@@ -111,7 +117,18 @@ class ProjectProgressService:
         """The planning checklist (gate ids in the contract order; see planning_gates.py)."""
         facts = self.read_project_facts(context)
         self.record_import_coverage(context, facts)
-        return build_planning_gates(facts)
+        gates = build_planning_gates(facts)
+        with self.gates_cache_lock:
+            self.gates_cache[context.project.id] = (time.monotonic(), gates)
+        return gates
+
+    def read_cached_planning_gates(self, context, max_age_seconds=PLANNING_GATES_CACHE_SECONDS):
+        """The last gates computed for this project when they are at most `max_age_seconds` old, else None (in memory only)."""
+        with self.gates_cache_lock:
+            entry = self.gates_cache.get(context.project.id)
+        if entry is None or time.monotonic() - entry[0] > max_age_seconds:
+            return None
+        return entry[1]
 
     def record_import_coverage(self, context, facts):
         """Writes the coverage line of the newest import's IMPORT-LOG.md (when it was sent and IMPORT-COVERAGE.md exists). Never raises."""

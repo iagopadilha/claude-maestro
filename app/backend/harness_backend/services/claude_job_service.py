@@ -39,6 +39,7 @@ INTERRUPTED_JOB_MESSAGE = "interrupted: the app was shut down while the job was 
 PUBLIC_JOB_FIELDS = ("id", "type", "state", "started_at", "finished_at", "cost_usd", "reply", "error")
 PROGRESS_JOB_FIELDS = ("progress",)  # only jobs with a preparation step (`before_start`) carry it
 TASK_JOB_FIELDS = ("steps", "result")  # only task jobs carry them
+CODE_JOB_FIELDS = ("code",)  # only a job that ended with a coded error (`ClaudeJobError`) carries it
 
 
 def now_iso():
@@ -58,6 +59,15 @@ class IClaudeJobService(Protocol):
     def is_busy(self) -> bool: ...
 
 
+class ClaudeJobError(Exception):
+    """Raised by `before_start` to end the job as `error` with a stable `code` next to the message (the panel maps the code like the
+    4xx the same refusal gave when it was answered synchronously)."""
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
+
+
 class ClaudeJobCommand:
     """What to run: ready argv (built by the ClaudeClient) and the stdin text.
 
@@ -66,12 +76,14 @@ class ClaudeJobCommand:
     `work_dir` (optional) is the folder claude runs in (the loop worktree); default = the repo path the job is registered under.
     `before_start(update_progress)` (optional) runs in the job thread BEFORE claude (e.g. the safety snapshot of a map job): the
     record says `progress: "preparing the safety snapshot"` meanwhile, `update_progress(text)` replaces that text, and an exception
-    ends the job as `error` with its message (claude never starts and `finalize` does not run).
+    ends the job as `error` with its message (claude never starts and `finalize` does not run); a `ClaudeJobError` also puts its `code`
+    in the record (and in the public job). `before_start` may RETURN a dict `{"argv": [...], "stdin_text": "..."}` (either key): those
+    replace the command's argv / stdin, so the chat sends build the final command in the job thread (None = keep the command as is).
     `parallel_key` (optional, a normalized folder): the job may run next to other jobs of the SAME repository that also carry a
     `parallel_key`, as long as the keys differ (the subproject maps of a monorepo). Without it the job is exclusive both ways."""
 
     def __init__(self, argv, stdin_text="", resumed_session="", timeout_seconds=None, finalize=None, work_dir=None, before_start=None,
-                 parallel_key=None):
+                 parallel_key=None, on_prepare_failed=None):
         self.parallel_key = parallel_key
         self.argv = list(argv)
         self.stdin_text = stdin_text
@@ -80,6 +92,7 @@ class ClaudeJobCommand:
         self.finalize = finalize
         self.work_dir = work_dir
         self.before_start = before_start
+        self.on_prepare_failed = on_prepare_failed  # optional `fn(error)`: runs in the job thread when `before_start` raised (undo what the request persisted)
 
 
 class ClaudeJobService:
@@ -186,13 +199,30 @@ class ClaudeJobService:
         if command.before_start is None:
             return None
         try:
-            command.before_start(lambda text: self.update_progress(record, text))
+            prepared = command.before_start(lambda text: self.update_progress(record, text))
         except Exception as failure:  # the preparation failed: the job ends here with the reason visible in the record
             message = str(failure)[:500] or type(failure).__name__
             self.log.error("claude_job_before_start_failed", job=record["id"], type=type(failure).__name__, message=message[:200])
-            return {"ok": False, "reply": "", "cost_usd": None, "session_id": "", "error": message}
+            result = {"ok": False, "reply": "", "cost_usd": None, "session_id": "", "error": message}
+            self.run_prepare_failed_hook(record, command, failure)
+            if isinstance(failure, ClaudeJobError) and failure.code:
+                result["code"] = str(failure.code)
+            return result
+        if isinstance(prepared, dict):
+            if prepared.get("argv") is not None:
+                command.argv = list(prepared["argv"])
+            if prepared.get("stdin_text") is not None:
+                command.stdin_text = prepared["stdin_text"]
         self.update_progress(record, "")
         return None
+
+    def run_prepare_failed_hook(self, record, command, failure):
+        if command.on_prepare_failed is None:
+            return
+        try:
+            command.on_prepare_failed(failure)
+        except Exception as hook_failure:  # the undo never keeps the job from ending
+            self.log.error("claude_job_prepare_failed_hook_failed", job=record["id"], type=type(hook_failure).__name__, message=str(hook_failure)[:200])
 
     def update_progress(self, record, text):
         record["progress"] = str(text or "")
@@ -211,6 +241,8 @@ class ClaudeJobService:
         record.update(state=JOB_STATE_OK if result.get("ok") else JOB_STATE_ERROR, finished_at=now_iso(),
                       cost_usd=result.get("cost_usd"), reply=str(result.get("reply") or "")[:JOB_REPLY_LIMIT],
                       error=str(result.get("error") or ""), session_id=result.get("session_id") or record.get("session_id") or "")
+        if result.get("code"):
+            record["code"] = str(result["code"])
         try:
             self.write_record(record["dir"], record)
         except OSError as failure:
@@ -306,5 +338,6 @@ class ClaudeJobService:
 
     @staticmethod
     def to_public(record):
-        fields = PUBLIC_JOB_FIELDS + (TASK_JOB_FIELDS if "steps" in record else ()) + (PROGRESS_JOB_FIELDS if "progress" in record else ())
+        fields = (PUBLIC_JOB_FIELDS + (TASK_JOB_FIELDS if "steps" in record else ()) + (PROGRESS_JOB_FIELDS if "progress" in record else ())
+                  + (CODE_JOB_FIELDS if record.get("code") else ()))
         return {field: (list(record.get(field)) if field == "steps" else record.get(field)) for field in fields}

@@ -159,8 +159,9 @@ class TestMonorepoProgress(ProjectsTestCase):
         write_file(os.path.join(single_repo, "docs", "codebase", "STACK.md"), "# Stack\n")
         status, body = self.request("POST", "/p/%s/api/planning/send" % single_id, {"text": "plan it"})
         if status == 202:
-            self.wait_for_planning_job(single_id, body["job_id"])
-            self.assertNotIn("Subprojects of this monorepo", self.read_claude_calls()[-1]["stdin"])
+            job = self.wait_for_planning_job(single_id, body["job_id"])
+            if job["state"] == "ok":  # a red prerequisite now ends the job with a code (claude never starts): no new call to read
+                self.assertNotIn("Subprojects of this monorepo", self.read_claude_calls()[-1]["stdin"])
 
     def wait_for_planning_job(self, project_id, job_id):
         deadline = time.time() + JOB_WAIT_TIMEOUT_SECONDS

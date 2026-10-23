@@ -91,7 +91,7 @@ function PauseBody({ slug, bridge, onFinished }) {
   }, []);
 
   /** An action that changes the loop: toast, close the dialog and ask for a fresh /state. */
-  async function runLoopAction(name, request, doneMessage) {
+  async function runLoopAction(name, request, doneMessage, onError) {
     if (busyAction) return;
     setBusyAction(name);
     try {
@@ -101,10 +101,16 @@ function PauseBody({ slug, bridge, onFinished }) {
       schedulePoll(0);
     } catch (error) {
       toast('Could not complete the action: ' + error.message, 'err');
+      if (onError && isMounted.current) onError();
       if (isMounted.current) setBusyAction(null);
     }
   }
-  const retryWithGuidance = () => runLoopAction('retry', () => ctx.api.post(route + '/retry', { guidance: guidance.trim() }), 'Trying ' + slug + ' again with your guidance.');
+  const retryWithGuidance = () => {
+    const sentGuidance = guidance.trim();
+    if (!busyAction && sentGuidance) setGuidance(''); // cleared at submit; a failed request puts it back only if nothing new was typed
+    return runLoopAction('retry', () => ctx.api.post(route + '/retry', { guidance: sentGuidance }), 'Trying ' + slug + ' again with your guidance.',
+      () => setGuidance((current) => current || sentGuidance));
+  };
   const skipFeature = () => runLoopAction('skip', () => ctx.api.post(route + '/skip', {}), slug + ' skipped; the loop carries on.');
 
   async function revertChanges() {

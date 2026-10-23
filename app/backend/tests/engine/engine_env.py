@@ -58,6 +58,7 @@ def prepare_isolated_environment():
     os.environ["LOOP_DATA_DIR"] = os.path.join(root, "app-data")
     os.environ["LOOP_USER_SHARED_DIR"] = os.path.join(root, "user-shared")  # the user-level shared .env (never the real ~/.claude)
     os.environ["LOOP_CLAUDE_CONFIG_FILE"] = os.path.join(root, "claude.json")  # the user's MCP definitions (never the real ~/.claude.json)
+    os.environ.setdefault("LOOP_CLAUDE_HOME", os.path.join(root, "claude-home"))  # the user's ~/.claude (never the real one)
     os.environ[PREPARED_MARK] = root
 
 

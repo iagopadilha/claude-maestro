@@ -272,8 +272,10 @@ class ActionTests(CommandsTestCase):
         self.assertEqual(argv[argv.index("--model") + 1], "haiku")
         self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "0.2")
         self.assertEqual(argv[argv.index("--allowedTools") + 1], "")
-        self.assertEqual(argv[argv.index("--disallowedTools") + 1:argv.index("--strict-mcp-config")],
+        self.assertEqual(argv[argv.index("--disallowedTools") + 1:argv.index("--setting-sources")],
                          ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "NotebookEdit"])
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "project,local")  # runtime isolation (default on) sits between the tools and the MCP flags
+        self.assertLess(argv.index("--settings"), argv.index("--strict-mcp-config"))
         self.assertEqual(argv[argv.index("--strict-mcp-config") + 1:], ["--mcp-config", '{"mcpServers":{}}'])
         self.assertEqual(argv[:4], ["-p", "--output-format", "stream-json", "--verbose"])
         self.assertNotIn("--resume", argv)

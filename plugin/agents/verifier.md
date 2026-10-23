@@ -1,7 +1,7 @@
 ---
 name: verifier
 description: Verifies ONE already implemented feature by running the project's tests, build, typecheck and lint. Does not fix code and does not run git. Returns PASS, FAIL or UNVERIFIED. Used by the /orchestrator skill. Always runs inside the /orchestrator loop (Phase 6). Outside it, only when the user asks.
-tools: Read, Glob, Grep, Bash
+tools: Read, Glob, Grep, Bash, mcp__mcp-mysql-dev__mysql_query
 model: sonnet
 ---
 
