@@ -70,8 +70,17 @@ The panel puts them in one view, and turns the engine commands into buttons that
 
 | Folder | What it is |
 |---|---|
-| `plugin/` | The Claude Code plugin: `/orchestrator` skill and its satellites, 8 Sonnet-capped subagents, the `PreToolUse` guard hook, the spec engine, flow validation and dev best-practice skills. |
+| `plugin/` | The Claude Code plugin: `/orchestrator` skill and its satellites, `repo-catalog`, 8 Sonnet-capped subagents and the `PreToolUse` guard hook. |
 | `app/` | Loop Harness: the loop engine (`run_loop`, state, delivery, notifications), a layered Python API and the web panel. Standard library only, no `pip`, no `npm`: `python app/harness.py serve` starts the back end and the front end together. |
+
+### Companion plugin: Claude Dev Toolkit
+
+The dev skills the agents follow live in their own plugin, [**claude-dev-toolkit**](https://github.com/iagopadilha/claude-dev-toolkit): `backend-dev`, `frontend-dev`, `github`, `tlc-spec-driven` (the spec engine), `flow-validator` and the Playwright skills. They are generic. A team's own rules (Git flow, design system, app map, logs) plug in through the **standards slots** that each project declares in a `## Standards` section of its `CLAUDE.md`, next to the `Conformance` block. The toolkit's README has the slot contract.
+
+- **Maestro requires the toolkit.** Executors, the spec writer and the verifiers load its skills. The toolkit does not depend on Maestro.
+- **In the isolated loop** the bundle and the per-profile skill allowlist take the toolkit skills plus the skills bound to the project's slots.
+
+> **Transition:** the dev skills are being moved out of `plugin/skills/`. Until that change lands, Maestro still ships its own copies, and the loop uses them when the toolkit is not installed.
 
 ## Install
 
@@ -90,10 +99,12 @@ Requires Python 3.10+, Git and Claude Code signed in with your subscription. `gh
    - runs `harness.py doctor`, which checks the skill, the guard, the `claude` CLI and its version, and your notification channels.
 
    It exits non-zero on a hard failure, and `--yes` skips its one prompt. It installs nothing system-wide and never asks for a token.
-2. Install the plugin in Claude Code (`install.py` prints these too):
+2. Install the two plugins in Claude Code: Maestro and the dev toolkit it requires (`install.py` prints these too):
    ```
    /plugin marketplace add iagopadilha/loop-engineering-harness
    /plugin install loop-engineering-harness@loop-engineering-harness
+   /plugin marketplace add iagopadilha/claude-dev-toolkit
+   /plugin install claude-dev-toolkit@claude-dev-toolkit
    ```
 
 To do the same by hand, run `python app/harness.py install` and then `python app/harness.py doctor`.
@@ -139,6 +150,7 @@ Every end of the loop notifies you: success, error, a question, a quarantine pau
 Everything is plain Markdown and Python:
 
 - **Per project:** rules in `.specs/project/RULES.md` (the `orchestrator-create-block-rule` skill writes and tests them), your exceptions in `.specs/project/loop/json/PERMISSIONS.json`, and `Conformance:` in `CLAUDE.md`.
+- **Your team's standards:** bind the toolkit's slots (`git`, `backend`, `frontend`, `app-map`, `observability`) to your company's skills in the `## Standards` section of each repo's `CLAUDE.md`. Maestro never names a company skill itself.
 - **Behaviour:**
   - agent prompts in `plugin/agents/`;
   - phases in `plugin/skills/orchestrator/SKILL.md`;
@@ -188,7 +200,7 @@ LOOP_LIVE_CLI_TEST=1 python -m unittest discover -s app/backend/tests -t app/bac
 
 ## License
 
-MIT, see `LICENSE`. Third-party:
+MIT, see `LICENSE`. Third-party (these move to [claude-dev-toolkit](https://github.com/iagopadilha/claude-dev-toolkit) with the dev skills, and their notices go with them):
 
 - `plugin/skills/tlc-spec-driven`: based on work by [Felipe Rodrigues](https://github.com/felipfr) of the [Tech Lead's Club](https://github.com/tech-leads-club), CC-BY-4.0, modified here.
 - `plugin/skills/playwright-cli`: from [microsoft/playwright-cli](https://github.com/microsoft/playwright-cli), Apache-2.0, modified here. Its license is in that folder.
