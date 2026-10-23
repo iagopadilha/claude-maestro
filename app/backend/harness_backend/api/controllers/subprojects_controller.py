@@ -1,5 +1,5 @@
 """Routes of the monorepo subprojects (per project, optional `?repo=<name>` for a secondary repository): the list and its detection,
-the AI validation, the per-subproject Conformance, the map queue and the system map. Only translates HTTP <-> the services."""
+the AI validation, the per-subproject Conformance and Standards slots, the map queue and the system map. Only translates HTTP <-> the services."""
 from ..router import Response
 from .project_responses import respond_converting_errors
 
@@ -9,7 +9,8 @@ JOB_TYPE_SUBPROJECTS = "subprojects"
 
 
 class SubprojectsController:
-    def __init__(self, project_service, subprojects_service, validation_service, map_service, system_map_service, claude_job_service):
+    def __init__(self, project_service, subprojects_service, validation_service, map_service, system_map_service, claude_job_service, standards_service=None):
+        self.standards_service = standards_service
         self.project_service = project_service
         self.subprojects_service = subprojects_service
         self.validation_service = validation_service
@@ -23,6 +24,9 @@ class SubprojectsController:
         router.add("POST", SUBPROJECTS_ROUTE + "/detect", self.detect)
         router.add("POST", SUBPROJECTS_ROUTE + "/validate", self.validate)
         router.add("POST", SUBPROJECTS_ROUTE + "/conformance", self.set_conformance)
+        if self.standards_service is not None:
+            router.add("GET", SUBPROJECTS_ROUTE + "/standards", self.get_standards)
+            router.add("PUT", SUBPROJECTS_ROUTE + "/standards", self.set_standards)
         router.add("POST", SUBPROJECTS_ROUTE + "/map", self.map_subprojects)
         router.add("POST", SUBPROJECTS_ROUTE + "/system-map", self.map_system)
 
@@ -70,6 +74,15 @@ class SubprojectsController:
                 return Response.json(200, self.subprojects_service.set_conformance_all(context, repo_name))
             return Response.json(200, self.subprojects_service.set_conformance(context, body.get("path"), body.get("value"), repo_name))
         return respond_converting_errors(action)
+
+    def get_standards(self, request):
+        return respond_converting_errors(lambda: Response.json(200, self.standards_service.get_subproject(
+            self.get_context(request), request.get_query("path"), self.get_repo_name(request))))
+
+    def set_standards(self, request):
+        body = request.body
+        return respond_converting_errors(lambda: Response.json(200, self.standards_service.put_subproject(
+            self.get_context(request), body.get("path"), body.get("bindings"), self.get_repo_name(request))))
 
     def map_subprojects(self, request):
         def action():

@@ -31,7 +31,7 @@ A `PreToolUse` hook (`plugin/skills/orchestrator/hooks/guard.py`) runs on the or
 - **No push except deliver.** Every `git push` and `gh` command is blocked inside the loop (`headless-push`, `headless-gh`); a push to the integration branch, `main` or a force push is blocked for any caller. Delivery belongs to the engine.
 - **PROD is read only.** A writing SQL statement through a production MCP tool is denied and no `PERMISSIONS.json` entry releases it (`prod-sql-write`); the production MCP tool is allowed only to the orchestrator and planning profiles.
 - **MCP and skill allowlists.** In the loop and in app jobs, any `mcp__*` tool outside the profile's list is denied (`mcp-allowlist`), and a `Skill` call outside the profile's list is denied (`skill-allowlist`). Allowed MCP and Skill calls are written to `guard.log` as `allow` lines for audit. Your interactive sessions are never limited by these two rules ([`app/docs/MONITOR.md`](app/docs/MONITOR.md), "Guard and access").
-- **Runtime isolation.** Every `claude -p` the app starts runs with `--setting-sources project,local` plus a bundle that holds only the 8 plugin agents and the allowlisted skills (20 with the defaults). Your user plugins, your ~100 other skills, your hooks and plugin MCP servers do not load. A real `init` probe under isolation showed no MCP server outside the app's generated config, only the bundle agents and skills plus Claude Code built-ins, and `/orchestrator` available; a real headless call had the guard deny a non-allowlisted skill (`[skill-allowlist]`). Kill switch: `"loop_isolation": false` in `~/.loop-harness/config.json` ([`app/docs/ARCHITECTURE.md`](app/docs/ARCHITECTURE.md), "Runtime isolation").
+- **Runtime isolation.** Every `claude -p` the app starts runs with `--setting-sources project,local` plus a bundle that holds only the 8 plugin agents and the allowlisted skills (18 names with the defaults, found in your `~/.claude/skills`, the dev toolkit or the Maestro plugin, plus the skills your projects bind to their standards slots). Your other user plugins, your other skills, your hooks and plugin MCP servers do not load. A real `init` probe under isolation showed no MCP server outside the app's generated config, only the bundle agents and skills plus Claude Code built-ins, and `/orchestrator` available; a real headless call had the guard deny a non-allowlisted skill (`[skill-allowlist]`). Kill switch: `"loop_isolation": false` in `~/.loop-harness/config.json` ([`app/docs/ARCHITECTURE.md`](app/docs/ARCHITECTURE.md), "Runtime isolation").
 - **See it, do not trust it.** `python app/harness.py doctor --access` prints, per profile, the MCP tools and skills allowed, the bundle contents, a probe of what the isolated `claude` really loads (flagging anything outside the allowlists) and a summary of the last 200 `guard.log` lines. It is read only ([`app/docs/HOW_TO_USE.md`](app/docs/HOW_TO_USE.md), "Isolation and access").
 
 ![The panel after a loop: turn strip, pipeline of the roadmap by stage, the guard's blocks on the left, the selected agent on the right](docs/media/panel.jpg)
@@ -70,8 +70,16 @@ The panel puts them in one view, and turns the engine commands into buttons that
 
 | Folder | What it is |
 |---|---|
-| `plugin/` | The Claude Code plugin: `/orchestrator` skill and its satellites, 8 Sonnet-capped subagents, the `PreToolUse` guard hook, the spec engine, flow validation and dev best-practice skills. |
+| `plugin/` | The Claude Code plugin: `/orchestrator` skill and its satellites, `repo-catalog`, 8 Sonnet-capped subagents and the `PreToolUse` guard hook. It ships no dev skills: those come from the dev toolkit below. |
 | `app/` | Loop Harness: the loop engine (`run_loop`, state, delivery, notifications), a layered Python API and the web panel. Standard library only, no `pip`, no `npm`: `python app/harness.py serve` starts the back end and the front end together. |
+
+### Companion plugin: Claude Dev Toolkit
+
+The dev skills the agents follow live in their own plugin, [**claude-dev-toolkit**](https://github.com/iagopadilha/claude-dev-toolkit): `backend-dev`, `frontend-dev`, `github`, `tlc-spec-driven` (the spec engine), `flow-validator` and the Playwright skills, plus the shared scripts they use (`verify.py`, `testenv.py`, `regression_diff.py`...). They are generic. A team's own rules (Git flow, design system, app map, logs) plug in through the **standards slots** that each project declares in a `## Standards` section of its `CLAUDE.md`, next to the `Conformance` block. The toolkit's README and `docs/STANDARDS.md` have the slot contract.
+
+- **Maestro requires the toolkit.** Executors, the spec writer and the verifiers load its skills, and every dispatch carries a `TOOLKIT: <path>` line so they find its scripts. The toolkit does not depend on Maestro. `harness.py doctor` FAILs when the toolkit is not found and `harness.py paths` prints where it is.
+- **In the isolated loop** the bundle and the per-profile skill allowlist take the toolkit skills plus the skills bound to the project's slots.
+- **Standards from the terminal or the panel.** `python app/harness.py standards <repo>` shows and edits the bindings; the **Standards** block of the panel's installer card does the same.
 
 ## Install
 
@@ -87,16 +95,19 @@ Requires Python 3.10+, Git and Claude Code signed in with your subscription. `gh
    - checks Python, `git`, `claude` (and that `claude --version` answers) and the optional `gh`;
    - creates `~/.loop-harness/` and copies `app/.env.example` to `~/.loop-harness/.env`, only if that file is missing;
    - registers the app so the skill can find it (`harness.py install`);
-   - runs `harness.py doctor`, which checks the skill, the guard, the `claude` CLI and its version, and your notification channels.
+   - looks for the claude-dev-toolkit plugin and warns when it is not found (you install it in the next step);
+   - runs `harness.py doctor`, which checks the skill, the guard, the toolkit, the `claude` CLI and its version, and your notification channels.
 
    It exits non-zero on a hard failure, and `--yes` skips its one prompt. It installs nothing system-wide and never asks for a token.
-2. Install the plugin in Claude Code (`install.py` prints these too):
+2. Install the two plugins in Claude Code: Maestro and the dev toolkit it requires (`install.py` prints these too, and warns while the toolkit is missing):
    ```
    /plugin marketplace add iagopadilha/loop-engineering-harness
    /plugin install loop-engineering-harness@loop-engineering-harness
+   /plugin marketplace add iagopadilha/claude-dev-toolkit
+   /plugin install claude-dev-toolkit@claude-dev-toolkit
    ```
 
-To do the same by hand, run `python app/harness.py install` and then `python app/harness.py doctor`.
+To do the same by hand, run `python app/harness.py install` and then `python app/harness.py doctor`. For a toolkit kept outside the plugin cache, set `dev_toolkit_dir` in `~/.loop-harness/config.json`; a sibling clone at `../claude-dev-toolkit` is found by itself.
 
 ## Use
 
@@ -139,9 +150,11 @@ Every end of the loop notifies you: success, error, a question, a quarantine pau
 Everything is plain Markdown and Python:
 
 - **Per project:** rules in `.specs/project/RULES.md` (the `orchestrator-create-block-rule` skill writes and tests them), your exceptions in `.specs/project/loop/json/PERMISSIONS.json`, and `Conformance:` in `CLAUDE.md`.
+- **Your team's standards:** bind the toolkit's slots (`git`, `backend`, `frontend`, `app-map`, `observability`) to your company's skills in the `## Standards` section of each repo's `CLAUDE.md` (in a monorepo, of each subproject's, never the root one), with `harness.py standards` or the panel's installer card. Maestro never names a company skill itself: a bound skill joins the loop's allowlists and bundle by itself.
 - **Behaviour:**
   - agent prompts in `plugin/agents/`;
   - phases in `plugin/skills/orchestrator/SKILL.md`;
+  - the dev skills themselves, in the [claude-dev-toolkit](https://github.com/iagopadilha/claude-dev-toolkit) repository;
   - guard profiles in `plugin/skills/orchestrator/hooks/guard.py`;
   - engine in `app/backend/harness_backend/engine/`.
 - **Settings:** the `LOOP_*` and `GUARD_PROD_HINTS` variables (see `app/.env.example`), and the **Settings** button of the hub and the panel (isolation, caveman mode, extra skills, model, limits: saved in `~/.loop-harness/config.json`).
@@ -167,18 +180,21 @@ Every cookbook example is proven by `test_guard_cookbook.py`.
 
 - No subagent runs above Sonnet, even after a failure.
 - Only the orchestrator runs git. Only the feature branch is pushed, and only at the end. The integration branch (`LOOP_INTEGRATION_BRANCH`, default `developer`), `main` and force pushes are blocked.
-- Every `claude -p` the app starts runs isolated from your profile (`--setting-sources project,local` and a bundle of 8 agents and the allowlisted skills); the guard allows only the MCP tools and skills of each profile, and production SQL is read only. `harness.py doctor --access` shows it.
+- Every `claude -p` the app starts runs isolated from your profile (`--setting-sources project,local` and a bundle of 8 agents and the allowlisted skills, the project's slot skills included); the guard allows only the MCP tools and skills of each profile, and production SQL is read only. `harness.py doctor --access` shows it.
 - The panel listens only on `127.0.0.1`, checks the `Host` header and requires a per-run token on every write. Its chat is read-only (no tools that write, no MCP). Starting a loop, approving a roadmap and delivering always take your click.
 - The guard acts only on this plugin's subagents, the orchestrator skill and the app's own `claude -p` jobs. The MCP and skill allowlists apply only there (`LOOP_HEADLESS=1` or `LOOP_ISOLATED=1`); your interactive sessions are unaffected.
+- Maestro names no company. Company skills enter only through the `## Standards` section of your projects, and the user-level shared `.env` of the credential layers is read only when you set `user_shared_dir`.
 
 ## Tests
 
 From the repository root:
 
 ```
-python -m unittest discover -s app/backend/tests -t app/backend                      # engine, API, CLI contract, install.py
+python -m unittest discover -s app/backend/tests -t app/backend                      # engine, API, CLI contract, install.py, standards
 python -m unittest discover -s plugin/skills/orchestrator/hooks -p "test_guard*.py"  # guard + cookbook
 ```
+
+The tests are hermetic: `app/backend/tests/__init__.py` points `LOOP_CLAUDE_HOME`, the user-level shared folder and the MCP config at temporary locations and hides the sibling toolkit clone (`../claude-dev-toolkit`), and tests that need a toolkit name a fake one through `dev_toolkit_dir`, so your `~/.claude` and your clone are never read. Only the credential parity test opts in to the real toolkit and skips without it.
 
 The live CLI contract test is skipped by default. It sends one tiny real prompt (`--max-budget-usd 0.05`) through your signed-in `claude`, so it counts toward your plan's usage:
 
@@ -188,7 +204,4 @@ LOOP_LIVE_CLI_TEST=1 python -m unittest discover -s app/backend/tests -t app/bac
 
 ## License
 
-MIT, see `LICENSE`. Third-party:
-
-- `plugin/skills/tlc-spec-driven`: based on work by [Felipe Rodrigues](https://github.com/felipfr) of the [Tech Lead's Club](https://github.com/tech-leads-club), CC-BY-4.0, modified here.
-- `plugin/skills/playwright-cli`: from [microsoft/playwright-cli](https://github.com/microsoft/playwright-cli), Apache-2.0, modified here. Its license is in that folder.
+MIT, see `LICENSE`. The third-party credits for `tlc-spec-driven` (Tech Lead's Club, CC-BY-4.0) and `playwright-cli` (microsoft/playwright-cli, Apache-2.0) belong to [claude-dev-toolkit](https://github.com/iagopadilha/claude-dev-toolkit), which ships those skills; Maestro ships neither.

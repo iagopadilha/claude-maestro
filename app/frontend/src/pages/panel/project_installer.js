@@ -1,6 +1,6 @@
 /* Single repository: screen state and API calls of the setup installer (components/project_installer.js).
    Step 1 writes the root Conformance block (POST conformance, the route the old dialog used); step 2 starts the root map
-   (POST codebase/map, no budget) and follows its job. The planning gates (conformance, map) decide the current step. */
+   (POST codebase/map, no budget) and follows its job. The optional Standards slots use GET/PUT standards. The planning gates (conformance, map) decide the current step. */
 import { html, useState, useEffect } from '../../util/preact.js';
 import { list } from '../../util/format.js';
 import { toast } from '../../components/toast.js';
@@ -62,5 +62,6 @@ export function ProjectInstallerPanel({ conformanceGate, mapGate, reloadPlanning
     },
     async retryMap() { await startMapJob(); redraw((n) => n + 1); }, // the user already confirmed this run
   };
-  return html`<${ProjectInstaller} conformance=${readConformance(conformanceGate)} map=${map} busy=${busy} actions=${actions} onContinue=${onContinue} />`;
+  const standards = { scope: 'root', get: () => ctx.api.get('standards'), put: (bindings) => ctx.api.put('standards', { bindings }) }; // the project's own repo
+  return html`<${ProjectInstaller} conformance=${readConformance(conformanceGate)} map=${map} busy=${busy} actions=${actions} onContinue=${onContinue} standards=${standards} />`;
 }

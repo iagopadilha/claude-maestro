@@ -100,6 +100,8 @@ Without those variables (your interactive sessions, any use of the plugin outsid
 ```
 For an MCP SQL call `rule` is `mcp-allowlist` and `subject` is the statement's first verb in capitals (`SELECT`); for other MCP tools `subject` is empty. A denial is the usual `decision: "blocked"` line with the rule name. `harness.py doctor --access` summarizes the last 200 lines by decision, rule and agent and lists the last denials.
 
+**Slot skills and the allowlist.** The skills bound in the `## Standards` section of the project's `CLAUDE.md` files (root and each subproject) are added by the engine to the list of every profile that has a dev skill and of the `verifier`, with the plugin prefix removed, so a `Skill` call to `acme:acme-backend-standards` passes `skill-allowlist` when `acme-backend-standards` is listed. The guard has no rule of its own for slots; `doctor --access` tags those skills `(slot: <name>)`.
+
 **What the app does around the hook.** Isolation (`--setting-sources project,local`, the bundle of agents and allowlisted skills, the guard passed by `--settings`) is described in `ARCHITECTURE.md`; `harness.py doctor --access` shows what a real isolated `claude -p` loads. Turn it off with `"loop_isolation": false` in `~/.loop-harness/config.json`.
 
 ## Security

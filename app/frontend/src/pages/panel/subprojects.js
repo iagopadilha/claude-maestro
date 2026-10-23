@@ -208,6 +208,12 @@ function buildActions(store) {
   };
 }
 
+/** Standards slots of one subproject row: GET/PUT subprojects/standards (path in the query for GET and in the body for PUT; ?repo= like the rest). */
+const standardsOf = (store) => (row) => ({
+  get: () => apiOf(store).get(routeFor(store, 'standards') + (store.key ? '&' : '?') + 'path=' + encodeURIComponent(row.path)),
+  put: (bindings) => apiOf(store).put(routeFor(store, 'standards'), { path: row.path, bindings }),
+});
+
 /** <SubprojectsPanel repo? client? />: the table with every action. `repo` = repo name and `repoPath` = its folder (repositories dialog; Add folder is made relative to it), `client` = project client when ctx.api is not the right one. */
 export function SubprojectsPanel({ repo = '', client = null, repoPath = '' }) {
   const { store, actions } = useSubprojectsStore(repo, client, repoPath);
@@ -221,7 +227,7 @@ export function SubprojectsPanel({ repo = '', client = null, repoPath = '' }) {
 export function SubprojectsInstallerPanel({ gates, onContinue, repo = '', repoPath = '', client = null, skipConformance = false, finishLabel = undefined }) {
   const { store, actions } = useSubprojectsStore(repo, client, repoPath);
   if (!store.data && store.loadError) return html`<${LoadFailed} store=${store} repo=${repo} client=${client} />`;
-  return html`<${SubprojectsInstaller} data=${store.data} draft=${store.draft} busy=${store.busy} mapError=${store.mapError} actions=${actions} gates=${gates} onContinue=${onContinue} skipConformance=${skipConformance} finishLabel=${finishLabel} />`;
+  return html`<${SubprojectsInstaller} data=${store.data} draft=${store.draft} busy=${store.busy} mapError=${store.mapError} actions=${actions} gates=${gates} onContinue=${onContinue} skipConformance=${skipConformance} finishLabel=${finishLabel} standards=${standardsOf(store)} />`;
 }
 
 /** Shared by the table and the installer: subscribes to the store of `repo`, loads it and returns { store, actions }. */

@@ -38,6 +38,7 @@ from .spec_file_service import SpecFileService
 from .loop_worktree_removal_service import LoopWorktreeRemovalService
 from .specs_reset_service import SpecsResetService
 from .specs_structure_service import SpecsStructureService
+from .standards_service import StandardsService
 from .map_job_runner import attach_code_inventory
 from .subproject_map_service import SubprojectMapService
 from .subproject_validation_service import SubprojectValidationService
@@ -51,7 +52,9 @@ class ProjectsModule:
     def __init__(self, project_service, controllers, busy_providers, project_progress_service, roadmap_service, claude_job_service,
                  planning_requirement_service, planning_service, readiness_service=None, project_capabilities_service=None,
                  planning_repos_service=None, on_plan_changed=None, subprojects_service=None, subproject_validation_service=None,
-                 subproject_map_service=None, system_map_service=None, code_inventory_service=None, context_block_service=None):
+                 subproject_map_service=None, system_map_service=None, code_inventory_service=None, context_block_service=None,
+                 standards_service=None):
+        self.standards_service = standards_service  # shared with the subprojects controller and (via the composition) the repo-readiness one
         self.subproject_validation_service = subproject_validation_service  # `repo_registry_service` is set by the composition (multi-repo module)
         self.subproject_map_service = subproject_map_service
         self.system_map_service = system_map_service
@@ -165,6 +168,7 @@ def build_projects_module(config, log, get_app_url, folder_dialog_argv=None, job
     project_service = ProjectService(project_repository, specs_structure_service, specs_file_repository, git_client, process_runner,
                                      log, get_app_url)
 
+    standards_service = StandardsService(subprojects_service, log)
     controllers = [
         ProjectController(project_service, project_progress_service, specs_structure_service, folder_picker_service, log,
                           specs_reset_service),
@@ -173,9 +177,10 @@ def build_projects_module(config, log, get_app_url, folder_dialog_argv=None, job
         PlanningController(project_service, planning_service, planning_import_service, readiness_service),
         TestEnvironmentController(project_service, test_environment_service),
         SubprojectsController(project_service, subprojects_service, subproject_validation_service, subproject_map_service,
-                              system_map_service, claude_job_service),
+                              system_map_service, claude_job_service, standards_service),
     ]
     return ProjectsModule(project_service, controllers, [claude_job_service], project_progress_service, roadmap_service, claude_job_service,
                           planning_requirement_service, planning_service, readiness_service, project_capabilities_service,
                           planning_repos_service, on_plan_changed, subprojects_service, subproject_validation_service,
-                          subproject_map_service, system_map_service, code_inventory_service, context_block_service)
+                          subproject_map_service, system_map_service, code_inventory_service, context_block_service,
+                          standards_service)

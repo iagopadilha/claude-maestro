@@ -8,7 +8,7 @@ import os
 import re
 import sys
 
-from ..config import envload
+from ..config import app_config, envload, skill_locator
 from ..engine import cli_output
 from ..infrastructure.claude_client import redact_secrets
 from ..repositories.claude_call_log_repository import ClaudeCallLogRepository
@@ -24,6 +24,8 @@ TEST_NOTIFICATION_TIMEOUT_SECONDS = 120
 DEFAULT_ENABLED_CHANNELS = ("console", "toast", "file")
 CHANNEL_DETAIL_LIMIT = 200
 RECENT_TURNS_FOR_USAGE = 5
+TOOLKIT_INSTALL_LINES = ("/plugin marketplace add iagopadilha/claude-dev-toolkit",
+                         "/plugin install claude-dev-toolkit@claude-dev-toolkit")
 NOTIFY_RESULT_LINE_PATTERN = re.compile(r"^(\S+)\s+((?:ok|FAILED|SKIPPED).*)$")
 
 
@@ -99,6 +101,27 @@ class AppDiagnosticsService:
         calls.sort(key=lambda entry: str(entry.get("at") or ""), reverse=True)
         return build_shared_claude_account_service(self.config).build_usage_view(meta, turns, calls, wait=True)
 
+    def find_toolkit(self):
+        """Plugin root of claude-dev-toolkit ('' when not found): `dev_toolkit_dir` of config.json, the plugin cache, the sibling clone."""
+        return skill_locator.find_toolkit_root(app_config.read_user_config(self.config.user_data_dir))
+
+    def check_standards_bindings(self, project_folders, toolkit_root):
+        """[{"folder", "slot", "skill", "resolved"}] for every Standards binding of the given projects (root and subprojects), resolved the way
+        the runtime bundle does (user skills, toolkit, Maestro plugin, installed plugins). Never raises."""
+        standards = load_engine_module(self.config.engine_dir, "standards")
+        isolation = load_engine_module(self.config.engine_dir, "runtime_isolation")
+        plugin_root = skill_locator.plugin_root_of(self.config.orchestrator_skill_dir)
+        others = isolation.installed_plugin_skill_dirs()
+        rows = []
+        for folder in project_folders:
+            for entry in standards.project_bindings(folder):
+                for slot, value in entry["bindings"].items():
+                    name = standards.skill_name(value)
+                    found, _ = isolation.resolve_skill_sources(plugin_root, isolation.user_skills_dir(), [name], toolkit_root, others)
+                    rows.append({"folder": os.path.join(folder, entry["folder"]) if entry["folder"] != "." else folder,
+                                 "slot": slot, "skill": value, "resolved": name in found})
+        return rows
+
     def build_diagnostics(self, project_folders=None):
         """Dictionary of /api/app/info (without `seconds_until_shutdown`, which belongs to the server process).
         `project_folders` = the folders whose loop files tell the usage of each command (none = \"usage unknown\")."""
@@ -114,7 +137,15 @@ class AppDiagnosticsService:
             problems.append("the skill's hooks/guard.py was not found")
         elif not guard_blocks:
             problems.append("guard.py did not block `git push` (expected code 2): do not run the loop unsupervised")
+        toolkit_root = self.find_toolkit()
+        if not toolkit_root:
+            problems.append("claude-dev-toolkit not found (the dev skills and their shared scripts). In Claude Code run: %s"
+                            % " ; ".join(TOOLKIT_INSTALL_LINES))
         warnings = []
+        standards_rows = self.check_standards_bindings(project_folders, toolkit_root) if project_folders else []
+        warnings += ["standards: slot `%s` of %s is bound to `%s`, which is not installed (looked in ~/.claude/skills, the toolkit, the "
+                     "Maestro plugin and the installed plugins)" % (row["slot"], row["folder"], row["skill"])
+                     for row in standards_rows if not row["resolved"]]
         claude_on_path = self.claude_client.is_available()
         version = self.read_claude_version()
         if not claude_on_path:
@@ -126,6 +157,8 @@ class AppDiagnosticsService:
             "app_root_dir": self.config.app_root_dir,
             "data_dir": self.config.user_data_dir,
             "skill_dir": self.config.orchestrator_skill_dir,
+            "toolkit": {"path": toolkit_root, "found": bool(toolkit_root)},
+            "standards": standards_rows,
             "guard": {"path": self.config.guard_path, "found": guard_found, "blocks_git_push": guard_blocks},
             "claude": {"on_path": claude_on_path, "binary_configured": bool(self.config.claude_binary), "version": version["version"],
                        "version_output": version["output"], "min_tested_version": version["min_tested_version"],

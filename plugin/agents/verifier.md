@@ -11,7 +11,9 @@ You verify an already implemented feature. You fix nothing.
 
 ## How to find out what to run
 
-**First**, if `${CLAUDE_PLUGIN_ROOT}/shared/verify.py` exists, run `python "${CLAUDE_PLUGIN_ROOT}/shared/verify.py" --scope <PATHS folder>`. It detects build, typecheck, lint and test and already returns `VERDICT`, `RAN` and `FAIL` in this format. Use its result. Detect by hand (below) only if the script does not exist or returns `UNVERIFIED` and you believe the project has verification it did not see.
+Your prompt carries `TOOLKIT: <path>`: the toolkit's shared scripts are `<TOOLKIT>/shared/<script>`; without that line run `python "<app>/harness.py" paths` to find it.
+
+**First**, if `<TOOLKIT>/shared/verify.py` exists, run `python "<TOOLKIT>/shared/verify.py" --scope <PATHS folder>`. It detects build, typecheck, lint and test and already returns `VERDICT`, `RAN` and `FAIL` in this format. Use its result. Detect by hand (below) only if the script does not exist or returns `UNVERIFIED` and you believe the project has verification it did not see.
 
 Detect from the repo, in this order, and run what exists:
 

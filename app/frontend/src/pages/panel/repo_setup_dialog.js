@@ -2,7 +2,8 @@
    Step 0 says what was detected (monorepo or single project) with the "Not a monorepo" switch; then
    - monorepo: components/subprojects_installer.js through <SubprojectsInstallerPanel repo=...> (subprojects -> Conformance -> maps),
    - single repository: components/project_installer.js (Conformance -> map) driven by GET repos-readiness and
-     PUT/POST repos/<name>/conformance|map (the routes the repositories dialog already uses).
+     PUT/POST repos/<name>/conformance|map (the routes the repositories dialog already uses) and GET/PUT repos/<name>/standards
+     (optional Standards slots, hidden for a reference repository).
    Role `reference`: no Conformance step (the installer opens on the maps) and the map is optional: "Skip — read the raw code".
    openRepoSetupDialog({ repo, role, onDone }): repo = name or { name, path }; role = 'edit' (default) | 'reference'; onDone({ skipped })
    runs when the user finishes (Done, the last installer button or Skip) and after the dialog is closed. */
@@ -89,7 +90,8 @@ function SingleRepoInstaller({ name, isReference, onFinish }) {
     retryMap: startMapRequest,
   };
   const conformance = { written: info.conformance || '', suggestion: info.suggestion || null };
-  return html`<${ProjectInstaller} conformance=${conformance} map=${map} busy=${busy} actions=${actions} onContinue=${() => onFinish(false)} skipConformance=${isReference} finishLabel="Done" />`;
+  const standards = isReference ? null : { scope: name, get: () => appApi.get(reposRoute(name) + '/standards'), put: (bindings) => appApi.put(reposRoute(name) + '/standards', { bindings }) };
+  return html`<${ProjectInstaller} conformance=${conformance} map=${map} busy=${busy} actions=${actions} onContinue=${() => onFinish(false)} skipConformance=${isReference} finishLabel="Done" standards=${standards} />`;
 }
 
 // ---------- monorepo ----------

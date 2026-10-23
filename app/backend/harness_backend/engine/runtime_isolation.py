@@ -18,8 +18,14 @@ App job `hook_profile` values found in services/: planning (planning chat, roadm
 `--map-first`), spec (map jobs and subproject maps), subprojects, systemmap. Chat-like jobs with no hook profile (read-only chat,
 quarantine summary) run under `auto`. Follow-up reuses `planning` (its service says so), so it maps to the planning list.
 
+Skill sources, first folder with a SKILL.md wins: `<LOOP_CLAUDE_HOME>/skills/<name>`, the dev toolkit (`claude-dev-toolkit`, see
+`skill_locator.find_toolkit_root`), the Maestro plugin's `skills/`, then every other installed plugin cache (for the skills the projects bind
+to their standards slots). The skills bound in the `## Standards` section of the project's `CLAUDE.md` files (`standards.project_bindings`) join
+the allowlist of every profile that already has a dev skill, plus the verifier.
+
 Environment: `LOOP_CLAUDE_HOME` (default `~/.claude`) names the user's Claude folder (skills, `settings.json`); tests point it at a temp dir.
 """
+import glob
 import hashlib
 import json
 import os
@@ -28,6 +34,11 @@ import sys
 import tempfile
 import threading
 import time
+
+ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+if ENGINE_DIR not in sys.path:
+    sys.path.insert(0, ENGINE_DIR)
+import standards  # noqa: E402
 
 DATA_DIR_VARIABLE = "LOOP_DATA_DIR"
 DEFAULT_DATA_DIR_NAME = ".loop-harness"
@@ -44,17 +55,17 @@ ALLOWLIST_FILE_NAME = "skills-allowlist.json"
 MEMO_SECONDS = 30
 SUBPROJECTS_RELATIVE_PATH = os.path.join(".specs", "project", "SUBPROJECTS.json")
 
-PLANNING_SKILLS = ["orchestrator", "tlc-spec-driven", "repo-catalog", "backend-dev", "backend-dev-skill", "frontend-dev", "frontend-dev-skill"]
+PLANNING_SKILLS = ["orchestrator", "tlc-spec-driven", "repo-catalog", "backend-dev", "frontend-dev"]
 DEFAULT_ALLOWLIST = {
     "orchestrator": ["orchestrator", "orchestrator-audit-dependencies", "orchestrator-create-block-rule", "orchestrator-show-progress-graph",
                      "tlc-spec-driven", "repo-catalog"],
     "planning": PLANNING_SKILLS, "roadmapmap": PLANNING_SKILLS, "subprojects": PLANNING_SKILLS, "systemmap": PLANNING_SKILLS,
-    "spec": ["tlc-spec-driven", "repo-catalog", "backend-dev", "backend-dev-skill", "frontend-dev", "frontend-dev-skill", "investigate-first"],
-    "executor": ["backend-dev", "backend-dev-skill", "frontend-dev", "frontend-dev-skill", "safe-refactor", "refactoring-guru-techniques",
-                 "migration", "surgical-patch", "playwright-cli"],
+    "spec": ["tlc-spec-driven", "repo-catalog", "backend-dev", "frontend-dev", "investigate-first"],
+    "executor": ["backend-dev", "frontend-dev", "safe-refactor", "refactoring-guru-techniques", "migration", "surgical-patch", "playwright-cli"],
     "verifier": ["flow-validator", "playwright-cli", "playwright-trace", "playwright-component-testing", "verify-and-stop"],
 }
 SUBPROJECT_SKILL_PROFILES = ("spec", "executor")  # profiles that also get the skills named in SUBPROJECTS.json
+SLOT_SKILL_PROFILES = ("planning", "roadmapmap", "subprojects", "systemmap", "spec", "executor", "verifier")  # standards-slot skills go here
 AUTO_ALIAS = ("auto", "orchestrator")
 
 _memo = {}
@@ -114,13 +125,27 @@ def project_skill_names(project_root):
     return names
 
 
+def slot_skill_names(project_root):
+    """Plain names (plugin prefix removed) of the skills bound to the standards slots of the root and of every subproject."""
+    names = []
+    for entry in standards.project_bindings(project_root):
+        for value in entry["bindings"].values():
+            name = standards.skill_name(value)
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
 def skills_allowlist(project_root=None, config=None):
-    """{profile: [skill, ...]} (spec ACC-04): the defaults, plus the SUBPROJECTS.json skills for spec and executor, plus `loop_extra_skills`
-    of config.json for every profile. `auto` mirrors `orchestrator`."""
+    """{profile: [skill, ...]} (spec ACC-04): the defaults, plus the SUBPROJECTS.json skills for spec and executor, plus the skills bound to
+    the Standards slots of the project (root and subprojects) for every profile that has a dev skill and the verifier, plus
+    `loop_extra_skills` of config.json for every profile. `auto` mirrors `orchestrator`."""
     config = read_config() if config is None else config
     allowlist = {profile: list(skills) for profile, skills in DEFAULT_ALLOWLIST.items()}
     for profile in SUBPROJECT_SKILL_PROFILES:
         allowlist[profile] += [name for name in project_skill_names(project_root) if name not in allowlist[profile]]
+    for profile in SLOT_SKILL_PROFILES:
+        allowlist[profile] += [name for name in slot_skill_names(project_root) if name not in allowlist[profile]]
     extra = config.get(EXTRA_SKILLS_KEY)
     names = [str(item).strip() for item in extra if str(item).strip()] if isinstance(extra, list) else []
     if config.get(CAVEMAN_KEY, False) is True:
@@ -166,11 +191,40 @@ def tree_stamp(path):
     return newest, total
 
 
-def resolve_skill_sources(plugin_dir, user_dir, names):
-    """({name: source folder}, [missing names]): `<user skills>/<name>` first, else `<plugin>/skills/<name>`; a folder needs a SKILL.md."""
+def toolkit_root(config=None):
+    """Plugin root of claude-dev-toolkit ('' when not found); `config` is the config.json dict (read when None)."""
+    try:
+        import app_paths  # the engine's path bridge (backend on sys.path)
+        locator = app_paths.skill_locator
+    except ImportError:
+        from harness_backend.config import skill_locator as locator
+    return locator.find_toolkit_root(config)
+
+
+def installed_plugin_skill_dirs():
+    """The `skills` folder of every installed plugin (`~/.claude/plugins/cache/*/*/*/skills`, or `.../plugin/skills`), the newest version of
+    each plugin only, newest first."""
+    cache = os.path.join(claude_home(), "plugins", "cache")  # LOOP_CLAUDE_HOME or ~/.claude
+    newest = {}
+    for version_dir in glob.glob(os.path.join(glob.escape(cache), "*", "*", "*")):
+        skills = next((path for path in (os.path.join(version_dir, "skills"), os.path.join(version_dir, "plugin", "skills")) if os.path.isdir(path)), "")
+        if not skills:
+            continue
+        key = os.path.dirname(version_dir)
+        stamp = os.path.getmtime(version_dir)
+        if key not in newest or stamp > newest[key][0]:
+            newest[key] = (stamp, skills)
+    return [skills for _, skills in sorted(newest.values(), key=lambda item: item[0], reverse=True)]
+
+
+def resolve_skill_sources(plugin_dir, user_dir, names, toolkit_dir="", other_skill_dirs=()):
+    """({name: source folder}, [missing names]): `<user skills>/<name>`, then `<toolkit>/skills/<name>`, then `<plugin>/skills/<name>`, then
+    each of `other_skill_dirs` (installed plugin caches); a folder needs a SKILL.md."""
     found, skipped = {}, []
+    bases = [user_dir, os.path.join(toolkit_dir, "skills") if toolkit_dir else "", os.path.join(plugin_dir, "skills") if plugin_dir else ""]
+    bases += list(other_skill_dirs)
     for name in names:
-        for base in (user_dir, os.path.join(plugin_dir, "skills") if plugin_dir else ""):
+        for base in bases:
             candidate = os.path.join(base, name) if base else ""
             if candidate and os.path.isfile(os.path.join(candidate, "SKILL.md")):
                 found[name] = candidate
@@ -229,12 +283,13 @@ def swap_in(temp, bundle):
         shutil.rmtree(aside, ignore_errors=True)
 
 
-def ensure_bundle(data_dir_path, plugin_root_path, user_skills_path, names, use_memo=True):
+def ensure_bundle(data_dir_path, plugin_root_path, user_skills_path, names, use_memo=True, toolkit_dir="", other_skill_dirs=()):
     """Builds `<data dir>/runtime/bundle` when the source signature changed; cheap when it did not (and a 30 s in-process memo makes a call
     per command nearly free). Returns {"path", "skills", "skipped", "agents", "rebuilt"} (+ "error" when the swap failed and the old bundle
     stays). The build happens in a temp folder beside it and is swapped in, so a concurrent run never sees a half bundle."""
     names = sorted(set(names))
-    key = (os.path.abspath(data_dir_path), plugin_root_path or "", user_skills_path or "", tuple(names))
+    other_skill_dirs = tuple(other_skill_dirs)
+    key = (os.path.abspath(data_dir_path), plugin_root_path or "", user_skills_path or "", tuple(names), toolkit_dir or "", other_skill_dirs)
     now = time.time()
     with _memo_lock:
         hit = _memo.get(key)
@@ -242,7 +297,7 @@ def ensure_bundle(data_dir_path, plugin_root_path, user_skills_path, names, use_
         return dict(hit[1], rebuilt=False)
     runtime = os.path.join(os.path.abspath(data_dir_path), RUNTIME_DIR_NAME)
     bundle = os.path.join(runtime, BUNDLE_DIR_NAME)
-    sources, skipped = resolve_skill_sources(plugin_root_path, user_skills_path, names)
+    sources, skipped = resolve_skill_sources(plugin_root_path, user_skills_path, names, toolkit_dir, other_skill_dirs)
     agent_files = list_agent_files(plugin_root_path)
     signature = compute_signature(sources, plugin_root_path, agent_files)
     result = {"path": bundle, "skills": sorted(sources), "skipped": skipped, "agents": [name[:-3] for name in agent_files], "rebuilt": False}
@@ -381,7 +436,8 @@ def prepare(project_root=None, config=None, plugin_root_path=None):
     config = read_config() if config is None else config
     allowlist = skills_allowlist(project_root, config)
     root = plugin_root() if plugin_root_path is None else plugin_root_path
-    bundle = ensure_bundle(data_dir(), root, user_skills_dir(), all_skill_names(allowlist))
+    bundle = ensure_bundle(data_dir(), root, user_skills_dir(), all_skill_names(allowlist),
+                           toolkit_dir=toolkit_root(config), other_skill_dirs=installed_plugin_skill_dirs())
     return {"bundle": bundle, "allowlist_file": write_allowlist_file(data_dir(), allowlist)}
 
 

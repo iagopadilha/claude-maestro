@@ -7,8 +7,8 @@ user plans, cached in `.specs/project/loop/internal/planning/readiness.json`.
 the check's text line for it is not repeated in `warnings`.
 
 One run at a time per project (a second request waits for the first), 120 s timeout, never on the 2 s poll: `get` only reads the
-cache. A cached `ready`/`problems` whose fingerprint (mtimes of ROADMAP, REPOS.json, TEST-ENVIRONMENT, .env.test, the machine and
-shared `.env` and `~/.claude.json`) no longer matches is reported as `stale`. A check that could not run is `error` ("readiness
+cache. A cached `ready`/`problems` whose fingerprint (mtimes of ROADMAP, REPOS.json, TEST-ENVIRONMENT, .env.test, the machine `.env`, the
+toolkit and user shared `.env` and `~/.claude.json`) no longer matches is reported as `stale`. A check that could not run is `error` ("readiness
 check did not run"), which keeps the approval blocked.
 """
 import json
@@ -34,7 +34,8 @@ FINGERPRINT_RELATIVE_PATHS = (".specs/project/ROADMAP.md", ".specs/project/REPOS
 
 
 def default_machine_paths():
-    """Machine-level files that change what the check finds: machine and shared `.env`, `~/.claude.json` (MCP servers)."""
+    """Machine-level files that change what the check finds: machine `.env`, the toolkit's `shared/.env`, the user shared `.env` (only
+    when configured), `~/.claude.json` (MCP servers)."""
     paths = [os.path.join(os.path.expanduser("~"), ".claude.json")]
     try:
         from ..config import app_config
@@ -43,7 +44,9 @@ def default_machine_paths():
         pass
     try:
         import credential_check  # noqa: E402  (engine folder is on sys.path through specs_file_repository)
-        paths.append(credential_check.user_shared_env_path())
+        for shared_path in (credential_check.toolkit_shared_env_path(), credential_check.user_shared_env_path()):
+            if shared_path:  # '' = no toolkit found / no user shared folder configured
+                paths.append(shared_path)
     except Exception:  # noqa: BLE001
         pass
     return paths

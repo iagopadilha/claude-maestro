@@ -44,8 +44,13 @@ Writes (or updates) `<data dir>/config.json` with:
   `app/` in this repository > the installed plugin cache under `~/.claude/plugins/cache/` > `~/.claude/skills/orchestrator`).
 
 It exits 1 when the skill folder is not found (run it again with `--skill-dir`). It never writes under `~/.claude`.
-`python <app>/harness.py doctor` then shows what the app sees: skill folder, guard found and blocking `git push`,
-`claude` on PATH, notification channels and a live app.
+`python <app>/harness.py doctor` then shows what the app sees: skill folder, the claude-dev-toolkit (a FAIL when it is not found),
+guard found and blocking `git push`, `claude` on PATH, notification channels and a live app.
+
+The dev skills and their shared scripts are not in this plugin: they come from the companion plugin **claude-dev-toolkit**, which the loop requires.
+It is found through `dev_toolkit_dir` in `config.json`, then the newest copy in the plugin cache, then the sibling clone `<repo>/../claude-dev-toolkit`
+(`config/skill_locator.find_toolkit_root`). The skill does not search for it: it runs `harness.py paths --json` (section 3) once per turn and passes
+the result to every subagent as the line `TOOLKIT: <path>`.
 
 ## 3. Commands the skill runs
 
@@ -65,7 +70,9 @@ Every loop command is `python "<app>/harness.py" <subcommand>`, on one line, wit
 | `graph <args>` | `graph_view.py` | progress graph (`--ascii`, `--short`, `--mermaid`, `--write`) |
 | `classify <root> [--write STANDARD\|LEGACY]` | `classify_structure.py` | the `Conformance:` section of `CLAUDE.md` (or the panel's Conformance button) |
 | `scale <root>` | `scale.py` | how many mapping agents the repo needs |
-| `doctor [--json]` | the app | diagnostics |
+| `standards <repo> [--subproject <path>] [--set slot=skill ...] [--clear slot ...] [--json]` | `standards.py` | shows or edits the Standards slots (`## Standards` of the project's `CLAUDE.md`; per subproject in a monorepo) |
+| `paths [--json]` | the app | `{maestro_plugin, orchestrator_skill, toolkit}` (empty `toolkit` = missing; exit 0 anyway): the value goes in the `TOOLKIT: <path>` line of every dispatch, and the agents call `<TOOLKIT>/shared/<script>` |
+| `doctor [--json] [--project <repo>] [--toolkit-optional]` | the app | diagnostics: FAILs without the toolkit; with `--project`, WARNs for each Standards slot bound to a skill that is not installed |
 | `install` | the app | section 2 |
 
 A script name in the skill text (`run_loop.py`, `loop_state.py`, `delivery.py`, `notify.py`...) is an engine script in

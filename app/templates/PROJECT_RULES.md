@@ -6,10 +6,10 @@ Only the **application's limits** live here: what never/always holds. History, s
 `STATE.md` and in `phases/`, not here.
 
 **Who writes:** with `/orchestrator` running, **only the orchestrator** (the guard blocks subagents). Without the loop (standalone
-use of `tlc-spec-driven`), the main agent. In any case **only with an explicit statement from the user**; never by
+use of `tlc-spec-driven`, a skill of the claude-dev-toolkit plugin), the main agent. In any case **only with an explicit statement from the user**; never by
 inference. A subagent never edits; if it thinks a rule is missing, it returns it in `NOTES`.
 
-**Precedence:** a rule from here overrides spec, design, task and skill. Conflict = stop and ask (`NEEDS_CONFIRM`).
+**Precedence:** a rule from here overrides spec, design, task and skill. Conflict = stop and ask (`NEEDS_CONFIRM`). This includes the skills bound to the project's standards slots (the `## Standards` section of its `CLAUDE.md`): a limiting rule wins over them too.
 
 **Size:** up to ~40 rules and ~600 words. Beyond that, consolidate or move detail to `docs/codebase/`.
 

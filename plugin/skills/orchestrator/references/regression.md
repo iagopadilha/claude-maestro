@@ -29,7 +29,7 @@ In `.specs/features/<slug>/`:
 | `regression-baseline.json` | `verifier-flow` (baseline mode) | what the old code did |
 | `regression-new.json` | `verifier-flow` (new mode) | what the new code did |
 
-Same format as the snapshots of `${CLAUDE_PLUGIN_ROOT}/shared/regression_diff.py`: `{"responses": {...}, "tables": {...}, "externalCalls": [...], "logs": [...]}`.
+Same format as the snapshots of `<TOOLKIT>/shared/regression_diff.py`: `{"responses": {...}, "tables": {...}, "externalCalls": [...], "logs": [...]}`.
 
 ## What an `RG-xx` case is
 
@@ -44,7 +44,7 @@ RG-05 [curl]       order with no items -> 400 with message X, 0 writes, 0 e-mail
 RG-06 [e2e]        orders screen: the Approve button changes the badge to Approved and shows a success toast
 ```
 
-File format: template `${CLAUDE_PLUGIN_ROOT}/shared/REGRESSION_SCRIPT.md`, plus one status column per case:
+File format: template `<TOOLKIT>/shared/REGRESSION_SCRIPT.md`, plus one status column per case:
 
 ```
 SLUG: refactor-approve-order
@@ -74,7 +74,7 @@ spec (+ regression.md) -> gate -> BASELINE -> executor -> verifier (build/lint) 
    - **Principle: go as far as possible.** Do everything you can: baseline of what is covered, refactoring, build, verification and comparison of the covered cases. Only consider stopping when, to close the feature, **only** the gap is left and there is nothing more to do in it. Even then the rule below comes first: a partial gap becomes `not-covered` and the feature continues. Stopping and notifying is for what `TEST-ENVIRONMENT.md` cannot solve even in part (no comparable case at all, or a gap the user marked there as mandatory). The right way not to get here is to close the test environment **at the start** (`SKILL.md`, Phase 2b).
    - **An environment gap that does not prevent the rest** (missing test data, such as an account with no records; a secret missing for only some cases; an e-mail that must not be sent): the case becomes `not-covered:<reason>` in the Baseline and New columns, gets **one line in `VALIDATE.md`** (`- [<slug>] case RG-xx without test data | chose: continue with a partial regression | revert: provide the data and run only that case`) and the feature **continues**. **Never stop the loop for that** (user decision: the headless loop exists so it does not stop for nothing). Before declaring a gap, look for the data: `TEST-ENVIRONMENT.md`, a read of the DEV database, another user or account listed there; never create what `RULES.md` forbids. `VALIDATE.md` goes in the summary, the notification and the PR.
 3. **Executor + verifier** as usual.
-4. **Regression (after the `verifier` gives PASS).** `verifier-flow` with `MODE: new`: runs the same cases on the new code, writes `regression-new.json` and the New column; compares with `python "${CLAUDE_PLUGIN_ROOT}/shared/regression_diff.py" regression-baseline.json regression-new.json` (run in the feature folder). A large drop in counts (rows, calls) is an alert until explained.
+4. **Regression (after the `verifier` gives PASS).** `verifier-flow` with `MODE: new`: runs the same cases on the new code, writes `regression-new.json` and the New column; compares with `python "<TOOLKIT>/shared/regression_diff.py" regression-baseline.json regression-new.json` (run in the feature folder). A large drop in counts (rows, calls) is an alert until explained.
    - All `ok` -> `regression=ok`, go to commit.
    - Any `fail` -> `regression=failed`, the feature goes back to `approved` with `note=regression-failed`, the same executor receives the failed `RG-xx` (expected x obtained). `tries` +1; second failure = quarantine. **The baseline is not redone**: it belongs to the old code and remains valid.
 5. **Done.** The summary, `VALIDATE.md` and the PR list per feature: `ok` cases, `not-covered` (with reason) and what failed.
@@ -83,7 +83,7 @@ spec (+ regression.md) -> gate -> BASELINE -> executor -> verifier (build/lint) 
 
 - `verifier-flow` runs one at a time (it uses ports). Since a feature with `regression=` already moves alone in the wave, there is no collision with another executor.
 - Test data with the prefix `zz_regression_`, created by the script and removed at the end. Never in production.
-- Login and credentials: those of the project's DEV environment, listed by `$NAME` in `.specs/project/TEST-ENVIRONMENT.md` (values in the git-ignored `.env.test` / `~/.loop-harness/.env`; run commands with `python "<plugin>/shared/testenv.py" exec --project <root> '<command using $NAME>'` in single quotes, which fills the values in and redacts them from the output; never read the `.env` files); if a credential that blocks **all** cases is missing, `UNVERIFIED` with the question in `NOTES` and the exact secret-manager key of each item; if it is missing only for some cases, `not-covered` and continue (rule above).
+- Login and credentials: those of the project's DEV environment, listed by `$NAME` in `.specs/project/TEST-ENVIRONMENT.md` (values in the git-ignored `.env.test` / `~/.loop-harness/.env`; run commands with `python "<TOOLKIT>/shared/testenv.py" exec --project <root> '<command using $NAME>'` in single quotes, which fills the values in and redacts them from the output; never read the `.env` files); if a credential that blocks **all** cases is missing, `UNVERIFIED` with the question in `NOTES` and the exact secret-manager key of each item; if it is missing only for some cases, `not-covered` and continue (rule above).
 
 ## Bridge to unit tests (future)
 

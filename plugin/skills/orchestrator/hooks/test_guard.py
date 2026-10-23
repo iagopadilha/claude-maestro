@@ -1283,7 +1283,7 @@ RULE_PROBES = {
     "agent-allowlist": dict(profile="orchestrator", block=("Agent", {"subagent_type": "general-purpose"}), allow=("Agent", {"subagent_type": "executor-back"})),
     "model-ceiling": dict(profile="orchestrator", block=("Agent", {"subagent_type": "executor-back", "model": "opus"}), allow=("Agent", {"subagent_type": "executor-back", "model": "sonnet"})),
     "mcp-allowlist": dict(profile="executor", headless=True, block=("mcp__zendesk__get_ticket", {}), allow=("mcp__mcp-mysql-dev__mysql_query", {"query": "SELECT 1"})),
-    "skill-allowlist": dict(profile="executor", skills={"executor": ["backend-dev-skill"]}, block=("Skill", {"skill": "frontend-dev-skill"}), allow=("Skill", {"skill": "backend-dev-skill"})),
+    "skill-allowlist": dict(profile="executor", skills={"executor": ["backend-dev"]}, block=("Skill", {"skill": "frontend-dev"}), allow=("Skill", {"skill": "backend-dev"})),
     "engine-file-write": dict(profile="orchestrator", block=_file("Write", "@project/.specs/project/REPOS.json"), allow=_file("Write", "@project/.specs/project/REPOS-SUGGESTED.json")),
     "scope-unreadable": dict(profile="executor", scope_raw="{not json", block=_file("Edit", "@project/apps/a/x.ts"), allow=_file("Edit", "@project/.regression/x.ts")),
 }
@@ -1870,7 +1870,7 @@ class TestIsolationAllowlists(GuardTestCase):
     def test_other_mcp_denied_and_unknown_profile_falls_back_to_executor(self):
         self.env["LOOP_ISOLATED"] = "1"
         self.assertEqual(self.run_guard("mcp__zendesk__get_ticket", {}, "orchestrator"), BLOCKED)
-        self.assertEqual(self.run_guard("mcp__idatamcp__listar_roles", {}, "planning"), BLOCKED)
+        self.assertEqual(self.run_guard("mcp__acmemcp__list_roles", {}, "planning"), BLOCKED)
         self.assertEqual(self.run_guard(self.DEV, self.SELECT, "made-up"), PASSED)
         self.assertEqual(self.run_guard(self.PROD, self.SELECT, "made-up"), BLOCKED)
 
@@ -1896,14 +1896,19 @@ class TestIsolationAllowlists(GuardTestCase):
         self.assertEqual(self.guard_log(), [])
 
     def test_skill_allowlist_per_profile_with_prefix_strip(self):
-        self.skills_file({"executor": ["backend-dev-skill"], "verifier": []})
-        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev-skill"}, "executor"), PASSED)
-        self.assertEqual(self.run_guard("Skill", {"skill": "plugin:Backend-Dev-Skill"}, "executor"), PASSED)
-        self.assertEqual(self.run_guard("Skill", {"skill": "/backend-dev-skill"}, "executor"), PASSED)
-        self.assertEqual(self.run_guard("Skill", {"name": "backend-dev-skill"}, "executor"), PASSED)
-        self.assertEqual(self.run_guard("Skill", {"skill": "frontend-dev-skill"}, "executor"), BLOCKED)
-        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev-skill"}, "verifier"), BLOCKED)
+        self.skills_file({"executor": ["backend-dev"], "verifier": []})
+        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev"}, "executor"), PASSED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "plugin:Backend-Dev"}, "executor"), PASSED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "/backend-dev"}, "executor"), PASSED)
+        self.assertEqual(self.run_guard("Skill", {"name": "backend-dev"}, "executor"), PASSED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "frontend-dev"}, "executor"), BLOCKED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev"}, "verifier"), BLOCKED)
         self.assertEqual(self.run_guard("Skill", {}, "executor"), BLOCKED)
+
+    def test_plugin_prefixed_slot_skill_passes_the_allowlist(self):
+        self.skills_file({"executor": ["acme-design-system"]})
+        self.assertEqual(self.run_guard("Skill", {"skill": "someplugin:acme-design-system"}, "executor"), PASSED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "other-skill"}, "executor"), BLOCKED)
 
     def test_skill_allowlist_fails_closed(self):
         self.env["LOOP_SKILLS_FILE"] = os.path.join(self.tmp, "missing.json")
@@ -1921,32 +1926,32 @@ class TestIsolationAllowlists(GuardTestCase):
         self.assertEqual(self.run_guard("Skill", {"skill": "x"}, "executor"), BLOCKED)
 
     def test_subagent_uses_its_agent_profile(self):
-        self.skills_file({"executor": ["backend-dev-skill"], "orchestrator": []})
-        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev-skill"}, "auto", agent_type="maestro:executor-back"), PASSED)
+        self.skills_file({"executor": ["backend-dev"], "orchestrator": []})
+        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev"}, "auto", agent_type="maestro:executor-back"), PASSED)
         self.env["LOOP_HEADLESS"] = "1"
-        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev-skill"}, "auto"), BLOCKED)  # main session = orchestrator
+        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev"}, "auto"), BLOCKED)  # main session = orchestrator
 
     def test_audit_line_for_allowed_mcp_and_skill(self):
         self.env["LOOP_ISOLATED"] = "1"
-        self.skills_file({"executor": ["backend-dev-skill"]})
+        self.skills_file({"executor": ["backend-dev"]})
         self.run_guard(self.DEV, {"query": "  select * from t"}, "executor", agent_type="executor-back")
         self.run_guard("mcp__grafana__query_loki_logs", {}, "executor")
-        self.run_guard("Skill", {"skill": "plugin:backend-dev-skill"}, "executor")
+        self.run_guard("Skill", {"skill": "plugin:backend-dev"}, "executor")
         self.run_guard("Read", {"file_path": os.path.join(self.project, "a.txt")}, "executor")
         self.run_guard("mcp__zendesk__get_ticket", {}, "executor")
         lines = [line for line in self.guard_log() if line["decision"] == "allow"]
         self.assertEqual([(line["tool"], line["subject"]) for line in lines],
-                         [(self.DEV, "SELECT"), ("mcp__grafana__query_loki_logs", ""), ("Skill", "backend-dev-skill")])
+                         [(self.DEV, "SELECT"), ("mcp__grafana__query_loki_logs", ""), ("Skill", "backend-dev")])
         self.assertEqual(lines[0]["profile"], "executor")
         self.assertEqual(lines[0]["agent"], "executor-back")
         self.assertEqual(sum(1 for line in self.guard_log() if line["decision"] == "blocked"), 1)
 
     def test_isolated_auto_without_agent_resolves_to_planning(self):
         self.env["LOOP_ISOLATED"] = "1"
-        self.skills_file({"planning": ["backend-dev-skill"]})
+        self.skills_file({"planning": ["backend-dev"]})
         self.assertEqual(self.run_guard("mcp__zendesk__get_ticket", {}, "auto"), BLOCKED)
-        self.assertEqual(self.run_guard("Skill", {"skill": "frontend-dev-skill"}, "auto"), BLOCKED)
-        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev-skill"}, "auto"), PASSED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "frontend-dev"}, "auto"), BLOCKED)
+        self.assertEqual(self.run_guard("Skill", {"skill": "backend-dev"}, "auto"), PASSED)
         self.assertEqual(self.run_guard("Write", {"file_path": os.path.join(self.project, "src", "a.ts")}, "auto"), BLOCKED)
         self.assertEqual(self.run_guard("Write", {"file_path": self.specs("features", "f", "spec.md")}, "auto"), PASSED)
         self.assertEqual(self.run_guard(self.PROD, self.SELECT, "auto"), PASSED)

@@ -72,8 +72,9 @@ class TestCredentialsTable(TestEnvironmentTestCase):
         body = self.get_environment()
         self.assertEqual(self.sources()["QA_ADMIN_TOKEN"], "shared")
         self.assertEqual(self.sources()["TEST_USER_1_EMAIL"], "shared")
-        self.assertEqual(body["names"][0]["path_label"], "~/.claude/skills/_shared/.env")
-        self.assertEqual(body["shared_paths"], ["~/.claude/skills/_shared/.env"])
+        label = "user shared .env (%s)" % self.user_shared_dir
+        self.assertEqual(body["names"][0]["path_label"], label)
+        self.assertEqual(body["shared_paths"], [label])
         self.assertNotIn(SECRET, json.dumps(body))
 
     def test_access_card_lists_the_credential_layers_with_the_winning_source_and_the_mcp_servers(self):
@@ -86,7 +87,7 @@ class TestCredentialsTable(TestEnvironmentTestCase):
         self.assertEqual(layers["project .env.test"]["name"], "project")
         self.assertTrue(layers["project .env.test"]["exists"])
         self.assertEqual(layers["project .env.test"]["names"], [{"name": "QA_ADMIN_TOKEN", "source": "project", "winning": True}])
-        shared = layers["~/.claude/skills/_shared/.env"]
+        shared = layers["user shared .env (%s)" % self.user_shared_dir]
         self.assertEqual(shared["name"], "shared")
         self.assertEqual(shared["names"], [{"name": "QA_ADMIN_TOKEN", "source": "project", "winning": False},
                                            {"name": "QA_LOCAL_URL", "source": "shared", "winning": True}])

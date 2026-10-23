@@ -32,7 +32,7 @@ No database, no queue, no inbound webhooks. Everything is local files, subproces
 **Implementation:** `engine/notify.py`, one `channel_<name>` function per channel registered in `CHANNELS`; email senders in `engine/email_senders.py`.
 **Channels:** console, toast, file, email (SMTP or HTTP provider), webhook (POST JSON). A channel without configuration is skipped. `LOOP_NOTIFY_REQUIRED` makes the preflight fail if a channel is missing.
 **Configuration:** `LOOP_NOTIFY_*`, `LOOP_SMTP_*`, `LOOP_EMAIL_HTTP_*`, `LOOP_WEBHOOK_URL`.
-**Local-only extension:** `engine/local_ext/idata_backmail.py` (private email/WhatsApp provider; marked as not committed).
+**Local-only extension:** a private email/WhatsApp provider module in `engine/local_ext/` (marked as not committed; its file name carries the owner's company name and is the only place of this repo that does).
 
 ## Local panel API
 
@@ -46,10 +46,16 @@ No database, no queue, no inbound webhooks. Everything is local files, subproces
 **Implementation:** `plugin/hooks/hooks.json` (PreToolUse, `guard.py --profile auto`), `plugin/skills/orchestrator/hooks/guard.py`; app side in `config/skill_locator.py`, `services/guard_event_service.py`. Contract in `app/docs/SKILL_BRIDGE.md`.
 **Allowlists:** `skill-allowlist` reads the table the engine writes to `<data dir>/runtime/skills-allowlist.json` (`LOOP_SKILLS_FILE`); allowed MCP and Skill calls are audited as `allow` lines in `guard.log`, which the panel's guard feed ignores (it counts blocks only).
 
+## Dev toolkit (claude-dev-toolkit)
+
+**Purpose:** the generic dev skills the agents load (`backend-dev`, `frontend-dev`, `tlc-spec-driven`, `flow-validator`, the Playwright skills) and their shared scripts (`verify.py`, `testenv.py`, `regression_diff.py`...). A separate public plugin that Maestro requires and that never depends on Maestro.
+**Implementation:** `config/skill_locator.find_toolkit_root` (`dev_toolkit_dir` in `config.json`, then the newest `~/.claude/plugins/cache/*/claude-dev-toolkit/*/`, then the sibling clone `../claude-dev-toolkit/plugin`); `harness.py paths` prints it; the doctor FAILs without it (`--toolkit-optional` for `install.py`); the orchestrator passes it to the agents as `TOOLKIT: <path>`; `engine/runtime_isolation.py` bundles its skills and `engine/credential_check.py` reads its `shared/.env` as a credential layer.
+**Standards slots:** a project binds company skills to the toolkit's five slots in the `## Standards` section of its `CLAUDE.md` (`engine/standards.py`, routes `standards`, `harness.py standards`); the bound skills are resolved user, toolkit, Maestro plugin, then every other installed plugin. Contract: the toolkit's `docs/STANDARDS.md`.
+
 ## Test environment credentials
 
 **Purpose:** DEV-only test users for validators.
-**Implementation:** `plugin/shared/testenv.py`, `repositories/test_environment_repository.py`, `services/test_environment_service.py`; values in `.specs/project/.env.test` or the `.env` files, never in markdown.
+**Implementation:** the toolkit's `shared/testenv.py` (the skills' side), `engine/credential_check.py` (the app's side, same 5-layer order), `repositories/test_environment_repository.py`, `services/test_environment_service.py`; values in `.specs/project/.env.test` or the `.env` files, never in markdown.
 
 ## Background jobs
 

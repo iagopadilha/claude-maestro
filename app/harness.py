@@ -11,7 +11,13 @@
   python harness.py check <repo> [flags...]           shortcut for `loop <repo> --check`
   python harness.py state|notify|summary|deliver|rules|audit|graph|classify|scale|inventory|tasks [args...]   passed on to the engine scripts
       tasks waves <slug> [--max N] | set <slug> <Tn> <status> [--note] | mirror <slug>   task waves of one feature (--root DIR)
-  python harness.py doctor [--json] [--project <repo>]                   diagnostics (the same as GET /api/app/info)
+  python harness.py standards <repo> [--subproject <path>] [--set slot=skill ...] [--clear slot ...] [--json]
+      shows or edits the Standards slots (git, backend, frontend, app-map, observability) of the `## Standards` section of the
+      project's CLAUDE.md (in a monorepo: of each subproject's CLAUDE.md). Never invents a value.
+  python harness.py paths [--json]                    the Maestro plugin root, the orchestrator skill folder and the claude-dev-toolkit
+      root (empty when missing; exit 0 anyway): the agents run it to find `<toolkit>/shared/<script>`
+  python harness.py doctor [--json] [--project <repo>]                   diagnostics (the same as GET /api/app/info); FAILs when
+      claude-dev-toolkit is not found; with --project, WARNs for each Standards slot whose skill is not installed
   python harness.py doctor --access [--project <repo>] [--json] [--no-probe]   what a `claude -p` can reach: MCP, skills, bundle, probe, guard.log
       (the probe starts the real isolated claude with a 0.05 USD cap and kills it at the init event; always exit 0, it is a report)
   python harness.py install [--data-dir D] [--skill-dir S]   writes ~/.loop-harness/config.json (app_root_dir and the skill
@@ -33,7 +39,9 @@ for _folder in (BACKEND_DIR, ENGINE_DIR):
 
 FORWARDED_SCRIPTS = {"loop": "run_loop", "state": "loop_state", "notify": "notify", "summary": "loop_summary", "deliver": "delivery",
                      "rules": "rules", "audit": "audit_deps", "graph": "graph_view", "classify": "classify_structure",
-                     "scale": "scale", "inventory": "code_inventory", "tasks": "task_waves"}
+                     "scale": "scale", "inventory": "code_inventory", "tasks": "task_waves", "standards": "standards"}
+TOOLKIT_INSTALL_LINES = ("/plugin marketplace add iagopadilha/claude-dev-toolkit", "/plugin install claude-dev-toolkit@claude-dev-toolkit")
+TOOLKIT_PROBLEM_PREFIX = "claude-dev-toolkit not found"
 DATA_DIR_VARIABLE = "LOOP_DATA_DIR"
 DISABLED_VALUES = ("off", "0", "false", "no")
 EXIT_OK = 0
@@ -141,6 +149,8 @@ def print_diagnostics(diagnostics):
     print("app folder ....... %s" % diagnostics["app_root_dir"])
     print("data folder ...... %s" % diagnostics["data_dir"])
     print("skill ............ %s" % (diagnostics["skill_dir"] or "(not found)"))
+    toolkit = diagnostics.get("toolkit") or {}
+    print("toolkit .......... %s" % (toolkit.get("path") or "(not found)"))
     print("[%s] guard found (%s)" % (mark(guard["found"]), guard["path"] or "-"))
     print("[%s] guard blocks `git push`" % mark(guard["blocks_git_push"]))
     claude = diagnostics["claude"]
@@ -156,10 +166,16 @@ def print_diagnostics(diagnostics):
         print("[%s] channel %-9s enabled=%s required=%s" % (mark(channel["configured"]), channel["name"], channel["enabled"], channel["required"]))
     app = diagnostics.get("live_app")
     print("live app ......... %s" % ("%s (pid %s)" % (app["url"], app["pid"]) if app else "none"))
+    for row in diagnostics.get("standards", []):
+        print("[%s] standards %-13s %s (%s)" % (mark(row["resolved"]), row["slot"], row["skill"], row["folder"]))
     for warning in diagnostics.get("warnings", []):
         print("WARNING:", warning)
     for problem in diagnostics["problems"]:
         print("PROBLEM:", problem)
+    if not toolkit.get("found", True):
+        print("  install it in Claude Code:")
+        for line in TOOLKIT_INSTALL_LINES:
+            print("    " + line)
     print("all good" if not diagnostics["problems"] else "%d problem(s)" % len(diagnostics["problems"]))
 
 
@@ -170,6 +186,7 @@ def run_doctor(args):
     parser.add_argument("--project", default="", help="repo folder whose loop files tell the 5-hour/weekly usage (default: usage unknown)")
     parser.add_argument("--access", action="store_true", help="access report (MCP, skills, bundle, probe of the isolated claude, guard.log)")
     parser.add_argument("--no-probe", action="store_true", help="with --access: do not start claude")
+    parser.add_argument("--toolkit-optional", action="store_true", help="a missing claude-dev-toolkit is a warning, not a problem (install.py uses it)")
     options = parser.parse_args(args)
     apply_data_dir(options.data_dir)
     if options.access:
@@ -178,11 +195,39 @@ def run_doctor(args):
         print(json.dumps(report, ensure_ascii=False, indent=2) if options.json else access_report.format_report(report))
         return EXIT_OK
     diagnostics = build_diagnostics([os.path.abspath(options.project)] if options.project else [])
+    if options.toolkit_optional:
+        missing = [problem for problem in diagnostics["problems"] if problem.startswith(TOOLKIT_PROBLEM_PREFIX)]
+        diagnostics["problems"] = [problem for problem in diagnostics["problems"] if problem not in missing]
+        diagnostics["warnings"] = list(diagnostics.get("warnings", [])) + missing
     if options.json:
         print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
     else:
         print_diagnostics(diagnostics)
     return EXIT_FAILURE if diagnostics["problems"] else EXIT_OK
+
+
+def build_paths():
+    """{"maestro_plugin", "orchestrator_skill", "toolkit"}: the plugin root with the orchestrator, the skill folder and the toolkit root ('' when missing)."""
+    from harness_backend.config import app_config, skill_locator
+    config = app_config.read_user_config(app_config.get_user_data_dir())
+    skill_dir = skill_locator.locate_orchestrator_skill_dir(config.get("orchestrator_skill_dir", ""))
+    return {"maestro_plugin": skill_locator.plugin_root_of(skill_dir), "orchestrator_skill": skill_dir,
+            "toolkit": skill_locator.find_toolkit_root(config)}
+
+
+def run_paths(args):
+    parser = argparse.ArgumentParser(prog="harness.py paths", description="Where the Maestro plugin, the orchestrator skill and the dev toolkit are")
+    parser.add_argument("--json", action="store_true", help="JSON output")
+    parser.add_argument("--data-dir", default="")
+    options = parser.parse_args(args)
+    apply_data_dir(options.data_dir)
+    paths = build_paths()
+    if options.json:
+        print(json.dumps(paths, ensure_ascii=False, indent=2))
+    else:
+        for key, value in paths.items():
+            print("%s=%s" % (key, value))
+    return EXIT_OK
 
 
 def run_install(args):
@@ -235,6 +280,8 @@ def main(argv=None):
         return run_doctor(args)
     if command == "install":
         return run_install(args)
+    if command == "paths":
+        return run_paths(args)
     print("unknown command: %s\n" % command, file=sys.stderr)
     print_help()
     return EXIT_INVALID_USAGE

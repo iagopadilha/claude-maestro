@@ -13,6 +13,7 @@ When dispatching `executor-generic`, include in the prompt a line `SKILL: <name>
 ## What always goes in the executor prompt
 
 - The first line `FEATURE: <slug>` (exactly one feature per agent, in every dispatch of every role; the panel's pipeline reads it) and the path of the spec and, if they exist, of `design.md` and `tasks.md`. **Path, not content.**
+- The line `TOOLKIT: <path>`, in the prompt of EVERY agent you dispatch (executor, spec-writer, verifier, verifier-flow): the claude-dev-toolkit plugin root (the folder holding `skills/` and `shared/`), computed once per turn with `python "<app>/harness.py" paths --json` (field `toolkit`; empty = the toolkit is missing, `harness.py doctor` reports it). The agent runs the toolkit scripts as `<TOOLKIT>/shared/<script>`.
 - The literal `PATHS` list, with the instruction not to leave it, and the line `SCOPE_FEATURE: <slug>` (the guard reads it to limit editing to this feature's `PATHS` only, not the union of the wave).
 - A warning when another executor is running in parallel on the same tree, with the neighbor's paths.
 - **Task wave dispatch** (build phase, `SKILL.md`): one executor per task, the extra line `SCOPE_TASK: <slug>/<Tn>` next to `SCOPE_FEATURE: <slug>`, and the path of `tasks.md` (the executor reads its own task there). Write SCOPE.json `tasks` (`{"<slug>/<Tn>": [files]}`) BEFORE the wave. The tasks of one wave never share a file (`harness.py tasks waves <slug>` guarantees it); tell each executor the files of its wave neighbors. A feature without `tasks.md` is dispatched as ONE task covering the spec (log it).
@@ -104,9 +105,9 @@ Ceiling: one agent per lane, except a `building` lane, which runs up to `Max par
 
 ## .NET projects
 
-- **Verification (its own phase, `verifier`):** `verify.py` finds the `.sln`/`.slnx`/`.csproj` closest to the root (up to 3 folders down, ignoring bin/obj) and runs `dotnet build <target>`; `dotnet test` if there is a test project; `dotnet format --verify-no-changes` only when an `.editorconfig` exists (without it, format would fight legacy code). A compile error becomes `FAIL` with the first `CSxxxx` line.
+- **Verification (its own phase, `verifier`):** `<TOOLKIT>/shared/verify.py` finds the `.sln`/`.slnx`/`.csproj` closest to the root (up to 3 folders down, ignoring bin/obj) and runs `dotnet build <target>`; `dotnet test` if there is a test project; `dotnet format --verify-no-changes` only when an `.editorconfig` exists (without it, format would fight legacy code). A compile error becomes `FAIL` with the first `CSxxxx` line.
 - **Executor:** may run `dotnet build <csproj of what it touched>` (the build does an implicit restore). `dotnet restore` and `dotnet add package` stay blocked by the guard (rule `install`): a new dependency only if the spec asks for it.
-- **Starting the app (E2E, `verifier-flow`):** `dotnet run --launch-profile https`, or `dotnet build` and `dotnet run --no-build --project <csproj> --urls http://127.0.0.1:<port>`. See `flow-validator/references/ENVIRONMENT.md`.
+- **Starting the app (E2E, `verifier-flow`):** `dotnet run --launch-profile https`, or `dotnet build` and `dotnet run --no-build --project <csproj> --urls http://127.0.0.1:<port>`. See `<TOOLKIT>/skills/flow-validator/references/ENVIRONMENT.md`.
 - **Loop worktree:** born without `bin/obj`. The repo needs a `.gitignore` with `bin/` and `obj/` (the preflight warns), otherwise the build dirties the tree and the loop stops.
 
 ## Resend

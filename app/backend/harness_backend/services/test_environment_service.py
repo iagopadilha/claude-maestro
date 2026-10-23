@@ -1,9 +1,9 @@
 """Test environment tab: which `$NAME` the project's TEST-ENVIRONMENT.md needs, where each one is defined (never its value), saving
 values (project `.env.test` or the user-level shared `.env`), and the computed `access` card (credential layers + MCP read servers).
 
-Layers, same order as the skills' `testenv.py`: real environment variable > project `.specs/project/.env.test` > `~/.loop-harness/.env` >
-plugin `shared/.env` > user-level shared `~/.claude/skills/_shared/.env`. Every layer is always read (no toggle); a name that only a
-shared file defines has the source `shared`. MCP access is computed from `~/.claude.json` (`mcp_access`), read tools only.
+Layers, same order as the toolkit's `testenv.py`: real environment variable > project `.specs/project/.env.test` > `~/.loop-harness/.env` >
+toolkit `shared/.env` > user-level shared `.env` (only when `user_shared_dir` is set in config.json). Every layer is always read (no
+toggle); a name that only a shared file defines has the source `shared`. MCP access is computed from `~/.claude.json` (`mcp_access`), read tools only.
 
 Secrets rule: values are written, never read back into a response, a log line, a file the AI reads or an error message.
 """
@@ -98,6 +98,8 @@ class TestEnvironmentService:
                 self.test_environment_repository.write_project_values(context.work_dir, values)
                 self.specs_structure_service.ensure_env_files_in_gitignore(context.repo_path)  # keeps .env.test out of git
             else:
+                if not credential_check.user_shared_env_path():
+                    raise InvalidRequestError("no user-level shared folder: set `user_shared_dir` in the app's config.json first")
                 self.test_environment_repository.write_shared_values(values)
         saved = list(values)
         self.log.info("test_environment_values_saved", project=context.project.id, target=target, names=saved)  # names only

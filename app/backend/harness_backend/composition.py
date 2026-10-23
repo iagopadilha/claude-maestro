@@ -93,7 +93,8 @@ def build_application(config=None, **config_overrides):
                                                 on_plan_changed=projects_module.on_plan_changed,
                                                 subprojects_service=projects_module.subprojects_service,
                                                 context_block_service=projects_module.context_block_service,
-                                                decisions_service=decisions_service)
+                                                decisions_service=decisions_service,
+                                                standards_service=projects_module.standards_service)
     # the validation service resolves a secondary repository (`?repo=`) through the registry the multi-repo module built
     # (subprojects_service gets it from build_multi_repo_module)
     projects_module.subproject_validation_service.repo_registry_service = multi_repo_module.repo_registry_service

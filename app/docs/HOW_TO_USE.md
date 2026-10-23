@@ -7,11 +7,12 @@ The app is the **runtime** (loop engine, HTTP server, multi-project web panel). 
 ## Install (once per machine)
 ```
 python <app>/harness.py install     # writes ~/.loop-harness/config.json (app folder + detected skill folder)
-python <app>/harness.py doctor      # checks the skill, the guard blocking `git push`, `claude` on PATH, .env and notify channels
+python <app>/harness.py doctor      # checks the skill, the dev toolkit, the guard blocking `git push`, `claude` on PATH, .env and notify channels
 ```
 - Python 3.10+ only (standard library). No pip, no npm.
+- **The loop requires the claude-dev-toolkit plugin** (the generic dev skills and their shared scripts: `backend-dev`, `frontend-dev`, `tlc-spec-driven`, `flow-validator`, the Playwright skills). Install it in Claude Code next to Maestro: `/plugin marketplace add iagopadilha/claude-dev-toolkit` and `/plugin install claude-dev-toolkit@claude-dev-toolkit` (`install.py` prints them). `doctor` FAILs while it is not found. It is looked up in `dev_toolkit_dir` of `config.json` (a plugin folder or the repo root), then the newest copy in the Claude Code plugin cache, then the sibling clone `<repo>/../claude-dev-toolkit`. `python <app>/harness.py paths [--json]` prints where the Maestro plugin, the orchestrator skill and the toolkit are (an empty toolkit value means it is missing; the exit code is 0 anyway).
 - `install` is how the skill finds the app (`app_root_dir`). It does not touch `~/.claude`. The skill is found in this order: `LOOP_SKILL_DIR`, `orchestrator_skill_dir` in `config.json`, the plugin next to the app in this clone (`<repo>/plugin/skills/orchestrator`), the installed plugin (Claude Code plugin cache). Skill somewhere else: `--skill-dir <folder>` or `LOOP_SKILL_DIR`.
-- `doctor` shows only channel **names** and whether they are configured, never values. It exits with code 1 when there is a problem.
+- `doctor` shows only channel **names** and whether they are configured, never values. It exits with code 1 when there is a problem, which includes a missing toolkit (`--toolkit-optional` turns that one into a warning; `install.py` uses it because the toolkit is installed from inside Claude Code afterwards). With `--project <repo>` it also WARNs for every Standards slot bound to a skill that is not installed.
 - `doctor --access` is a separate read-only report of what the `claude -p` of the app can reach (MCP, skills, bundle, guard log); see "Isolation and access" below.
 
 ## In 1 minute (read this first)
@@ -40,7 +41,7 @@ CONVERSATION (with Claude)                      APP / SCRIPT (you)
 Open Claude in the project folder and use `/orchestrator` as usual, or the panel (Map, Conformance, the planning chat):
 
 1. Context and mapping (`/orchestrator map` in an existing repo).
-2. Set `Conformance: STANDARD` or `LEGACY` (the orchestrator asks, explains why and writes it to `CLAUDE.md`; `python <app>/harness.py classify <repo>` shows the evidence).
+2. Set `Conformance: STANDARD` or `LEGACY` (the orchestrator asks, explains why and writes it to `CLAUDE.md`; `python <app>/harness.py classify <repo>` shows the evidence). Optional: bind your team's standards (see "Standards slots" below).
 3. Roadmap: plan it by conversation and **approve** it in the panel (button **Approve roadmap**, which writes `ROADMAP-APPROVED.json`). Without that approval the check refuses to start; changed a feature or a stage afterwards, approve again. Limiting rules (`RULES.md`) come in here, with your phrase.
    - **Planning mode.** A project with no approved roadmap that never ran a loop opens in the panel's **planning screen**: checklist on the left, a live chat in the middle, the documents on the right (PROJECT / ROADMAP / FLOWS). Each message runs `/orchestrator plan --headless` in one session resumed every time: it writes only `.specs/project/PROJECT.md`, `ROADMAP.md` and `FLOWS.md`, then tells you what changed and asks the 1 to 3 questions that matter most. Answer them in the chat; the rest wait in the ROADMAP's `## Open questions`. The chat needs the prerequisites first (git, `.specs/` structure, `Conformance:`, and the codebase map when the repo has code); each failing one has its button on the left. **New conversation** starts a fresh session and keeps the documents.
    - **Import a spec feature.** The **Import a spec feature** button in the chat header (next to **New conversation**) takes the folder of one tlc-spec-driven feature (`spec.md` required; `design.md`, `tasks.md`, `context.md` when present), for example `.specs/features/<feature>/` of another project. A single file or pasted text is not imported. The plan is written in the current project's `.specs/project`, with descriptive feature slugs (3 to 6 words naming what is delivered), a title sentence per feature and stage names that say the outcome. The folder is picked with the system dialog (the in-app browser only when it is unavailable). A **preview** first lists what would be taken (the `.md` files down to depth 3, up to 30 files, 400 KB each and 2 MB in all, with the requirement, decision and task ids found) and the warnings. The files are copied read only, credentials redacted, twice: to `.specs/features/<slug>/` (the complete spec the loop keeps working from) and to the conversation's import folder with an `IMPORT-LOG.md`; they are shown as an attachment and, when you confirm, sent as ONE message: the AI builds ROADMAP (each feature lists the ids it covers as `reqs=ORIG-01..06`), FLOWS, PROJECT and the repositories from them and puts what the spec leaves open in `## Open questions`. Nothing is lost silently: the AI also writes `.specs/project/IMPORT-COVERAGE.md`, one row per requirement, decision and task (or core section) with where it went or `dropped: <reason>`, and the **import coverage** gate keeps Approve roadmap disabled while any item has no row. A file path, a folder without `spec.md`, a folder over the limits, or an empty or too large `.md` is refused and nothing is sent; the same feature cannot be imported twice (`already_imported`), and an existing `.specs/features/<slug>/` that the app did not import is refused (`feature_folder_exists`). Another feature adds to the conversation; it never wipes the plan.
@@ -186,11 +187,13 @@ You can leave it running and walk away. There is nothing to answer: if it needs 
 | `harness.py audit <root>` | `audit_deps.py` | forgotten dependency between features (`--write`, `--apply`, `--json`) |
 | `harness.py graph <root>` | `graph_view.py` | progress drawing (`--ascii`, `--short`, `--mermaid`, `--write`) |
 | `harness.py classify <root> [--write STANDARD\|LEGACY]` | `classify_structure.py` | the project's Conformance |
+| `harness.py standards <repo> [--subproject <path>] [--set slot=skill ...] [--clear slot ...] [--json]` | `standards.py` | shows or edits the Standards slots of the `## Standards` section of the project's `CLAUDE.md` (see "Standards slots") |
 | `harness.py scale <root> [--json]` | `scale.py` | how many codebase mappers to dispatch |
 | `harness.py inventory <folder> [--json] [--changed a,b]` | `code_inventory.py` | free inventory of a folder: sizes, entry points, giant files |
 | `harness.py tasks waves <slug> [--max N] \| set <slug> <Tn> <status> [--note TEXT] \| mirror <slug>` | `task_waves.py` | task waves and task status of one feature (`--root DIR`) |
 | `harness.py check <repo> [--json]` | `run_loop.py` | readiness check; `--json` adds one `[check] JSON:` line with the readiness items |
-| `harness.py doctor [--json]` | - | diagnostics (the same as `GET /api/app/info`) |
+| `harness.py paths [--json]` | - | where the Maestro plugin, the orchestrator skill and the claude-dev-toolkit are (`toolkit` empty when missing; the agents run it to find `<toolkit>/shared/<script>`) |
+| `harness.py doctor [--json] [--project <repo>] [--toolkit-optional]` | - | diagnostics (the same as `GET /api/app/info`): FAILs when the toolkit is not found; with `--project`, WARNs for each bound slot whose skill is not installed |
 | `harness.py doctor --access [--project <repo>] [--json] [--no-probe]` | - | what a `claude -p` of the app can reach: MCP, skills, bundle, probe of the isolated `claude`, `guard.log` summary (see "Isolation and access") |
 
 ## What happens underneath
@@ -284,7 +287,7 @@ extra edit repo is given to `claude -p` with `--add-dir=<worktree>` and each ref
 `Glob` over a worktree, only a call that names a copied file. Shell redirects are not confined to the worktrees.
 
 ## Monorepos (several projects in one repo)
-When the repo holds several projects (for example `backend/` and `frontend/`), each subproject gets its own Conformance and map, and a
+When the repo holds several projects (for example `backend/` and `frontend/`), each subproject gets its own Conformance, its own `## Standards` slots (the installer card has the optional **Standards** block for each) and map, and a
 `docs/codebase/SYSTEM.md` at the root describes how they talk. A project with one stack changes nothing (it gets the two-step installer: **1 Conformance**, **2 Map**). In the planning screen (and in the **Set up `<repo>`** dialog of any repository of the project) the setup is an
 **installer**: one card with the steps **1 Subprojects**, **2 Conformance**, **3 Maps**, a step indicator on top (a finished step has a ✓) and a footer with **Back** and **Next**; the footer says in one sentence what the step writes (step 1: only `SUBPROJECTS.json`; step 2: one Conformance block in each subproject's `CLAUDE.md`;
 step 3: only `docs/codebase` of each subproject and `docs/codebase/SYSTEM.md`; never the code).
@@ -308,10 +311,10 @@ touches one without a `refactor-*` feature in its `deps=` (or `note=giant-accept
 The panel's **Test environment** tab lists every `$NAME` of `TEST-ENVIRONMENT.md` with where it is defined (`env`, project `.env.test`,
 machine `~/.loop-harness/.env`, `shared` or `missing`). **Values are never shown**: secret names appear as set or missing.
 - **Save a value:** type it in the row and choose where it goes: the project's `.specs/project/.env.test` (git-ignored) or your user-level
-  shared `~/.claude/skills/_shared/.env`. Other lines and comments in that file stay untouched.
+  shared `.env` (in the folder named by `user_shared_dir` in `~/.loop-harness/config.json`; with no folder set the choice is refused). Other lines and comments in that file stay untouched.
 - **Access card:** there are no checkboxes. The card explains what the agents can use. Credentials are read in 5 layers, first hit wins: (1) the
-  environment variable, (2) the project `.specs/project/.env.test`, (3) machine `~/.loop-harness/.env`, (4) the plugin `shared/.env`, (5) your
-  user-level `~/.claude/skills/_shared/.env` (your generic DEV account); layers 4 and 5 are **always read**. The card shows the layer each name
+  environment variable, (2) the project `.specs/project/.env.test`, (3) machine `~/.loop-harness/.env`, (4) the toolkit's `shared/.env`, (5) your
+  user-level shared `.env` (your generic DEV account; only when `user_shared_dir` is set, there is no default folder); layers 4 and 5 are **always read** when they exist. The card shows the layer each name
   comes from. The guard blocks the agents from reading or writing every one of these `.env` files. MCP read access: every one of `grafana`, `mcp-mysql-dev` and `mcp-mysql-prod` that is configured in your `~/.claude.json` is
   available to the planning chat and the loop agents, **read only**; one that is not configured is just not offered. An old `ACCESS.json` is
   ignored.
@@ -354,7 +357,7 @@ When the account that runs the turns hits its usage limit, the loop can carry on
 - **Back to the main command without waiting for the others:** when the main command is the one that hit the limit, the loop remembers the reset moment of its blocking window (the weekly reset when the week ran out, so it never comes back before that; unknown: now + `--limit-wait` minutes). Before each turn, if it is on a fallback and that moment has passed, it goes back to the main command. If the main command hits the limit again, the normal fallback applies.
 - **`.cmd` / `.bat` wrappers** get the prompt through stdin (a multi-line prompt would break in `cmd.exe` arguments).
 - **Which command and account ran:** the turn log (`turns/NNN.json`: `claude`, `claude_account`), the CLAUDE block in the panel's turn header, and `python harness.py doctor`.
-- **Where the panel shows it.** The chip at the top of the loop zone ("claude · dev@x.com · subscription, browser login (iData, team)", "cc · cc account claude2 · subscription, sign-in token · 2 switches"; an API key is drawn as a warning) with a "usage" button that opens the turns, panel calls and cost per sign-in method and per command. Every turn card, the turn header, the pipeline nodes, the feature view and the agent view carry a compact badge ("claude · login", "cc · token", "API key"); an agent's badge is inherited from its turn, and its tooltip spells the sign-in out ("subscription · browser login", "subscription · sign-in token", "API key · billed per token"). The panel's own calls (chat, roadmap, map...) are listed with their command and sign-in in the call log (`GET jobs`, `calls`).
+- **Where the panel shows it.** The chip at the top of the loop zone ("claude · dev@x.com · subscription, browser login (Acme, team)", "cc · cc account claude2 · subscription, sign-in token · 2 switches"; an API key is drawn as a warning) with a "usage" button that opens the turns, panel calls and cost per sign-in method and per command. Every turn card, the turn header, the pipeline nodes, the feature view and the agent view carry a compact badge ("claude · login", "cc · token", "API key"); an agent's badge is inherited from its turn, and its tooltip spells the sign-in out ("subscription · browser login", "subscription · sign-in token", "API key · billed per token"). The panel's own calls (chat, roadmap, map...) are listed with their command and sign-in in the call log (`GET jobs`, `calls`).
 - **Who spawns the agents.** The orchestrator (Opus, one session per turn) is always the one that spawns every agent (spec-writer, spec-reviewer, executors, verifiers, mappers): no agent spawns another agent. Executors go in waves of up to `Max parallel tasks` (ROADMAP header, default 3, 1 to 5); fewer when the feature has fewer independent tasks or when the turn budget or minutes are running short. Every agent of a turn runs inside that turn's process, so it uses the turn's account and sign-in method: when the loop moves from `claude` to `cc`, the agents of the next turn move with it. The "?" next to the pipeline legend and next to the task graph of the feature view shows the same note.
 - **Sign-in methods**, as `claude auth status` reports them: *browser login* (`claude.ai`) and *sign-in token* (`claude setup-token`) are both billed to the **subscription**; only an *API key* is billed per token. The notices and the panel name the method in these words.
 - **Notices sent.** The subject says which account the loop is on now and how it signs in. The body names both accounts (now and before) with the e-mail or `cc` account, the method, the organization and the plan, and why it changed:
@@ -410,17 +413,27 @@ Every `claude -p` the app starts (loop turns, correction and resume turns, plann
 ```
 python <app>/harness.py doctor --access [--project <repo>] [--json] [--no-probe]
 ```
-- *static part:* the MCP servers found in your `~/.claude.json` (read tools only), the MCP tools each guard profile may call, the skills allowlist per profile, the bundle (path, agents, skills, and the **skipped** skills that exist neither in `~/.claude/skills` nor in the plugin) and whether isolation is on;
+- *static part:* the MCP servers found in your `~/.claude.json` (read tools only), the MCP tools each guard profile may call, the skills allowlist per profile (the skills bound to the project's Standards slots are tagged `(slot: <name>)`), the toolkit root, the bundle (path, agents, skills, and the **skipped** skills that exist in none of the places below) and whether isolation is on;
 - *probe:* the real isolated argv with the prompt `reply only: ok`, `--model haiku` and `--max-budget-usd 0.05`; the report reads only the `system/init` event (tools, MCP servers, agents, skills, plugins the process loaded) and kills the process. An account that is refused still prints `init` first, so the probe then costs nothing. Anything outside the allowlists prints as `FLAG: ...`; no flags means everything loaded is inside them. `--no-probe` skips the call (no `claude` is started);
 - *guard.log:* the last 200 lines of the project's `guard.log` counted by decision, rule and agent, and the last 10 denials.
 
 It always exits 0: it is a report, not a gate.
 
-**Skills the loop may load.** The defaults per profile live in `engine/runtime_isolation.py` (`DEFAULT_ALLOWLIST`). To let every profile load an extra skill (for example your company style guide), list it in `~/.loop-harness/config.json`:
+**Skills the loop may load.** The defaults per profile live in `engine/runtime_isolation.py` (`DEFAULT_ALLOWLIST`; none is a company skill). To let every profile load an extra skill (for example your company style guide), list it in `~/.loop-harness/config.json`:
 ```json
-{"loop_extra_skills": ["idata-guia-estilo"]}
+{"loop_extra_skills": ["acme-design-system"]}
 ```
-The skill must exist in `~/.claude/skills/<name>` or in `plugin/skills/<name>`; the next `claude -p` rebuilds the bundle by itself (it rebuilds only when a source changed). A skill named in `.specs/project/SUBPROJECTS.json` (`skill` of a subproject) is added to the `spec` and `executor` profiles of that project without any config. `doctor --access` lists what ended up in the bundle and what was skipped. A skill that is in the bundle but not on a profile's list is still denied for that profile by the guard (`[skill-allowlist]`).
+A skill is found, in this order, in `~/.claude/skills/<name>`, the dev toolkit, the Maestro plugin and then every other installed plugin (`~/.claude/plugins/cache/*/*/*/skills`); the first folder with a `SKILL.md` wins. The next `claude -p` rebuilds the bundle by itself (it rebuilds only when a source changed). A skill named in `.specs/project/SUBPROJECTS.json` (`skill` of a subproject) is added to the `spec` and `executor` profiles of that project without any config, and the skills bound to Standards slots (next section) are added without any config to every profile that has a dev skill and to the `verifier`. `doctor --access` lists what ended up in the bundle and what was skipped. A skill that is in the bundle but not on a profile's list is still denied for that profile by the guard (`[skill-allowlist]`).
+
+**Standards slots (your team's rules).** The toolkit's generic skills know only five slot names: `git`, `backend`, `frontend`, `app-map` and `observability`. A project says which of your skills fills each slot in a `## Standards` section of its `CLAUDE.md`, one `slot: skill` line per slot, nothing else until the next heading (a skill is a bare name or `plugin:skill`; any order; an unknown slot or an empty value is ignored):
+```
+## Standards
+git: acme-git-standards
+backend: acme:acme-backend-standards
+```
+- **Where it lives.** In a single repository, the root `CLAUDE.md`. In a monorepo, the `CLAUDE.md` of **each subproject**, never the root one (rule R-03).
+- **Edit it.** In the panel, the **Standards (optional)** block of the setup installer card: under the Conformance of a repository (hidden for a reference repository) and one collapsible block per subproject row in a monorepo; five inputs with the saved values and one **Save**, an "unsaved" marker while you have edits, and it never blocks **Next** or **Done**; empty is valid and means the generic defaults. From the terminal: `python <app>/harness.py standards <repo> [--subproject <path>]` prints the bindings, `--set backend=acme-backend-standards` binds, `--clear backend` unbinds; it never invents a value and an invalid one is refused. Nothing is written until you ask.
+- **What the loop does with it.** The bound skills join the allowlist and the bundle of the isolated `claude -p` for the planning, roadmap, subproject and system-map jobs, the spec writer, the executors and the verifier; the agents load them after the toolkit's dev skill and the bound skill wins on a conflict. A slot bound to a skill that is not installed is a `doctor --project <repo>` WARNING and the agents use the generic defaults.
 
 **Turn it off.** `"loop_isolation": false` in `~/.loop-harness/config.json` gives back the old argv exactly: your whole profile loads again, and the skill allowlist is inactive (no `LOOP_SKILLS_FILE`); the MCP allowlist still applies inside the headless loop turns (`LOOP_HEADLESS=1`), and the rest of the guard keeps working. Use it only to compare or to debug a skill that does not load; `doctor --access` prints `isolation OFF` then. Default is on.
 
@@ -435,7 +448,7 @@ python -m unittest discover -s backend/tests/engine -t backend   # loop engine (
 python -m unittest discover -s backend/tests/infra -t backend    # processes, claude, git, AppController, harness.py
 python -m unittest discover -s backend/tests -t backend          # everything
 ```
-The tests never use the real `claude` nor touch `~/.claude` or `~/.loop-harness`: they use a temporary `LOOP_DATA_DIR` and `LOOP_SKILL_DIR` pointing at a fake plugin with the public plugin's `guard.py` copied (without the plugin guard in this clone, the tests that depend on it fail with a warning).
+The tests never use the real `claude` nor touch `~/.claude` or `~/.loop-harness`: they use a temporary `LOOP_DATA_DIR`, `LOOP_CLAUDE_HOME` and `LOOP_SKILL_DIR` pointing at a fake plugin with the public plugin's `guard.py` copied (without the plugin guard in this clone, the tests that depend on it fail with a warning), and a fake toolkit named by `dev_toolkit_dir`. Only the credential parity test reads the real toolkit (the sibling clone `../claude-dev-toolkit`) and skips when it is absent.
 
 ## Do not use it when
 A single task, a small adjustment, or when you want to follow and decide at each step: in those cases use the normal `/orchestrator` (`step` or `feature`).

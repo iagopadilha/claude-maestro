@@ -7,12 +7,14 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import engine_env  # noqa: E402,F401
 import access_report as report  # noqa: E402
 import runtime_isolation as iso  # noqa: E402
+from harness_backend.config import skill_locator  # noqa: E402
 
 INIT = {"type": "system", "subtype": "init", "model": "haiku", "tools": ["Read", "Bash", "mcp__mcp-mysql-dev__mysql_query"],
         "mcp_servers": [{"name": "mcp-mysql-dev", "status": "connected"}], "agents": ["executor-back", "general-purpose"],
@@ -42,6 +44,12 @@ class World(unittest.TestCase):
         write(os.path.join(self.plugin, "skills", "orchestrator", "SKILL.md"))
         write(os.path.join(self.plugin, "agents", "executor-back.md"))
         write(os.path.join(os.environ["LOOP_CLAUDE_HOME"], "skills", "backend-dev", "SKILL.md"))
+        self.toolkit = os.path.join(self.root, "toolkit")  # a fake claude-dev-toolkit named by dev_toolkit_dir; the sibling clone is hidden
+        write(os.path.join(self.toolkit, "skills", "tlc-spec-driven", "SKILL.md"))
+        write(os.path.join(os.environ["LOOP_DATA_DIR"], "config.json"), json.dumps({"dev_toolkit_dir": self.toolkit}))
+        patcher = mock.patch.object(skill_locator, "REPO_ROOT_DIR", os.path.join(self.root, "no-sibling"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.project = os.path.join(self.root, "repo")
         os.makedirs(os.path.join(self.project, ".specs"))
         iso.clear_memo()
@@ -67,6 +75,24 @@ class StaticTest(World):
         self.assertIn("frontend-dev", static["bundle"]["skipped"])
         self.assertEqual(static["bundle"]["agents"], ["executor-back"])
         self.assertTrue(os.path.isfile(static["allowlist_file"]))
+
+    def test_toolkit_skills_are_bundled_and_the_root_is_reported(self):
+        static = report.build_static(self.project, self.plugin)
+        self.assertEqual(os.path.normcase(static["toolkit_root"]), os.path.normcase(os.path.abspath(self.toolkit)))
+        self.assertIn("tlc-spec-driven", static["bundle"]["skills"])
+        self.assertIn("toolkit root", report.format_report(report.build_report(self.project, probe=False, plugin_root_path=self.plugin)))
+
+    def test_slot_skills_reach_the_allowlist_the_bundle_report_and_are_labelled(self):
+        write(os.path.join(self.project, "CLAUDE.md"), "# P\n\n## Standards\nfrontend: acme:ghost-front\nbackend: backend-dev\n")
+        static = report.build_static(self.project, self.plugin)
+        for profile in ("planning", "spec", "executor", "verifier"):
+            self.assertIn("ghost-front", static["skills_allowlist"][profile])
+        self.assertNotIn("ghost-front", static["skills_allowlist"]["orchestrator"])
+        self.assertEqual(static["slot_skills"], {"ghost-front": "frontend", "backend-dev": "backend"})
+        self.assertIn("ghost-front", static["bundle"]["skipped"])  # not installed anywhere: skipped, not an error
+        text = report.format_report(report.build_report(self.project, probe=False, plugin_root_path=self.plugin))
+        self.assertIn("ghost-front (slot: frontend)", text)
+        self.assertIn("backend-dev (slot: backend)", text)
 
     def test_isolation_off_has_no_bundle_and_no_probe(self):
         result = report.build_report(self.project, probe=True, config={"loop_isolation": False}, plugin_root_path=self.plugin)

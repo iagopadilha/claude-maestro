@@ -7,13 +7,14 @@
 
 ## Directory Tree
 ```
-install.py                 one-command setup (config, doctor, plugin hints)
+install.py                 one-command setup (config, toolkit check, doctor, plugin hints for Maestro and the toolkit)
 .claude-plugin/            marketplace manifest
 plugin/                    the Claude Code plugin ("brain")
   agents/                  subagent prompts (executor-*, verifier*, spec-*, brownfield-mapper)
-  skills/                  orchestrator (+ hooks/guard.py, references/), backend-dev, frontend-dev,
-                           flow-validator, playwright-cli, orchestrator-* satellites
-  shared/                  Python helpers and templates shared by skills (verify, testenv, sync_core...)
+  skills/                  orchestrator (+ hooks/guard.py, references/), repo-catalog, orchestrator-* satellites
+                           (the dev skills live in the claude-dev-toolkit plugin, a separate repo this plugin requires)
+  shared/                  PROJECT_RULES.md (template of the project rules) and envload.py; the toolkit's
+                           scripts (verify, testenv, sync_core...) are in claude-dev-toolkit/plugin/shared
   hooks/hooks.json         hook registration
 app/                       the control panel ("runtime")
   harness.py               single CLI entry
@@ -33,10 +34,12 @@ docs/                      repo-level docs (media/ = demo.gif, panel.jpg, make_g
 - `domain/`: entities and errors. `config/`: app config, skill locator, env loading.
 - `engine/`: the loop itself (`run_loop.py`, `loop_state.py`, `delivery.py`...), run as CLI subprocess or imported for pure reads. `decisions.py` owns the `VALIDATE.md` line grammar (AI decisions: parse, append, critical detection) for the engine and the services. Monorepo pieces: `subprojects.py` (list, owner of a path), `code_inventory.py` (giant files), `context_block.py` / `context_files.py` (the `maestro:context` block of `CLAUDE.md`, uncommitted context files), `system_map.py` (contract merge into `SYSTEM.md`), `readiness_checks.py`. Setup files: `setup_files.py` (the uncommitted maps, app `CLAUDE.md` blocks and `.specs` plan files of a repository: carried into a new worktree, committed by Commit setup files, one readiness block per repo).
 - `engine/` modules split out of `run_loop.py` (it stays the entry point and re-exports them): `loop_io.py`, `claude_accounts.py`, `limit_waits.py`, `claude_turn.py`, `permission_denials.py`, `worktree_state.py`, `worktrees.py`, `auto_answers.py`, `turn_gates.py`, `preflight_checks.py`, `loop_cli.py`. Isolation and access: `runtime_isolation.py` (bundle, skills allowlist, inline settings, kill switch) and `access_report.py` (`harness.py doctor --access`).
+- `engine/standards.py` (`harness.py standards`): parse and write the `## Standards` section of a `CLAUDE.md` (slots `git`, `backend`, `frontend`, `app-map`, `observability`); used by `runtime_isolation.py`, `access_report.py`, `services/standards_service.py` and the doctor. `config/skill_locator.py` also finds the dev toolkit (`find_toolkit_root`, `harness.py paths`).
 - `demo/`: scripted demo (never runs a real loop). `composition.py` is the composition root.
 
 ## Frontend (`app/frontend/src/`)
 - `main.js` entry; `pages/` (`hub.js`, `project_panel.js`, `repo_manager.js`, `pages/panel/*` panel sections); `components/` reusable widgets; `api/api_client.js`; `util/` helpers.
+- Standards slots: `components/standards_block.js` (the optional "Standards" block, five slot inputs and Save) is shown by `components/project_installer.js` and the subprojects installer.
 - Setup installer and workspace (planning): `components/subprojects_installer.js` (monorepo: Subprojects, Conformance, Maps) and `components/project_installer.js` (single repo: Conformance, Map), driven by `pages/panel/subprojects.js` and `pages/panel/project_installer.js`; `pages/panel/workspace_dialog.js` (the Workspace button: repositories, roles, branches, setup state, Commit setup files and push) and `pages/panel/repo_setup_dialog.js` (the per-repository Set up dialog); `pages/repo_scope.js` (role words and hovers, folder picker).
 - Loop-mode panel (`pages/panel/app.js` mode table: planning screen, or navbar + GLOBAL/LOOP zones): `header.js` (navbar parts) with `components/navbar_status.js`; dialogs `start_loop_dialog.js`, `plan_files_dialog.js` (with `components/big_dialog.js`), `decisions.js` (with `components/decision_list.js`), `wrap_up.js` (Wrap-up view and Finish), the status dialog in `alert.js`; tabs of the GLOBAL zone in `global_zone.js` (Context, Plan & files, Dependencies, Errors; no Files tab and no Workspace zone in loop mode). Styles `styles/navbar.css`, `decisions.css`, `wrap_up.css`.
 
@@ -44,6 +47,7 @@ docs/                      repo-level docs (media/ = demo.gif, panel.jpg, make_g
 **A new HTTP route:** controller in `api/controllers/`, service in `services/`, file access in `repositories/`, wired in the module's `build_*_module` and `composition.py`; document in `app/docs/API.md`.
 **Repositories, workspace and setup files:** `services/repo_registry_service.py` (list, role, reason), `workspace_service.py` (`GET workspace`, branches, setup state), `setup_commit_service.py` + `api/controllers/setup_commit_controller.py` (Commit setup files and push), `engine/setup_files.py`, base branch and carry in `engine/worktrees.py` (`choose_base`, `carry_setup_into`).
 **Monorepo subprojects:** `services/subprojects_service.py` (list, Conformance), `subproject_validation_service.py`, `subproject_map_service.py` (parallel map queue), `system_map_service.py`, `map_job_runner.py` (every map job), `code_inventory_service.py`, `context_block_service.py`; routes in `api/controllers/subprojects_controller.py`; front end `pages/panel/subprojects.js` and `components/subprojects_table.js`.
+**Standards slots and the dev toolkit:** `engine/standards.py` (file format, CLI), `services/standards_service.py` (routes `standards` of a repo and of a subproject, in `repo_readiness_controller.py` and `subprojects_controller.py`), `config/skill_locator.py` (`find_toolkit_root`), `engine/runtime_isolation.py` (skill resolution order, slot skills in the allowlists), `services/app_diagnostics_service.py` (toolkit and standards checks of `doctor`); front end `components/standards_block.js`.
 **Loop behavior:** prompt in `plugin/skills/orchestrator/` (SKILL.md, references/); runtime in `engine/`.
 **Agent write limits / safety:** `plugin/skills/orchestrator/hooks/guard.py` (profiles, `mcp-allowlist`, `skill-allowlist`, `guard.log` audit lines), `infrastructure/workspace_file_guard.py`, `engine/runtime_isolation.py` (what an app `claude -p` loads), `engine/access_report.py`.
 **Instant chat (job preparation):** `services/claude_job_service.py` (`ClaudeJobCommand.before_start`, `ClaudeJobError` with `code`, `on_prepare_failed`), `planning_service.prepare_reply`, `follow_up_service`; gates cache in `project_progress_service` (`read_cached_planning_gates`).

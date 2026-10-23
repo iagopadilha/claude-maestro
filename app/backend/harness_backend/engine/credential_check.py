@@ -1,9 +1,10 @@
-"""Preflight checks of the test credentials convention (the same one as the plugin's `shared/testenv.py`): TEST-ENVIRONMENT.md
+"""Preflight checks of the test credentials convention (the same one as the dev toolkit's `shared/testenv.py`): TEST-ENVIRONMENT.md
 holds NAMES only; the values live in `.env` files git ignores. Pure functions plus one file read; stdlib only.
 
 Names are resolved in the SAME order as the skills' `testenv.py` (first wins): a real environment variable, `<project>/.specs/project/.env.test`,
-`~/.loop-harness/.env`, the plugin's `shared/.env`, the user-level shared `~/.claude/skills/_shared/.env`. The last two are the SHARED
-layers (the user's generic DEV account): they are ALWAYS read (no per-project acceptance); a name found only there has the source `shared`.
+`~/.loop-harness/.env`, the dev toolkit's `shared/.env` (`skill_locator.find_toolkit_root()`), the user-level shared `.env` (only when
+`LOOP_USER_SHARED_DIR` or `user_shared_dir` of config.json names a folder: there is no default folder). The last two are the SHARED layers
+(the user's generic DEV account): they are ALWAYS read (no per-project acceptance); a name found only there has the source `shared`.
 Test users are `;`-separated lists (TEST_USER_EMAILS / TEST_USER_PASSWORDS / TEST_USER_ROLES) that also become TEST_USER_<n>_EMAIL /
 _PASSWORD / _ROLE. Nothing here returns or logs a value: callers get names, sources and labels.
 """
@@ -11,16 +12,15 @@ import os
 import re
 
 from app_paths import envload
-from harness_backend.config import app_config
+from harness_backend.config import app_config, skill_locator
 
 PROJECT_ENV_RELATIVE = (".specs", "project", ".env.test")
 SHARED_DIR_VARIABLE = "LOOP_USER_SHARED_DIR"  # tests point the user-level shared folder at a temporary one
-DEFAULT_SHARED_PARTS = (".claude", "skills", "_shared")
 ENVIRONMENT_LABEL = "environment variable"
 PROJECT_LABEL = "project .env.test"
 MACHINE_LABEL = "~/.loop-harness/.env"
-PLUGIN_SHARED_LABEL = "plugin shared/.env"
-USER_SHARED_LABEL = "~/.claude/skills/_shared/.env"
+PLUGIN_SHARED_LABEL = "toolkit shared/.env"
+USER_SHARED_LABEL = "user shared .env"  # base of the label; `user_shared_label()` appends the configured folder
 LIST_SEPARATOR = ";"
 ESCAPED_SEPARATOR = "\\;"
 USER_COLUMNS = (("EMAILS", "EMAIL"), ("PASSWORDS", "PASSWORD"), ("ROLES", "ROLE"))
@@ -57,17 +57,31 @@ def read_project_values(root):
 
 
 def user_shared_dir():
-    """Folder of the user-level shared `.env` (layer 4 of the skills' testenv.py): LOOP_USER_SHARED_DIR (tests), then
-    `user_shared_dir` of `<data dir>/config.json`, then the default `~/.claude/skills/_shared`."""
+    """Folder of the user-level shared `.env`: LOOP_USER_SHARED_DIR (tests), then `user_shared_dir` of `<data dir>/config.json`; '' when
+    neither is set (no default folder: the layer is then skipped)."""
     explicit = os.environ.get(SHARED_DIR_VARIABLE)
     if explicit:
         return explicit
     configured = app_config.read_user_config(app_config.get_user_data_dir()).get("user_shared_dir", "")
-    return configured if isinstance(configured, str) and configured.strip() else os.path.join(os.path.expanduser("~"), *DEFAULT_SHARED_PARTS)
+    return configured if isinstance(configured, str) and configured.strip() else ""
 
 
 def user_shared_env_path():
-    return os.path.join(user_shared_dir(), ".env")
+    """The user-level shared `.env` path, or '' when no folder is configured."""
+    folder = user_shared_dir()
+    return os.path.join(folder, ".env") if folder else ""
+
+
+def user_shared_label():
+    """Label of the user-level shared layer: `user shared .env (<folder>)`, or the bare base when no folder is configured."""
+    folder = user_shared_dir()
+    return "%s (%s)" % (USER_SHARED_LABEL, folder) if folder else USER_SHARED_LABEL
+
+
+def toolkit_shared_env_path():
+    """`<toolkit root>/shared/.env`, or '' when the toolkit is not found."""
+    root = skill_locator.find_toolkit_root()
+    return os.path.join(root, "shared", ".env") if root else ""
 
 
 class Layer:
@@ -83,16 +97,18 @@ class Layer:
 
 
 def file_layers(root):
-    """Layers below the real environment, highest priority first: project .env.test, ~/.loop-harness/.env, plugin shared/.env,
-    user-level shared .env (the last two are `shared`)."""
+    """Layers below the real environment, highest priority first: project .env.test, ~/.loop-harness/.env, toolkit shared/.env,
+    user-level shared .env when configured (the last two are `shared`)."""
     candidates = envload.candidates()
     machine_path = candidates[0] if candidates else ""
-    plugin_path = candidates[1] if len(candidates) > 1 and not envload.get_explicit_file() else ""
+    plugin_path = toolkit_shared_env_path() if not envload.get_explicit_file() else ""
     layers = [Layer("project", PROJECT_LABEL, os.path.join(root, *PROJECT_ENV_RELATIVE), False),
               Layer("machine", MACHINE_LABEL, machine_path, False)]
     if plugin_path:
         layers.append(Layer("shared", PLUGIN_SHARED_LABEL, plugin_path, True))
-    layers.append(Layer("shared", USER_SHARED_LABEL, user_shared_env_path(), True))
+    user_path = user_shared_env_path()
+    if user_path:
+        layers.append(Layer("shared", user_shared_label(), user_path, True))
     return layers
 
 
@@ -112,12 +128,12 @@ def add_test_users(values, origins):
 
 
 def real_environment(layers):
-    """Real environment variables with a value. `envload.load()` copies `.env` files into os.environ (without overwriting), so a
-    value identical to a FILE layer's is that file's value, not a variable the user set: it keeps the file's layer (and, for a
-    shared file, its acceptance rule) instead of jumping to the top."""
+    """Real environment variables with a value. `envload.load()` copies the app's `.env` files into os.environ (without overwriting):
+    a value it copied (`envload.is_loaded_value`) is not a variable the user set, and neither is one identical to a FILE layer's
+    (that file's value): both are left out, so they never jump to the top of the stack."""
     file_values = [layer.values for layer in layers if layer.source != "project"]
     return {name: value for name, value in os.environ.items()
-            if value and not any(values.get(name) == value for values in file_values)}
+            if value and not envload.is_loaded_value(name, value) and not any(values.get(name) == value for values in file_values)}
 
 
 def stack_values(layers, environment):

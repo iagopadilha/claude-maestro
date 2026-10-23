@@ -69,7 +69,7 @@ class TestFeatureFolderName(unittest.TestCase):
         specs = os.path.join(self.root, ".specs", "project")
         write(os.path.join(specs, "ROADMAP.md"), "## Stage 1\n- [%s] status=verified kind=back paths=api\n" % SLUG)
         write(os.path.join(specs, "SUBPROJECTS.json"), json.dumps({"version": 1, "repos": {os.path.basename(self.root): {
-            "monorepo": True, "confirmed": True, "projects": [{"path": "api", "name": "api", "stack": "dotnet", "skill": "backend-dev-skill", "skip": False}]}}}))
+            "monorepo": True, "confirmed": True, "projects": [{"path": "api", "name": "api", "stack": "dotnet", "skill": "backend-dev", "skip": False}]}}}))
         write(os.path.join(self.root, system_map.SYSTEM_RELATIVE_PATH), SYSTEM_TEXT)
         meta, state = {}, {"status": "continue", "turn": 1}
         output = io.StringIO()
