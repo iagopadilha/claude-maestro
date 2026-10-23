@@ -21,6 +21,7 @@ import delivery  # noqa: E402  (push of the feature branch + PR to the integrati
 import detect_setup  # noqa: E402  (automatic setup command and local files to copy of a repo)
 import loop_state  # noqa: E402  (typed state: grammar, legal edges, snapshots)
 import project_repos  # noqa: E402  (REPOS.json: the project's repos; one primary repo when the file is absent)
+import setup_approval  # noqa: E402  (a stored setup command runs only if the user saved that exact text through the app)
 import setup_files  # noqa: E402  (uncommitted setup files: carried into a new worktree, one readiness block per repo)
 import subprojects  # noqa: E402  (monorepo list: owner of a path, confirmed or not)
 from loop_io import git, load_json, merge_pending_delivery, read, save_meta, worktree_of  # noqa: E402
@@ -258,6 +259,15 @@ def resolve_setup(item, cli_setup=""):
     return detected or "", bool(detected)
 
 
+def refuse_unapproved_setup(item, primary_repo):
+    """Stops BEFORE the worktree is created when the repo's stored setup (REPOS.json, agent-writable) is not the text the user saved in the
+    app: the step line `[repo] error: ...` and the exit text show why. Nothing runs; the user re-saves the setup and runs again."""
+    problem = setup_approval.describe_unapproved_setup(primary_repo, item)
+    if problem:
+        step(item.name, "error", problem)
+        sys.exit("repo %s: %s" % (item.name, problem))
+
+
 def resolve_copy(item):
     """Files to copy into the worktree: the stored list when configured (`[]` = none), else the suggested git-ignored local config."""
     if item.copy_configured or item.copy:
@@ -403,6 +413,7 @@ def ensure_extra_worktree(item, opts, branch, known):
     step(name, "check", "git ok; current branch %s; the worktree starts from %s" % (current_branch, base))
     if base_warning:
         step(name, "warn", base_warning)
+    refuse_unapproved_setup(item, opts.repo_path)
     recorded = last_run_entry(opts.repo_path, name)
     reattach = branch_exists(item.path, branch) and recorded.get("branch") == branch and not recorded.get("finished")
     if reattach:
@@ -452,6 +463,8 @@ def ensure_worktrees(repo, opts):
         return ensure_worktree(repo, opts)
     primary = project_repos.primary_of(repos)
     hashes = {}
+    if not os.path.isdir(work_now):  # an existing worktree never runs setup again
+        refuse_unapproved_setup(primary, repo)
     primary_setup, primary_auto = resolve_setup(primary, opts.setup)
     work, meta = ensure_worktree(repo, opts, tag=primary.name, copy_files=resolve_copy(primary), copy_hashes=hashes,
                                 setup=primary_setup, setup_auto=primary_auto)

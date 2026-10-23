@@ -38,7 +38,7 @@ to `work`:
 ## Signal files (in `.specs/project/loop/`)
 | File | Who writes | Content |
 |---|---|---|
-| `json/LOOP-CMD.json` | `run_loop.py` on every run | `{"argv": ["python", "<run_loop.py>", "<repo>", "--wave", "2", ...], "cwd": "<dir>"}`. **Without** `--answer`/`--option`. It is the command used to relaunch. |
+| `json/LOOP-CMD.json` | `run_loop.py` on every run | `{"argv": ["python", "<run_loop.py>", "<repo>", "--wave", "2", ...], "cwd": "<dir>"}`. **Without** `--answer`/`--option`. The panel does not run it as written: `engine/loop_command.py` keeps only the known `run_loop` flags (type-checked), rebuilds the command with the app's own Python and `run_loop.py`, and requires `cwd` to be the repo or its loop worktree; anything else answers 409 `loop_command_invalid`. The guard forbids every profile from writing it (`engine-file-write`). |
 | `json/MONITOR.json` | the app, when a project is opened (deleted on shutdown) | `{"pid": 123, "port": 47801, "url": "http://localhost:47801/p/<id>/", "repo": "...", "work": "...", "started_at": "ISO"}` |
 | `internal/PAUSE` | the app (`POST pause`) | empty file. `run_loop.py` checks it at the top of each turn: when it exists, deletes it and ends with `awaiting_user` ("paused by the user in the panel"). |
 

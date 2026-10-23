@@ -15,7 +15,8 @@ class RaiseLimitTests(CommandsTestCase):
         output = os.path.join(self.fixture.tmp, "argv.txt")
         self.fixture.write(fake, FAKE_RUN_LOOP)
         import sys
-        self.fixture.write_json("LOOP-CMD.json", {"argv": [sys.executable, fake, output, "--wave", "2"], "cwd": self.fixture.tmp})
+        self.fixture.scripts["run_loop"] = fake
+        self.fixture.write_json("LOOP-CMD.json", {"argv": [sys.executable, fake, self.fixture.repo, "--wave", "2"], "cwd": self.fixture.repo})
         self.fixture.start()
         return output
 

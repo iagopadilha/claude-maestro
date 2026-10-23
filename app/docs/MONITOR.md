@@ -108,5 +108,6 @@ For an MCP SQL call `rule` is `mcp-allowlist` and `subject` is the statement's f
 - A random 32-byte token created on every start, kept only in memory and injected into `index.html`; every `POST`/`PUT`
   requires `X-Monitor-Token` (missing or wrong: 403). JSON body up to 64 KB unless a route says otherwise.
 - Never returns `.env` content, credentials or the raw `guard.log`.
-- Relaunching the loop (answer, resume) runs the `argv` of `LOOP-CMD.json`, which `run_loop.py` writes on every run
-  without `--answer`/`--option`. Pausing creates the `PAUSE` file, which the loop checks at the top of each turn.
+- Relaunching the loop (answer, resume) rebuilds the command from the known flags of `LOOP-CMD.json` (which `run_loop.py`
+  writes on every run without `--answer`/`--option`) with the app's own Python and `run_loop.py`; a foreign program, an
+  unknown flag or a `cwd` outside the repo and its worktree answers 409 `loop_command_invalid`. Pausing creates the `PAUSE` file, which the loop checks at the top of each turn.

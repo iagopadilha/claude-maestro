@@ -7,7 +7,7 @@ Short, evidence-based. Not a backlog.
 
 ## Size and concentration
 - `engine/run_loop.py` was split (2,770 lines to about 740; `loop_io`, `claude_accounts`, `limit_waits`, `claude_turn`, `permission_denials`, `worktree_state`, `worktrees`, `auto_answers`, `turn_gates`, `preflight_checks`, `loop_cli` hold the rest), but `run_loop.py` still re-exports every moved name so tests can patch `run_loop.<name>`: a function that calls something tests replace has to stay there. `engine/loop_state.py` is about 850 lines.
-- `plugin/skills/orchestrator/hooks/guard.py` is about 1,730 lines, past the 1,500-line limit the map used to warn about (the allowlist rules and their audit lines landed there). Split it before adding more rules.
+- `plugin/skills/orchestrator/hooks/guard.py` is about 1,880 lines even after the SQL tokenizer, path normalization, git/gh lexer and egress checks moved to `guard_sql.py`, `guard_paths.py`, `guard_git.py` and `guard_egress.py` next to it (they must ship together). Split more before adding rules.
 
 ## Duplicated logic
 - Credential layers are resolved twice, with the same 5-layer order: `plugin/shared/testenv.py` (stdlib, used by the skills) and `app/backend/harness_backend/engine/credential_check.py` (the app). Nothing enforces that they stay equal (the blank-value rule and the user shared folder lookup were copied by hand): change both together.
@@ -20,7 +20,7 @@ Short, evidence-based. Not a backlog.
 - Next step when this is not enough: run each turn in a container or as a separate OS user with a network allowlist.
 
 ## Shell execution
-- `app/backend/harness_backend/engine/worktrees.py:368` and `:431` run a setup command with `shell=True`; `plugin/shared/verify.py:130` does the same for verify commands. The command comes from project config/spec, so it is trusted input: unclear whether that is validated anywhere.
+- `app/backend/harness_backend/engine/worktrees.py` runs a repo's setup command with `shell=True`. The text must match the SHA-256 the user approved when typing it in the panel (`engine/setup_approval.py`, stored in the app data folder, outside the repos), and the guard forbids every profile from writing `REPOS.json`; existing projects re-save their setup once. `plugin/shared/verify.py:130` still runs verify commands with `shell=True` from the spec, unvalidated.
 
 ## Broad exception handling
 - About 100 lines with `except Exception` across 50 files in `app/backend/harness_backend` (e.g. `services/claude_job_service.py` has 7, `engine/run_loop.py` has 5). Can hide failures; check each when debugging a silent problem.

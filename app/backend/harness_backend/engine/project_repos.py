@@ -12,6 +12,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import app_paths  # noqa: E402,F401  (puts the harness_backend package on sys.path)
 from harness_backend.domain.project import RepoRef  # noqa: E402
+import setup_approval  # noqa: E402
 
 REPOS_FILE_PARTS = (".specs", "project", "REPOS.json")
 ROLE_EDIT, ROLE_REFERENCE = "edit", "reference"
@@ -126,9 +127,11 @@ def repos_changed_by_roadmap(primary_name, features):
     return changed
 
 
-def save_repos(primary_repo, multi, repos, scope_defined=None, scope_source=None):
+def save_repos(primary_repo, multi, repos, scope_defined=None, scope_source=None, approve_setup_for=()):
     """Writes REPOS.json (the registry service and the engine share this one writer). `scope_defined=None` / `scope_source=None` keep what
-    the file says. `multi` is ignored: it is written derived (more than one repo). The primary is saved as `edit`."""
+    the file says. `multi` is ignored: it is written derived (more than one repo). The primary is saved as `edit`.
+    `approve_setup_for` = names of repos whose `setup` the USER just typed in the app: only those texts are recorded as approved
+    (`setup_approval`); a setup merely carried over from the file stays as approved or not as it was (the file is agent-writable)."""
     current = read_repos_file(primary_repo)
     if scope_defined is None:
         scope_defined = current["scope_defined"]
@@ -154,3 +157,6 @@ def save_repos(primary_repo, multi, repos, scope_defined=None, scope_source=None
             payload["scope_source"] = scope_source
         json.dump(payload, handle, ensure_ascii=False, indent=2)
         handle.write("\n")
+    for repo in repos:
+        if repo.name in approve_setup_for and repo.setup:
+            setup_approval.approve_setup(primary_repo, repo.path, repo.setup)

@@ -52,7 +52,8 @@ if "--check" in sys.argv:
 json.dump({"argv": sys.argv[1:], "monitor_url": os.environ.get("LOOP_MONITOR_URL")}, open(os.path.join(folder, "start_record.json"), "w"))
 """
 CHECK_READY = "[check] WARNING: no remote\n[check] ROADMAP: 3 features\n[check] READY. Command:\n  python \"run_loop.py\" \"repo\" --wave 2\n"
-FAKE_RUN_LOOP = "import sys\nopen(sys.argv[1], 'w', encoding='utf-8').write(chr(10).join(sys.argv[2:]))\n"
+# fake run_loop for the relaunch: argv[1] is the project repo (the app rebuilds the command), so it records the options after it in argv.txt next to the script
+FAKE_RUN_LOOP = "import os, sys\nopen(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'argv.txt'), 'w', encoding='utf-8').write(chr(10).join(sys.argv[2:]))\n"
 
 RUNNER = ProcessRunner()
 
@@ -264,7 +265,8 @@ class Fixture:
         fake = os.path.join(self.tmp, "fake_run_loop.py")
         output = os.path.join(self.tmp, "argv.txt")
         self.write(fake, FAKE_RUN_LOOP)
-        self.write_json("LOOP-CMD.json", {"argv": [sys.executable, fake, output, "--wave", "2"], "cwd": self.tmp})
+        self.scripts["run_loop"] = fake  # the app relaunches ITS run_loop script (rebuilt command), here the fake
+        self.write_json("LOOP-CMD.json", {"argv": [sys.executable, fake, self.repo, "--wave", "2"], "cwd": self.repo})
         return output
 
 

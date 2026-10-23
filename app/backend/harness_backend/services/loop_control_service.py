@@ -26,6 +26,7 @@ ENGINE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "engi
 if ENGINE_DIR not in sys.path:
     sys.path.insert(0, ENGINE_DIR)
 import context_files  # noqa: E402
+import loop_command  # noqa: E402
 import loop_state  # noqa: E402
 import project_repos  # noqa: E402
 import subprojects  # noqa: E402
@@ -59,6 +60,7 @@ INSTRUCTION_RESULT_ANSWER = "answer"
 INSTRUCTION_RESULT_NOTE_AND_RESUME = "note+resume"
 LOOP_ALREADY_RUNNING_ERROR = "a loop is already running (or being relaunched) in this worktree"
 MISSING_LOOP_COMMAND_ERROR = "LOOP-CMD.json missing or without argv: run run_loop.py once to record the command"
+LOOP_COMMAND_INVALID_ERROR = "LOOP-CMD.json was not trusted, nothing was started (%s). Start the loop again from the New loop panel to record it again."
 NO_LOOP_ERROR = "there is no loop yet: start one from the New loop panel"
 
 
@@ -215,18 +217,39 @@ class LoopControlService:
         with open(log_path, "ab") as handle:
             handle.write(("%s %s %s\n" % (LAUNCH_MARKER_PREFIX, stamp, action)).encode("utf-8"))
 
+    def rebuild_saved_loop_command(self, context):
+        """`(command, None)` or `(None, (status, body))`. LOOP-CMD.json is never run as it is: `loop_command.rebuild_loop_command` keeps
+        only the known run_loop.py options and builds the rest itself (interpreter, the app's run_loop script, the project repo), and
+        the claude binaries come from the app config, not from the file. Missing file = 409; a command that is not trusted = 409
+        `loop_command_invalid`."""
+        saved = self.loop_command_file_repository.read_loop_command(context.work_dir)
+        argv = saved.get("argv")
+        if not isinstance(argv, list) or not argv or not all(isinstance(item, str) for item in argv):
+            return None, (409, {"ok": False, "error": MISSING_LOOP_COMMAND_ERROR})
+        allowed_folders = [context.repo_path, context.project.loop_worktree_path()]
+        try:
+            command = loop_command.rebuild_loop_command(saved, context.repo_path, allowed_folders, self.config.engine_script_path("run_loop"))
+        except loop_command.LoopCommandInvalidError as refusal:
+            self.log.warn("loop_command_refused", project=context.project.id, reason=str(refusal)[:300])
+            return None, (409, {"ok": False, "code": loop_command.LOOP_COMMAND_INVALID_CODE, "error": LOOP_COMMAND_INVALID_ERROR % refusal})
+        if command["dropped"]:
+            self.log.info("loop_command_options_dropped", project=context.project.id, options=sorted(set(command["dropped"])))
+        claude_flags = ["--claude", self.config.claude_binary] if getattr(self.config, "claude_binary", "") else []
+        for fallback in getattr(self.config, "claude_fallback_binaries", None) or []:
+            claude_flags += ["--claude-fallback", fallback]
+        command["argv"] = command["argv"] + claude_flags
+        return command, None
+
     def relaunch_loop_from_saved_command(self, context, action, answer=None, extra_flags=None):
-        """Detached run_loop.py with the argv of LOOP-CMD.json (+ `--answer <answer>`, + extra flags such as `--leftovers commit`)."""
+        """Detached run_loop.py rebuilt from LOOP-CMD.json (+ `--answer <answer>`, + extra flags such as `--leftovers commit`)."""
         with self.get_relaunch_lock(context.project.id):
             if self.is_loop_alive(context):
                 return 409, {"ok": False, "error": LOOP_ALREADY_RUNNING_ERROR}
-            command = self.loop_command_file_repository.read_loop_command(context.work_dir)
-            argv = command.get("argv")
-            if not isinstance(argv, list) or not argv or not all(isinstance(item, str) for item in argv):
-                return 409, {"ok": False, "error": MISSING_LOOP_COMMAND_ERROR}
-            argv = list(argv) + (["--answer", answer] if answer else []) + list(extra_flags or [])
-            folder = command.get("cwd") if isinstance(command.get("cwd"), str) and os.path.isdir(command.get("cwd")) else context.repo_path
-            return self.spawn_detached_loop(context, action, argv, folder)
+            command, refusal = self.rebuild_saved_loop_command(context)
+            if refusal:
+                return refusal
+            argv = command["argv"] + (["--answer", answer] if answer else []) + list(extra_flags or [])
+            return self.spawn_detached_loop(context, action, argv, command["cwd"])
 
     def run_loop_check(self, context, flags):
         """Synchronous `run_loop.py <repo> --check <flags>` (reads the output, creates nothing, spends nothing)."""
@@ -493,9 +516,9 @@ class LoopControlService:
         return 409, {"ok": False, "error": NO_LOOP_ERROR}
 
     def write_instruction_and_resume(self, context, composed):
-        command = self.loop_command_file_repository.read_loop_command(context.work_dir)
-        if not isinstance(command.get("argv"), list) or not command["argv"]:
-            return 409, {"ok": False, "error": "LOOP-CMD.json missing: run run_loop.py once to record the command"}
+        _command, refusal = self.rebuild_saved_loop_command(context)  # before the note: a refused command leaves no block behind
+        if refusal:
+            return refusal
         if self.is_loop_alive(context):
             return 409, {"ok": False, "error": LOOP_ALREADY_RUNNING_ERROR}
         self.answers_repository.append_pending_answer(context.work_dir, USER_INSTRUCTION_QUESTION, composed)

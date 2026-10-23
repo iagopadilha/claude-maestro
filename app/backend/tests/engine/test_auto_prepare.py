@@ -17,6 +17,7 @@ import engine_env  # noqa: E402,F401
 import detect_setup  # noqa: E402
 import project_repos  # noqa: E402
 import run_loop  # noqa: E402
+import setup_approval  # noqa: E402
 
 
 def write(path, text=""):
@@ -81,6 +82,10 @@ class TestAutoPrepareOfAnExtraRepo(unittest.TestCase):
         write(os.path.join(self.api, "settings.local"), "x\n")
         write(os.path.join(self.api, ".env.example"), "SECRET=\n")
         self.opts = types.SimpleNamespace(branch="loop/auto", dry_run=False, setup="", repo_path=self.root, push=False)
+        data_dir = os.path.join(self.root, "app-data")  # the approvals of the stored setup live in the app data folder
+        patcher = mock.patch.dict(os.environ, {"LOOP_DATA_DIR": data_dir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def build(self, **fields):
         return project_repos.RepoRef(name="api", path=self.api, **fields)
@@ -99,6 +104,7 @@ class TestAutoPrepareOfAnExtraRepo(unittest.TestCase):
         self.assertIn("[api] setup: echo auto (auto-detected)", text)
 
     def test_configured_empty_copy_copies_nothing_and_stored_setup_wins(self):
+        setup_approval.approve_setup(self.root, self.api, "echo stored")  # what the app records when the user saves the setup
         entry, text = self.run_extra(self.build(copy_configured=True, setup="echo stored"))
         self.assertEqual(entry["copied"], {})
         self.assertIn("[api] setup: echo stored", text)

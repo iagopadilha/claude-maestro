@@ -18,6 +18,7 @@ from ..domain.project_errors import PathOutsideSpecsError
 ENGINE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "engine"))
 if ENGINE_DIR not in sys.path:
     sys.path.insert(0, ENGINE_DIR)
+import loop_io  # noqa: E402  (LOOP.lock owner, reused pids)
 import loop_state  # noqa: E402  (loop folder layout, parse_roadmap, roadmap approval)
 import classify_structure  # noqa: E402  (Conformance section of CLAUDE.md)
 import run_hints  # noqa: E402  (How to run section of CLAUDE.md)
@@ -198,6 +199,5 @@ class SpecsFileRepository:
 
     # ------------------------------------------------ loop
     def read_loop_lock_pid(self, work_dir):
-        """PID written in the engine's `LOOP.lock` (0 = no lock or unreadable). Whether it is alive is the process runner's call."""
-        text = (self.read_text(loop_state.loop_path(work_dir, "LOOP.lock")) or "").strip()
-        return int(text) if text.isdigit() else 0
+        """PID written in the engine's `LOOP.lock` (0 = no lock, unreadable, or a reused pid). Whether it is alive is the process runner's call."""
+        return loop_io.lock_owner_pid(loop_state.loop_path(work_dir, "LOOP.lock"))

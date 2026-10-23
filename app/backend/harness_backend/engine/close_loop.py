@@ -32,6 +32,7 @@ sys.path.insert(0, HERE)
 import app_paths  # noqa: E402  (the app's output folder: summaries and backups never go to the repo)
 import loop_state  # noqa: E402
 import project_repos  # noqa: E402
+from loop_io import lock_holder_alive, save_json, status_rows  # noqa: E402  (atomic JSON write, lock owner check, `status -z` rows)
 import prod_database_script  # noqa: E402  (the .sql the user runs on PRODUCTION before deploying)
 
 IS_WIN = os.name == "nt"
@@ -79,12 +80,6 @@ def load_json(path):
         return {}
 
 
-def save_json(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump(data, handle, ensure_ascii=False, indent=2)
-
-
 def timestamp():
     return datetime.datetime.now().isoformat(timespec="seconds")
 
@@ -107,11 +102,7 @@ def pid_alive(pid):
 
 
 def loop_is_running(primary_work):
-    try:
-        with open(loop_state.loop_path(primary_work, "LOOP.lock"), encoding="utf-8") as handle:
-            return pid_alive(int(handle.read().strip() or 0))
-    except (OSError, ValueError):
-        return False
+    return lock_holder_alive(loop_state.loop_path(primary_work, "LOOP.lock"))
 
 
 def file_hash(path):
@@ -423,17 +414,14 @@ def foreign_content_in_specs(worktree, saved_plan=(), repo=None):
     `saved_plan` = paths (relative to the worktree root, forward slashes) of durable plan files already copied back to the repository and
     verified identical there: they are saved work, so modified or untracked they do not count as foreign (a repo that TRACKS `.specs/project`)."""
     saved_plan = {path.replace("\\", "/") for path in saved_plan}
-    code, out, err = git(worktree, "status", "--porcelain", "--untracked-files=all")
+    code, rows, err = status_rows(worktree, "--untracked-files=all")  # -z: the real path, whatever it has (spaces, accents, quotes), no stripping of the first status
     if code != 0:
-        return "(git status failed: %s)" % cut_reason(err or out or "no detail", 80)
-    for line in out.splitlines():
-        found = re.match(r"^\s*(\S{1,2})\s+(.*)$", line)  # `git()` strips the output, so the first line may have lost the leading space of its status
-        if not found:
-            continue
-        status, path = found.group(1), found.group(2).strip().strip('"')
+        return "(git status failed: %s)" % cut_reason(err or "no detail", 80)
+    for row in rows:
+        path = row.path
         if path.replace("\\", "/") in saved_plan:
             continue
-        if status != "??" or not path.replace("\\", "/").startswith(".specs/"):
+        if row.status != "??" or not path.replace("\\", "/").startswith(".specs/"):
             return path
     # Tracked files with no local change (a committed `.specs/features/<slug>/contract.md`) are content of the branch, not foreign: git removes
     # them with the worktree. Modified ones were already returned above (status), so every tracked path left here is clean.
