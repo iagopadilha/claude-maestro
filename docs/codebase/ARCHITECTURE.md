@@ -3,7 +3,7 @@
 
 # Architecture
 
-**Pattern:** two-part local tool. A **plugin** (the brain: prompts, agents, guard hook, shared scripts) and an **app** (the runtime: Python loop engine, local HTTP API, plain-JS panel). Everything runs on the user's machine and drives the `claude` CLI with the user's own subscription (no API token, no hosted service). Python 3.10+, standard library only; the front end has no build step.
+**Pattern:** two-part local tool. A **plugin** (the brain: prompts, agents, guard hook) and an **app** (the runtime: Python loop engine, local HTTP API, plain-JS panel). Everything runs on the user's machine and drives the `claude` CLI with the user's own subscription (no API token, no hosted service). Python 3.10+, standard library only; the front end has no build step.
 
 For the full contract see `app/docs/ARCHITECTURE.md` (layers, modules, fixed signatures), `app/docs/API.md` and `app/docs/SKILL_BRIDGE.md`.
 
@@ -11,10 +11,12 @@ For the full contract see `app/docs/ARCHITECTURE.md` (layers, modules, fixed sig
 
 ```
 repo root
-  plugin/   Claude Code plugin: skills/ (orchestrator + dev skills), agents/, hooks/, shared/ (python helpers)
+  plugin/   Claude Code plugin: skills/ (orchestrator + satellites + repo-catalog), agents/, hooks/, shared/ (PROJECT_RULES.md, envload.py)
   app/      harness.py (single CLI) + backend/harness_backend + frontend + templates + docs
   install.py, .claude-plugin/marketplace.json   install entry points
 ```
+
+The generic dev skills (`backend-dev`, `frontend-dev`, `tlc-spec-driven`, `flow-validator`, the Playwright skills) and their scripts live in a second plugin, **claude-dev-toolkit** (own repo, required by Maestro, never depending on it). `config/skill_locator.find_toolkit_root` finds it (`dev_toolkit_dir`, plugin cache, sibling clone); the orchestrator puts its path in a `TOOLKIT: <path>` line of every dispatch (`harness.py paths`). Company rules plug in through **standards slots** bound in the `## Standards` section of each project's (or subproject's) `CLAUDE.md` (`engine/standards.py`, `harness.py standards`); the bound skills join the isolation allowlists and bundle.
 
 The skill finds the app through `LOOP_APP_HOME` or `~/.loop-harness/config.json` (written by `harness.py install`). The app finds the skill and its guard through `config/skill_locator.py`. Project state lives in the target repo under `.specs/` (roadmap, state, per-feature specs, `project/loop/` turn files); app state lives in `~/.loop-harness/` (`LOOP_DATA_DIR`).
 

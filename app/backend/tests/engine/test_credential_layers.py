@@ -1,8 +1,9 @@
 """Test credential layers (engine/credential_check.py), the legacy ACCESS.json migration and the read-only Grafana access of the loop turn.
 
-Same order as the skills' testenv.py: real env > project .env.test > ~/.loop-harness/.env > plugin shared/.env > user-level shared .env.
+Same order as the toolkit's testenv.py: real env > project .env.test > ~/.loop-harness/.env > toolkit shared/.env > user-level shared .env
+(only when LOOP_USER_SHARED_DIR or config.json `user_shared_dir` names a folder: no default folder).
 The last two are the shared layers: always read, lowest priority. Everything lives in temporary folders (fake data dir, fake
-plugin, fake user shared folder, fake ~/.claude.json); no real home file is read.
+plugin, fake toolkit named by `dev_toolkit_dir` in the fake config.json, fake user shared folder, fake ~/.claude.json); no real home file is read.
 """
 import json
 import os
@@ -10,13 +11,16 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import engine_env  # noqa: E402,F401
 import access_settings  # noqa: E402
 import credential_check  # noqa: E402
+from app_paths import envload  # noqa: E402
 import grafana_access  # noqa: E402
 import run_loop  # noqa: E402
+from harness_backend.config import skill_locator  # noqa: E402
 
 OVERRIDDEN = ("LOOP_DATA_DIR", "LOOP_SKILL_DIR", "LOOP_USER_SHARED_DIR", "LOOP_CLAUDE_CONFIG_FILE", "LOOP_ENV_FILE",
               "QA_LAYER_NAME", "QA_SECRET_TOKEN", "TEST_USER_EMAILS", "TEST_USER_PASSWORDS", "TEST_USER_ROLES")
@@ -38,12 +42,18 @@ class LayersTestCase(unittest.TestCase):
         self.user_shared = os.path.join(self.tmp, "user-shared")
         skill = os.path.join(self.tmp, "plugin", "skills", "orchestrator")
         engine_env.create_fake_skill(skill, copy_guard=False)
-        self.plugin_shared_env = os.path.join(self.tmp, "plugin", "shared", ".env")
+        self.toolkit = os.path.join(self.tmp, "toolkit")
+        os.makedirs(os.path.join(self.toolkit, "skills"))
+        self.plugin_shared_env = os.path.join(self.toolkit, "shared", ".env")  # the toolkit's shared/.env is the "plugin" layer
         for name in OVERRIDDEN:
             os.environ.pop(name, None)
         os.environ.update({"LOOP_DATA_DIR": self.data_dir, "LOOP_SKILL_DIR": skill, "LOOP_USER_SHARED_DIR": self.user_shared,
                            "LOOP_CLAUDE_CONFIG_FILE": os.path.join(self.tmp, "claude.json")})
         os.makedirs(os.path.join(self.root, ".specs", "project"))
+        self.write_config()
+
+    def write_config(self, **extra):
+        write(os.path.join(self.data_dir, "config.json"), json.dumps(dict({"dev_toolkit_dir": self.toolkit}, **extra)))
 
     def tearDown(self):
         for name, value in self.saved.items():
@@ -70,7 +80,7 @@ class LayersTestCase(unittest.TestCase):
 class TestLayerOrder(LayersTestCase):
     def test_each_layer_wins_over_the_ones_below_it(self):
         self.user_env("QA_LAYER_NAME=from-user-shared\n")
-        self.assertEqual(self.lookup(), ("shared", credential_check.USER_SHARED_LABEL))
+        self.assertEqual(self.lookup(), ("shared", credential_check.user_shared_label()))
         self.plugin_env("QA_LAYER_NAME=from-plugin\n")
         self.assertEqual(self.lookup(), ("shared", credential_check.PLUGIN_SHARED_LABEL))
         self.machine_env("QA_LAYER_NAME=from-machine\n")
@@ -95,7 +105,7 @@ class TestSharedLayers(LayersTestCase):
         self.plugin_env("QA_LAYER_NAME=plugin-value\n")
         self.assertEqual(self.lookup(), ("shared", credential_check.PLUGIN_SHARED_LABEL))
         self.user_env("QA_SECRET_TOKEN=user-value\n")
-        self.assertEqual(self.lookup("QA_SECRET_TOKEN"), ("shared", credential_check.USER_SHARED_LABEL))
+        self.assertEqual(self.lookup("QA_SECRET_TOKEN"), ("shared", credential_check.user_shared_label()))
 
     def test_a_legacy_false_in_access_json_changes_nothing(self):
         write(access_settings.access_file_path(self.root), json.dumps({"grafana_read": False, "shared_fallback": False}))
@@ -122,13 +132,28 @@ class TestSharedLayers(LayersTestCase):
         os.environ["QA_LAYER_NAME"] = "plugin-value"  # what envload.load() does to os.environ
         self.assertEqual(self.lookup()[0], "shared")
 
+    def test_a_value_envload_copied_from_an_app_env_is_not_the_real_environment(self):
+        write(os.path.join(self.tmp, "plugin", "shared", ".env"), "QA_LAYER_NAME=from-the-app-env\n")  # the app's own settings file
+        self.addCleanup(envload.LOADED_VALUES.pop, "QA_LAYER_NAME", None)
+        envload.load_all()
+        self.assertEqual(os.environ["QA_LAYER_NAME"], "from-the-app-env")
+        self.assertEqual(self.lookup(), ("missing", ""))
+        os.environ["QA_LAYER_NAME"] = "set-by-the-user-later"  # same name, another value: now it is a real variable
+        self.assertEqual(self.lookup(), ("env", credential_check.ENVIRONMENT_LABEL))
+
+    def test_the_user_shared_label_names_the_configured_folder(self):
+        self.assertEqual(credential_check.user_shared_label(), "user shared .env (%s)" % self.user_shared)
+        del os.environ["LOOP_USER_SHARED_DIR"]
+        self.assertEqual(credential_check.user_shared_label(), credential_check.USER_SHARED_LABEL)
+        self.assertEqual(credential_check.USER_SHARED_LABEL, "user shared .env")
+
     def test_layer_report_names_what_each_layer_defines_without_values(self):
         self.project_env("QA_LAYER_NAME=a\n")
         self.user_env("QA_LAYER_NAME=b\nQA_SECRET_TOKEN=%s\n" % SECRET_FRAGMENT)
         report = credential_check.Resolution(self.root).layer_report(["QA_LAYER_NAME", "QA_SECRET_TOKEN", "OTHER"])
         by_label = {layer["label"]: layer for layer in report}
         self.assertEqual(by_label[credential_check.PROJECT_LABEL]["names"], ["QA_LAYER_NAME"])
-        self.assertEqual(by_label[credential_check.USER_SHARED_LABEL]["names"], ["QA_LAYER_NAME", "QA_SECRET_TOKEN"])
+        self.assertEqual(by_label[credential_check.user_shared_label()]["names"], ["QA_LAYER_NAME", "QA_SECRET_TOKEN"])
         self.assertFalse(by_label[credential_check.MACHINE_LABEL]["exists"])
         self.assertNotIn(SECRET_FRAGMENT, json.dumps(report))
 
@@ -137,12 +162,36 @@ class TestSharedLayers(LayersTestCase):
         self.plugin_env("A=1\n")
         self.user_env("B=2\n")
         self.assertEqual(credential_check.Resolution(self.root).shared_files_found(),
-                         [credential_check.PLUGIN_SHARED_LABEL, credential_check.USER_SHARED_LABEL])
+                         [credential_check.PLUGIN_SHARED_LABEL, credential_check.user_shared_label()])
 
     def test_the_user_shared_folder_comes_from_config_json_when_no_override(self):
         del os.environ["LOOP_USER_SHARED_DIR"]
-        write(os.path.join(self.data_dir, "config.json"), json.dumps({"user_shared_dir": os.path.join(self.tmp, "configured")}))
+        self.write_config(user_shared_dir=os.path.join(self.tmp, "configured"))
         self.assertEqual(credential_check.user_shared_env_path(), os.path.join(self.tmp, "configured", ".env"))
+
+    def test_there_is_no_default_user_shared_folder(self):
+        del os.environ["LOOP_USER_SHARED_DIR"]
+        self.assertEqual(credential_check.user_shared_dir(), "")
+        self.assertEqual(credential_check.user_shared_env_path(), "")
+        labels = [layer.label for layer in credential_check.Resolution(self.root).layers]
+        self.assertNotIn(credential_check.user_shared_label(), labels)
+        self.assertEqual(labels, [credential_check.PROJECT_LABEL, credential_check.MACHINE_LABEL, credential_check.PLUGIN_SHARED_LABEL])
+
+    def test_the_plugin_layer_is_the_toolkit_shared_env_with_its_label(self):
+        self.assertEqual(credential_check.PLUGIN_SHARED_LABEL, "toolkit shared/.env")
+        self.assertEqual(credential_check.toolkit_shared_env_path(), self.plugin_shared_env)
+        layers = {layer.label: layer for layer in credential_check.Resolution(self.root).layers}
+        self.assertEqual(layers[credential_check.PLUGIN_SHARED_LABEL].path, self.plugin_shared_env)
+
+    def test_without_a_toolkit_there_is_no_plugin_layer(self):
+        home = os.path.join(self.tmp, "empty-home")
+        os.makedirs(home)
+        os.remove(os.path.join(self.data_dir, "config.json"))
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}), \
+                mock.patch.object(skill_locator, "REPO_ROOT_DIR", os.path.join(self.tmp, "repo")):
+            self.assertEqual(credential_check.toolkit_shared_env_path(), "")
+            labels = [layer.label for layer in credential_check.Resolution(self.root).layers]
+        self.assertNotIn(credential_check.PLUGIN_SHARED_LABEL, labels)
 
 
 class TestPreflightMessages(LayersTestCase):

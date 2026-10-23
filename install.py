@@ -11,7 +11,8 @@ What it does, in order (each step prints PASS, WARN or FAIL):
      <data folder>/.env ONLY when that file does not exist yet (yours is never overwritten);
   3. runs `python app/harness.py install` (writes <data folder>/config.json so the skill finds the app) and
      `python app/harness.py doctor`;
-  4. prints the two `/plugin` commands that install the plugin in Claude Code and how to open the panel.
+  4. looks for the claude-dev-toolkit plugin (the generic dev skills the loop requires; WARN when it is not found);
+  5. prints the `/plugin` commands that install Maestro and the toolkit in Claude Code and how to open the panel.
 
 It never installs anything system-wide, never touches ~/.claude and never asks for or stores a token: the harness drives
 the `claude` CLI you are already signed in to. Exit code: 0 when every hard check passed, 1 otherwise, 2 for bad usage.
@@ -35,7 +36,23 @@ PLUGIN_COMMANDS = (
     "/plugin marketplace add iagopadilha/loop-engineering-harness",
     "/plugin install loop-engineering-harness@loop-engineering-harness",
 )
+TOOLKIT_COMMANDS = (
+    "/plugin marketplace add iagopadilha/claude-dev-toolkit",
+    "/plugin install claude-dev-toolkit@claude-dev-toolkit",
+)
 EXIT_OK, EXIT_FAILED = 0, 1
+
+
+def find_toolkit_root():
+    """Plugin root of claude-dev-toolkit (config.json `dev_toolkit_dir`, the plugin cache, the sibling clone) or '' when not found."""
+    backend = os.path.join(APP_DIR, "backend")
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    try:
+        from harness_backend.config import skill_locator
+        return skill_locator.find_toolkit_root()
+    except Exception:  # noqa: BLE001  (a broken import only means "not found" here; the doctor reports the details)
+        return ""
 
 
 def print_now(line):
@@ -47,7 +64,7 @@ class Installer:
     """The steps, with the outside world injected (`which`, `run`, `ask`, `out`) so the tests can mock every check."""
 
     def __init__(self, assume_yes=False, data_dir="", which=shutil.which, run=subprocess.run, ask=input, out=None,
-                 python_version=None, environ=None):
+                 python_version=None, environ=None, find_toolkit=None):
         self.assume_yes = assume_yes
         self.which = which
         self.run = run
@@ -55,6 +72,7 @@ class Installer:
         self.out = out or print_now
         self.python_version = tuple(python_version or sys.version_info[:3])
         self.environ = os.environ if environ is None else environ
+        self.find_toolkit = find_toolkit or find_toolkit_root
         self.data_dir = os.path.abspath(os.path.expanduser(
             data_dir or self.environ.get(DATA_DIR_VARIABLE) or os.path.join("~", DEFAULT_DATA_DIR_NAME)))
         self.failures = []
@@ -139,9 +157,9 @@ class Installer:
         self.report("PASS", "copied app/.env.example to %s (fill in the LOOP_* values you need; never commit it)" % target)
         return True
 
-    def harness(self, command):
+    def harness(self, command, extra=()):
         """`python app/harness.py <command> --data-dir <data folder>`, output shown as it runs. Returns the exit code."""
-        argv = [sys.executable, HARNESS, command, "--data-dir", self.data_dir]
+        argv = [sys.executable, HARNESS, command, "--data-dir", self.data_dir] + list(extra)
         self.out("----  python app/harness.py %s" % command)
         try:
             return self.run(argv, cwd=APP_DIR, timeout=STEP_TIMEOUT_SECONDS).returncode
@@ -149,16 +167,27 @@ class Installer:
             self.out(str(error))
             return EXIT_FAILED
 
-    def register_app(self):
+    def register_app(self, toolkit_found=True):
         if self.harness("install") != 0:
             self.report("FAIL", "harness.py install failed (see above)")
             return False
         self.report("PASS", "harness.py install")
-        if self.harness("doctor") != 0:
+        # the toolkit is installed from inside Claude Code AFTER this script: a missing one is only a warning here
+        if self.harness("doctor", () if toolkit_found else ("--toolkit-optional",)) != 0:
             self.report("FAIL", "harness.py doctor reported a problem (see the PROBLEM lines above)")
             return False
         self.report("PASS", "harness.py doctor")
         return True
+
+    def check_toolkit(self):
+        """The loop requires claude-dev-toolkit (backend-dev, frontend-dev, tlc-spec-driven...): WARN, not FAIL, because it is installed
+        from inside Claude Code after this script."""
+        root = self.find_toolkit()
+        if root:
+            self.report("PASS", "claude-dev-toolkit found: %s" % root)
+            return True
+        self.report("WARN", "claude-dev-toolkit not found: the loop needs it (install it with the /plugin lines below)")
+        return False
 
     def print_next_steps(self):
         self.out("")
@@ -167,8 +196,11 @@ class Installer:
         for command in PLUGIN_COMMANDS:
             self.out("       " + command)
         self.out("     (or, from this clone: /plugin marketplace add %s)" % REPO_DIR)
-        self.out("  2. Open the panel:  python app/harness.py serve")
-        self.out("  3. Optional notifications: edit %s, then python app/harness.py notify --test"
+        self.out("  2. Then the dev toolkit the loop requires (generic dev skills):")
+        for command in TOOLKIT_COMMANDS:
+            self.out("       " + command)
+        self.out("  3. Open the panel:  python app/harness.py serve")
+        self.out("  4. Optional notifications: edit %s, then python app/harness.py notify --test"
                  % os.path.join(self.data_dir, ".env"))
 
     def main(self):
@@ -181,7 +213,7 @@ class Installer:
             self.out("Cancelled: nothing was written.")
             return EXIT_FAILED
         if self.prepare_data_dir():
-            self.register_app()
+            self.register_app(self.check_toolkit())
         if self.failures:
             self.out("")
             self.out("FAILED (%d): %s" % (len(self.failures), "; ".join(self.failures)))

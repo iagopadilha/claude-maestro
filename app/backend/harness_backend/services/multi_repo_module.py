@@ -53,7 +53,7 @@ class MultiRepoModule:
 def build_multi_repo_module(config, log, project_service, loop_status_service, loop_worktree_service, claude_job_service,
                             loop_control_service=None, specs_structure_service=None, roadmap_service=None, project_progress_service=None,
                             planning_requirement_service=None, planning_repos_service=None, on_plan_changed=None,
-                            subprojects_service=None, context_block_service=None, decisions_service=None):
+                            subprojects_service=None, context_block_service=None, decisions_service=None, standards_service=None):
     process_runner = ProcessRunner()
     git_client = GitClient(process_runner)
     repo_registry_service = RepoRegistryService(git_client, loop_status_service, log)
@@ -110,7 +110,7 @@ def build_multi_repo_module(config, log, project_service, loop_status_service, l
             workspace_service.subprojects_service = subprojects_service  # the setup state of each repository in the Workspace payload
         if context_block_service is not None:  # the maestro:context block at the root of a non-monorepo secondary edit repo
             repo_readiness_service.attach_context_block_service(context_block_service)
-        controllers.append(RepoReadinessController(project_service, repo_readiness_service))
+        controllers.append(RepoReadinessController(project_service, repo_readiness_service, standards_service))
         if project_progress_service is not None:  # the planning gate "repos" (an extra repo without Conformance/map blocks the approval)
             project_progress_service.repo_readiness_provider = repo_readiness_service.list_unready
             project_progress_service.repo_reference_warning_provider = repo_readiness_service.list_reference_warnings

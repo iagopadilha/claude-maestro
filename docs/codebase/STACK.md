@@ -28,10 +28,11 @@ Two parts in one repo: a **Claude Code plugin** (`plugin/`, "loop-engineering-ha
 
 ## External tools (called as processes)
 - `claude` CLI (the model runtime; uses the user's subscription, no API token), `git`, optional `gh` (PR on deliver). See `infrastructure/claude_client.py`, `git_client.py`, `process_runner.py`.
+- `claude-dev-toolkit` (plugin, separate repo; required): the generic dev skills and `shared/` scripts the agents run. `harness.py paths` prints where it is, `harness.py doctor` FAILs without it.
 - Notification channels (email and others): `engine/notify.py`, `engine/email_senders.py`, configured via `app/.env.example`.
 
 ## Plugin (`plugin/`)
-- Markdown skills and agents (`SKILL.md`, `references/`), a PreToolUse guard hook in Python (`plugin/skills/orchestrator/hooks/guard.py`), shared Python scripts in `plugin/shared/`. Manifest: `plugin/.claude-plugin/plugin.json`; marketplace: `.claude-plugin/marketplace.json`.
+- Markdown skills and agents (`SKILL.md`, `references/`), a PreToolUse guard hook in Python (`plugin/skills/orchestrator/hooks/guard.py`), a template and `envload.py` in `plugin/shared/` (the dev skills and their shared scripts are not here: they come from the required companion plugin claude-dev-toolkit, found by `config/skill_locator.find_toolkit_root`). Manifest: `plugin/.claude-plugin/plugin.json`; marketplace: `.claude-plugin/marketplace.json`.
 
 ## Development tools
 - CLI entry: `app/harness.py` (serve, loop, check, state, deliver, doctor, install...). Setup: `python install.py`.

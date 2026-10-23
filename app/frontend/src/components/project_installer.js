@@ -4,6 +4,7 @@
 import { html, useState, useEffect } from '../util/preact.js';
 import { dur } from '../util/format.js';
 import { StepIndicator } from './subprojects_installer.js';
+import { StandardsBlock } from './standards_block.js';
 import { Chip, useNow, MAP_DOCUMENT_TOTAL } from './subprojects_table.js';
 
 const STEPS = [[1, 'Conformance'], [2, 'Map']];
@@ -63,8 +64,10 @@ function MapStep({ map, now, retry }) {
  * conformance: { written: 'STANDARD'|'LEGACY'|'', suggestion: {suggestion, stack, evidence}|null }
  * map: see MapStep (+ `needed`: false when the map is optional, e.g. a repository without code)
  * actions: saveConformance(value) (resolves true when saved), startMap() (asks the one-sentence confirmation), retryMap().
+ * standards: optional { scope, get(), put(bindings) } of the Standards slots (see standards_block.js); shown under the Conformance, never
+ * hidden behind it and never a condition of Next / Done. Left out for a reference repository (it has no Conformance step).
  */
-export function ProjectInstaller({ conformance, map, busy = false, actions, onContinue, skipConformance = false, finishLabel = 'Continue to planning' }) {
+export function ProjectInstaller({ conformance, map, busy = false, actions, onContinue, skipConformance = false, finishLabel = 'Continue to planning', standards = null }) {
   const gateStep = conformance.written || skipConformance ? 2 : 1;
   const [view, setView] = useState(null); // a step the user went back to; null = follow what is written
   const [choice, setChoice] = useState('');
@@ -82,7 +85,8 @@ export function ProjectInstaller({ conformance, map, busy = false, actions, onCo
   return html`<div class="sp-inst" id="pi-installer" data-step=${step}>
     <${StepIndicator} step=${skipConformance ? 1 : step} steps=${skipConformance ? [[1, 'Map']] : STEPS} allDone=${step === STEPS.length && finished} />
     <p class="sp-inst-d">${STEP_TEXT[step]}</p>
-    ${step === 1 ? html`<${ConformanceStep} written=${conformance.written} suggestion=${conformance.suggestion} choice=${choice} setChoice=${setChoice} locked=${busy} />`
+    ${step === 1 ? html`<${ConformanceStep} written=${conformance.written} suggestion=${conformance.suggestion} choice=${choice} setChoice=${setChoice} locked=${busy} />
+        ${standards && !skipConformance ? html`<${StandardsBlock} api=${standards} scope=${standards.scope} />` : null}`
       : html`<${MapStep} map=${map} now=${now} retry=${actions.retryMap} />`}
     <div class="sp-inst-foot">
       ${skipConformance ? null : html`<button type="button" class="btn" id="sp-inst-back" disabled=${!!backBlocked || busy} title=${backBlocked || undefined} onClick=${() => setView(step - 1)}>Back</button>`}

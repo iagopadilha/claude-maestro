@@ -182,9 +182,9 @@ def test_environment_stop_reason(root, opts, problems):
     return ("The loop did NOT start (nothing was spent): the real-app tests were requested (%s) but the test environment cannot run.\n"
             "Missing: %s\n"
             "Where: names go in .specs/project/TEST-ENVIRONMENT.md (names only); values go in .specs/project/.env.test of the project "
-            "(define it in .env.test), or in the machine defaults in ~/.loop-harness/.env (generic test user = TEST_USER_1_*). The user's shared "
-            "account (plugin shared/.env and ~/.claude/skills/_shared/.env) only counts after you accept the shared fallback in the "
-            "Test environment tab (.specs/project/ACCESS.json). "
+            "(define it in .env.test), or in the machine defaults in ~/.loop-harness/.env (generic test user = TEST_USER_1_*). The shared "
+            "layers are read too, with no acceptance needed: the dev toolkit's shared/.env and, only when `user_shared_dir` is set in the "
+            "app's config.json, that folder's .env. "
             "Fix it and start the loop again, or remove regression=yes from the ROADMAP." % (who, "; ".join(problems)))
 
 

@@ -35,7 +35,7 @@ class TestContractMergeHook(unittest.TestCase):
     def confirm_monorepo(self, confirmed=True, monorepo=True):
         write(os.path.join(self.root, ".specs", "project", "SUBPROJECTS.json"), json.dumps(
             {"version": 1, "repos": {os.path.basename(self.root): {"monorepo": monorepo, "confirmed": confirmed, "projects": [
-                {"path": "api", "name": "api", "stack": "dotnet", "skill": "backend-dev-skill", "skip": False}]}}}))
+                {"path": "api", "name": "api", "stack": "dotnet", "skill": "backend-dev", "skip": False}]}}}))
 
     def system(self, text=SYSTEM_TEXT):
         write(os.path.join(self.root, system_map.SYSTEM_RELATIVE_PATH), text)

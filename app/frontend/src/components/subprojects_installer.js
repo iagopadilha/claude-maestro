@@ -3,6 +3,7 @@
    The current step follows the back end gates (props.gates); Back lets the user look at an earlier step. */
 import { html, useState, useEffect } from '../util/preact.js';
 import { dur } from '../util/format.js';
+import { StandardsBlock } from './standards_block.js';
 import { Chip, Warnings, useNow, mapFileCount, mapQueueOf, MAP_DOCUMENT_TOTAL, DAMAGED_TEXT, isDamaged } from './subprojects_table.js';
 
 const STEPS = [[1, 'Subprojects'], [2, 'Conformance'], [3, 'Maps']];
@@ -84,7 +85,7 @@ function SubprojectsStep({ data, rows, confirmed, locked, mapping, validating, n
 }
 
 // ---------- step 2: one conformance line per subproject ----------
-function ConformanceStep({ rows, choices, setChoice, locked }) {
+function ConformanceStep({ rows, choices, setChoice, locked, standards = null }) {
   if (!rows.length) return html`<div class="sp-muted sp-inst-empty">Every subproject is skipped: nothing to choose.</div>`;
   return html`<ul class="sp-inst-list" aria-label="Conformance of each subproject">${rows.map((row) => {
     const suggested = suggestionOf(row), written = !!row.conformance;
@@ -100,7 +101,11 @@ function ConformanceStep({ rows, choices, setChoice, locked }) {
       </div>
       <div class="sp-inst-end">${written ? html`<span class="sp-muted">saved</span>` : null}</div>
     </li>`;
-  })}</ul>`;
+  })}</ul>
+  ${standards ? html`<div class="sp-std-list" aria-label="Standards of each subproject">${rows.map((row) => html`<details key=${row.path} class="sp-std-sub" data-path=${row.path}>
+    <summary>${'Standards (optional): ' + row.path}</summary>
+    <${StandardsBlock} api=${standards(row)} scope=${row.path} title=${row.name} />
+  </details>`)}</div>` : null}`;
 }
 
 // ---------- step 3: the maps ----------
@@ -160,8 +165,9 @@ function MapsStep({ data, rows, queue, now, locked, mapping, needsSystem, system
  * gates: { subprojects, conformance, map } booleans from the back end; onContinue(): the last button, after the maps are done.
  * actions: validate, confirmList (resolves true when saved), detectAgain, notMonorepo, addFolder, rename, toggleSkip, removeRow,
  *          saveConformances([{ path, value }]) (resolves true when saved), mapAll, mapRetry(row), systemMap.
+ * standards: optional fn(row) -> { get(), put(bindings) } of the Standards slots of that subproject (step 2, never required).
  */
-export function SubprojectsInstaller({ data, draft = null, busy = false, mapError = '', actions, gates = {}, onContinue, skipConformance = false, finishLabel = 'Continue to planning' }) {
+export function SubprojectsInstaller({ data, draft = null, busy = false, mapError = '', actions, gates = {}, onContinue, skipConformance = false, finishLabel = 'Continue to planning', standards = null }) {
   const gateStep = !gates.subprojects ? 1 : !gates.conformance && !skipConformance ? 2 : 3;
   const [view, setView] = useState(null); // a step the user went back to; null = follow the gates
   const [choices, setChoices] = useState({});
@@ -209,7 +215,7 @@ export function SubprojectsInstaller({ data, draft = null, busy = false, mapErro
     <${StepIndicator} step=${skipConformance && step === 3 ? 2 : step} steps=${skipConformance ? [[1, 'Subprojects'], [2, 'Maps']] : STEPS} allDone=${step === 3 && allDone && !!everMapped} />
     <p class="sp-inst-d">${STEP_TEXT[step]}</p>
     ${step === 1 ? html`<${SubprojectsStep} data=${data} rows=${rows} confirmed=${confirmed} locked=${locked} mapping=${mapping} validating=${validating} now=${now} mapError=${mapError} actions=${actions} />`
-      : step === 2 ? html`<${ConformanceStep} rows=${rows} choices=${choices} setChoice=${(path, value) => setChoices((current) => ({ ...current, [path]: value }))} locked=${locked} />`
+      : step === 2 ? html`<${ConformanceStep} rows=${rows} choices=${choices} setChoice=${(path, value) => setChoices((current) => ({ ...current, [path]: value }))} locked=${locked} standards=${skipConformance ? null : standards} />`
       : html`<${MapsStep} data=${data} rows=${rows} queue=${queue} now=${now} locked=${locked} mapping=${mapping} needsSystem=${needsSystem} systemRetry=${actions.systemMap} actions=${actions} />`}
     ${step === 3 && mapError ? html`<div class="sp-note sp-note-bad" role="alert">${mapError}</div>` : null}
     <div class="sp-inst-foot">

@@ -53,12 +53,12 @@ class InstallCase(unittest.TestCase):
         self.data_dir = os.path.join(self.tmp, "data")
         self.lines = []
 
-    def installer(self, world, assume_yes=True, answer="y", python_version=(3, 12, 0)):
+    def installer(self, world, assume_yes=True, answer="y", python_version=(3, 12, 0), toolkit="/fake/toolkit"):
         def ask(question):
             self.lines.append("ASK " + question)
             return answer
         return install.Installer(assume_yes=assume_yes, data_dir=self.data_dir, which=world.which, run=world.run, ask=ask,
-                                 out=self.lines.append, python_version=python_version, environ={})
+                                 out=self.lines.append, python_version=python_version, environ={}, find_toolkit=lambda: toolkit)
 
     def output(self):
         return "\n".join(self.lines)
@@ -73,11 +73,36 @@ class TestInstallScript(InstallCase):
         install_call = next(argv for argv in world.calls if argv[-1] != "--version")
         self.assertEqual(install_call[-2:], ["--data-dir", self.data_dir])
         text = self.output()
-        for command in install.PLUGIN_COMMANDS:
+        for command in install.PLUGIN_COMMANDS + install.TOOLKIT_COMMANDS:
             self.assertIn(command, text)
+        self.assertIn("PASS  claude-dev-toolkit found: /fake/toolkit", text)
         self.assertIn("python app/harness.py serve", text)
         self.assertIn("ALL PASSED", text)
         self.assertNotIn("FAIL ", text)
+
+    def test_toolkit_lines_come_after_the_maestro_ones(self):
+        self.assertEqual(self.installer(FakeWorld()).main(), 0, self.output())
+        text = self.output()
+        self.assertEqual(install.TOOLKIT_COMMANDS, ("/plugin marketplace add iagopadilha/claude-dev-toolkit",
+                                                    "/plugin install claude-dev-toolkit@claude-dev-toolkit"))
+        self.assertLess(text.index(install.PLUGIN_COMMANDS[-1]), text.index(install.TOOLKIT_COMMANDS[0]))
+
+    def test_a_missing_toolkit_is_only_a_warning_and_doctor_is_told_so(self):
+        world = FakeWorld()
+        self.assertEqual(self.installer(world, toolkit="").main(), 0, self.output())
+        text = self.output()
+        self.assertIn("WARN  claude-dev-toolkit not found", text)
+        self.assertIn("ALL PASSED", text)
+        for command in install.TOOLKIT_COMMANDS:
+            self.assertIn(command, text)
+        doctor_call = next(argv for argv in world.calls if argv[-1] != "--version" and argv[2] == "doctor")
+        self.assertIn("--toolkit-optional", doctor_call)
+
+    def test_a_found_toolkit_leaves_the_doctor_call_alone(self):
+        world = FakeWorld()
+        self.installer(world).main()
+        doctor_call = next(argv for argv in world.calls if argv[-1] != "--version" and argv[2] == "doctor")
+        self.assertNotIn("--toolkit-optional", doctor_call)
 
     def test_existing_env_is_never_overwritten(self):
         os.makedirs(self.data_dir)

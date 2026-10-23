@@ -215,6 +215,109 @@ class TestAllowlist(World):
         self.assertFalse(iso.isolation_enabled())
 
 
+class TestToolkitAndSlotSkills(World):
+    """ISO-01..03: no company dev skill names in the defaults, toolkit between the user's skills and the plugin, slot skills in the allowlists."""
+
+    def setUp(self):
+        super().setUp()
+        self.toolkit = os.path.join(self.root, "toolkit")
+        write(os.path.join(self.toolkit, "skills", "backend-dev", "SKILL.md"), "toolkit backend-dev")
+        write(os.path.join(self.toolkit, "skills", "frontend-dev", "SKILL.md"), "toolkit frontend-dev")
+        write(os.path.join(self.plugin, "skills", "frontend-dev", "SKILL.md"), "plugin frontend-dev")
+        self.repo = os.path.join(self.root, "repo")
+
+    def bind(self, folder, text):
+        write(os.path.join(folder, "CLAUDE.md"), "# Project\n\n## Standards\n%s\n" % text)
+
+    def test_defaults_drop_the_company_dev_skill_names(self):
+        everything = {name for names in iso.DEFAULT_ALLOWLIST.values() for name in names}
+        self.assertNotIn("backend-dev-skill", everything)
+        self.assertNotIn("frontend-dev-skill", everything)
+        self.assertNotIn("github", everything)
+        self.assertTrue({"backend-dev", "frontend-dev"} <= everything)
+
+    def test_resolution_order_is_user_then_toolkit_then_plugin_then_other_plugins(self):
+        other = os.path.join(self.root, "other-plugin", "skills")
+        write(os.path.join(other, "frontend-dev", "SKILL.md"), "other frontend-dev")
+        write(os.path.join(other, "slot-only", "SKILL.md"), "other slot-only")
+        names = ["backend-dev", "frontend-dev", "slot-only", "orchestrator", "ghost"]
+        found, skipped = iso.resolve_skill_sources(self.plugin, self.user_skills, names, self.toolkit, [other])
+        self.assertEqual(found["backend-dev"], os.path.join(self.user_skills, "backend-dev"), "the user's copy wins over the toolkit")
+        self.assertEqual(found["frontend-dev"], os.path.join(self.toolkit, "skills", "frontend-dev"), "the toolkit wins over the plugin")
+        self.assertEqual(found["orchestrator"], os.path.join(self.plugin, "skills", "orchestrator"))
+        self.assertEqual(found["slot-only"], os.path.join(other, "slot-only"), "another installed plugin is the last place")
+        self.assertEqual(skipped, ["ghost"])
+
+    def test_the_old_three_argument_call_still_works(self):
+        found, skipped = iso.resolve_skill_sources(self.plugin, self.user_skills, ["backend-dev", "ghost"])
+        self.assertEqual((sorted(found), skipped), (["backend-dev"], ["ghost"]))
+
+    def test_the_bundle_takes_the_toolkit_skill_and_rebuilds_when_the_toolkit_changes(self):
+        result = self.ensure(("frontend-dev",), toolkit_dir=self.toolkit)
+        self.assertEqual(self.bundle_skill("frontend-dev"), "toolkit frontend-dev")
+        self.assertEqual(result["skipped"], [])
+        write(os.path.join(self.toolkit, "skills", "frontend-dev", "SKILL.md"), "toolkit frontend-dev changed and longer")
+        self.assertTrue(self.ensure(("frontend-dev",), toolkit_dir=self.toolkit, use_memo=False)["rebuilt"])
+        self.assertEqual(self.bundle_skill("frontend-dev"), "toolkit frontend-dev changed and longer")
+
+    def test_installed_plugin_skill_dirs_lists_the_newest_version_of_each_plugin(self):
+        self.set_env(LOOP_CLAUDE_HOME=os.path.join(self.root, "claude-home"))
+        cache = os.path.join(self.root, "claude-home", "plugins", "cache", "market")
+        old = os.path.join(cache, "acme-plugin", "1.0.0")
+        new = os.path.join(cache, "acme-plugin", "1.1.0")
+        nested = os.path.join(cache, "nested-plugin", "0.3.0")
+        for folder, skills in ((old, "skills"), (new, "skills"), (nested, os.path.join("plugin", "skills"))):
+            write(os.path.join(folder, skills, "one", "SKILL.md"))
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+        os.utime(nested, (500, 500))
+        folders = iso.installed_plugin_skill_dirs()
+        self.assertEqual(folders, [os.path.join(new, "skills"), os.path.join(nested, "plugin", "skills")])
+
+    def test_slot_skills_join_the_profiles_that_have_a_dev_skill_and_the_verifier(self):
+        self.bind(self.repo, "git: acme-git\nbackend: acme:acme-backend\nfrontend: Acme-Front")
+        allowlist = iso.skills_allowlist(self.repo, {})
+        for profile in ("planning", "roadmapmap", "subprojects", "systemmap", "spec", "executor", "verifier"):
+            for name in ("acme-git", "acme-backend", "acme-front"):
+                self.assertIn(name, allowlist[profile], (profile, name))
+        for profile in ("orchestrator", "auto"):
+            self.assertNotIn("acme-backend", allowlist[profile])
+        self.assertEqual(allowlist["executor"].count("acme-backend"), 1)
+
+    def test_a_plugin_prefix_is_removed_for_the_allowlist(self):
+        self.bind(self.repo, "backend: acme:acme-backend")
+        self.assertNotIn("acme:acme-backend", iso.skills_allowlist(self.repo, {})["executor"])
+        self.assertEqual(iso.slot_skill_names(self.repo), ["acme-backend"])
+
+    def test_no_binding_no_extra_skill(self):
+        self.assertEqual(iso.skills_allowlist(self.repo, {}), iso.skills_allowlist(None, {}))
+        write(os.path.join(self.repo, "CLAUDE.md"), "# Project\nno standards here\n")
+        self.assertEqual(iso.skills_allowlist(self.repo, {}), iso.skills_allowlist(None, {}))
+
+    def test_a_monorepo_reads_each_subproject_and_not_the_root(self):
+        self.bind(self.repo, "backend: root-skill")
+        self.bind(os.path.join(self.repo, "api"), "backend: api-skill")
+        self.bind(os.path.join(self.repo, "web"), "frontend: web-skill")
+        self.bind(os.path.join(self.repo, "seed"), "frontend: seed-skill")
+        write(os.path.join(self.repo, ".specs", "project", "SUBPROJECTS.json"), json.dumps({"repos": {"repo": {"monorepo": True, "confirmed": True, "projects": [
+            {"path": "api"}, {"path": "web"}, {"path": "seed", "skip": True}]}}}))
+        names = iso.slot_skill_names(self.repo)
+        self.assertEqual(sorted(names), ["api-skill", "web-skill"])
+        self.assertIn("web-skill", iso.skills_allowlist(self.repo, {})["verifier"])
+
+    def test_prepare_bundles_the_toolkit_and_the_slot_skill_of_another_plugin(self):
+        self.set_env(LOOP_DATA_DIR=self.data, LOOP_CLAUDE_HOME=os.path.join(self.root, "home", ".claude"))
+        cache_skills = os.path.join(self.root, "home", ".claude", "plugins", "cache", "market", "acme", "2.0.0", "skills")
+        write(os.path.join(cache_skills, "acme-backend", "SKILL.md"), "cache acme-backend")
+        self.bind(self.repo, "backend: acme:acme-backend")
+        iso.clear_memo()
+        prepared = iso.prepare(self.repo, {"dev_toolkit_dir": self.toolkit}, self.plugin)
+        self.assertIn("acme-backend", prepared["bundle"]["skills"])
+        self.assertEqual(read(self.data, "runtime", "bundle", ".claude", "skills", "acme-backend", "SKILL.md"), "cache acme-backend")
+        self.assertEqual(read(self.data, "runtime", "bundle", ".claude", "skills", "frontend-dev", "SKILL.md"), "toolkit frontend-dev")
+        self.assertIn("acme-backend", json.loads(read(prepared["allowlist_file"]))["executor"])
+
+
 class TestSettings(World):
     GUARD = os.path.join("x", "plugin", "skills", "orchestrator", "hooks", "guard.py")
 

@@ -9,6 +9,11 @@ Lookup order:
 Without an explicit file, items 2 and 3 are merged: the first one that defines a key wins; a real environment variable
 beats them all (it is never overwritten).
 
+These are the APP's own settings (notify, panel, git, PR). Loading copies them into os.environ, so the module records every
+key it set (`LOADED_VALUES`): `is_loaded_value(name, value)` tells the credential layers that an os.environ entry is a copy of
+an app `.env`, not a variable the user set, so it never counts as the real-environment credential layer (the toolkit's
+`shared/.env` and the other credential files are read as layers by `engine/credential_check.py`, never through here).
+
 Format: `KEY=value`, one per line; comments only on whole lines starting with `#`; a value in single or double quotes is
 read literally (quote it when it holds # & % { } ? ^). The `.env` is a secret: never commit it.
 """
@@ -23,6 +28,7 @@ except ImportError:  # loaded as a loose script (python envload.py)
 EXPLICIT_FILE_VARIABLE = "LOOP_ENV_FILE"
 DATA_DIR_VARIABLE = "LOOP_DATA_DIR"
 DEFAULT_DATA_DIR_NAME = ".loop-harness"
+LOADED_VALUES = {}  # name -> value this module copied into os.environ (a name the real environment already had is never recorded)
 SECRET_WORDS = ("TOKEN", "SECRET", "PASSWORD", "KEY")
 
 
@@ -81,7 +87,9 @@ def load_all():
             try:
                 with open(path, encoding="utf-8-sig") as handle:
                     for key, value in parse(handle.read()).items():
-                        os.environ.setdefault(key, value)
+                        if key not in os.environ:
+                            os.environ[key] = value
+                            LOADED_VALUES[key] = value
                 used.append(path)
             except OSError:
                 continue
@@ -92,6 +100,11 @@ def load():
     """Returns the path of the first .env used (or ''), filling os.environ only where the variable does not exist yet."""
     used = load_all()
     return used[0] if used else ""
+
+
+def is_loaded_value(name, value):
+    """True when os.environ[name] == `value` is the copy this module made from a `.env` file (the user did not set it)."""
+    return name in LOADED_VALUES and LOADED_VALUES[name] == value
 
 
 def get(name, default=""):

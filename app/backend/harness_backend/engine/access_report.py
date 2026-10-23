@@ -3,7 +3,8 @@
 
 Three parts:
   static  MCP servers present (mcp_access), MCP tools each guard profile allows (`MCP_ALLOW`, loaded from the plugin's guard.py, not
-          copied), the skills allowlist of the project, the bundle (agents, skills, skipped skills) and whether isolation is on.
+          copied), the skills allowlist of the project (the skills bound to the Standards slots are labelled `(slot: <name>)`), the
+          dev toolkit root, the bundle (agents, skills, skipped skills) and whether isolation is on.
   probe   the real isolated argv with a throw-away prompt; stdout is read until the `system/init` event (which lists tools, MCP servers,
           agents, skills and plugins the process loaded) and the process is killed. Anything outside the allowlists is flagged.
           An auth refusal still prints the init first, so the probe costs nothing in that case.
@@ -23,6 +24,7 @@ if ENGINE_DIR not in sys.path:
 import claude_binaries  # noqa: E402
 import mcp_access  # noqa: E402
 import runtime_isolation  # noqa: E402
+import standards  # noqa: E402
 
 PROBE_PROMPT = "reply only: ok"
 PROBE_MODEL = "haiku"
@@ -62,6 +64,21 @@ def load_guard_mcp_allow(path):
         return {}
 
 
+def slot_skill_labels(project_root):
+    """{plain skill name: "slot1, slot2"} for the skills bound to the Standards slots of the project (root and subprojects)."""
+    slots = {}
+    for entry in standards.project_bindings(project_root):
+        for slot, value in entry["bindings"].items():
+            name = standards.skill_name(value)
+            if name and slot not in slots.setdefault(name, []):
+                slots[name].append(slot)
+    return {name: ", ".join(names) for name, names in slots.items()}
+
+
+def label_skill(name, labels):
+    return "%s (slot: %s)" % (name, labels[name]) if name in labels else name
+
+
 def build_static(project_root, plugin_root_path=None, config=None):
     config = runtime_isolation.read_config() if config is None else config
     root = runtime_isolation.plugin_root() if plugin_root_path is None else plugin_root_path
@@ -69,7 +86,9 @@ def build_static(project_root, plugin_root_path=None, config=None):
     access = mcp_access.build_access(runtime_isolation.data_dir())
     guard = guard_path(root)
     report = {
-        "project": project_root, "plugin_root": root, "guard": guard if os.path.isfile(guard) else "", "isolation": enabled,
+        "project": project_root, "plugin_root": root, "toolkit_root": runtime_isolation.toolkit_root(config),
+        "guard": guard if os.path.isfile(guard) else "", "isolation": enabled,
+        "slot_skills": slot_skill_labels(project_root),
         "mcp_servers": [{"server": row["server"], "tools": row["tools"]} for row in access["servers"]],
         "mcp_config_path": access["config_path"],
         "mcp_allow_by_profile": load_guard_mcp_allow(guard),
@@ -255,6 +274,7 @@ def format_report(report):
     out = ["== access report: %s" % static["project"],
            "isolation ........ %s" % ("on" if static["isolation"] else "OFF (loop_isolation=false: today's argv, nothing below is enforced)"),
            "plugin root ...... %s" % (static["plugin_root"] or "(not found)"),
+           "toolkit root ..... %s" % (static.get("toolkit_root") or "(not found: /plugin install claude-dev-toolkit@claude-dev-toolkit)"),
            "guard ............ %s" % (static["guard"] or "(not found)"), "", "-- MCP servers present (read tools only)"]
     out += ["  %s: %s" % (row["server"], ", ".join(name.rsplit("__", 1)[-1] for name in row["tools"])) for row in static["mcp_servers"]]
     out += [] if static["mcp_servers"] else ["  (none)"]
@@ -264,11 +284,11 @@ def format_report(report):
     out += [] if static["mcp_allow_by_profile"] else ["  (guard not loaded)"]
     out.append("-- skills allowlist by profile")
     for profile, skills in sorted(static["skills_allowlist"].items()):
-        out.append("  %-13s %s" % (profile, ", ".join(skills)))
+        out.append("  %-13s %s" % (profile, ", ".join(label_skill(name, static.get("slot_skills") or {}) for name in skills)))
     bundle = static["bundle"]
     if bundle:
         out += ["-- bundle %s%s" % (bundle["path"], " (rebuilt)" if bundle.get("rebuilt") else ""),
-                "  agents:  %s" % (", ".join(bundle["agents"]) or "(none)"), "  skills:  %s" % (", ".join(bundle["skills"]) or "(none)"),
+                "  agents:  %s" % (", ".join(bundle["agents"]) or "(none)"), "  skills:  %s" % (", ".join(label_skill(name, static.get("slot_skills") or {}) for name in bundle["skills"]) or "(none)"),
                 "  skipped: %s" % (", ".join(bundle["skipped"]) or "(none)")]
         if bundle.get("error"):
             out.append("  ERROR:   %s" % bundle["error"])

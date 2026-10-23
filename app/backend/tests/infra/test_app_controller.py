@@ -18,6 +18,10 @@ from harness_backend.infrastructure.process_runner import ProcessRunner
 from harness_backend.infrastructure.structured_log import StructuredLog
 from harness_backend.services.app_diagnostics_service import AppDiagnosticsService
 
+from unittest import mock
+
+from harness_backend.config import skill_locator
+
 ENGINE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "harness_backend", "engine")
 TEST_PORT_RANGE = (47900, 47999)
 GUARD_FAKE = "import json, sys\nrequest = json.load(sys.stdin)\nsys.exit(2 if 'git push' in request.get('tool_input', {}).get('command', '') else 0)\n"
@@ -124,12 +128,27 @@ class TestRealDiagnostics(EnvironmentIsolation):
             handle.write(GUARD_FAKE)
         self.claude = os.path.join(self.folder, "fake_claude.py")
         open(self.claude, "w").close()
+        self.toolkit = os.path.join(self.folder, "toolkit")  # a fake claude-dev-toolkit named by dev_toolkit_dir (the real one is never looked up)
+        os.makedirs(os.path.join(self.toolkit, "skills", "backend-dev"))
+        with open(os.path.join(self.toolkit, "skills", "backend-dev", "SKILL.md"), "w", encoding="utf-8") as handle:
+            handle.write("toolkit backend-dev")
+        self.write_config({"dev_toolkit_dir": self.toolkit})
         self.config = types.SimpleNamespace(
             app_root_dir=self.folder, user_data_dir=os.path.join(self.folder, "data"), orchestrator_skill_dir=os.path.dirname(os.path.dirname(self.guard)),
             guard_path=self.guard, engine_dir=ENGINE_DIR, claude_binary=self.claude,
             engine_script_path=lambda name: os.path.join(ENGINE_DIR, name + ".py"))
         runner = ProcessRunner()
         self.service = AppDiagnosticsService(self.config, runner, ClaudeClient(runner, self.claude))
+
+    def write_config(self, content):
+        os.makedirs(os.path.join(self.folder, "data"), exist_ok=True)
+        with open(os.path.join(self.folder, "data", "config.json"), "w", encoding="utf-8") as handle:
+            json.dump(content, handle)
+
+    def write_claude_md(self, folder, text):
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "CLAUDE.md"), "w", encoding="utf-8") as handle:
+            handle.write(text)
 
     def test_info_never_returns_a_variable_value(self):
         self.isolate_notify_variables("LOOP_SMTP_PASSWORD=%s\nLOOP_SMTP_HOST=smtp.example.invalid\nLOOP_SMTP_FROM=you@example.com\n"
@@ -163,6 +182,53 @@ class TestRealDiagnostics(EnvironmentIsolation):
         diagnostics = self.service.build_diagnostics()
         self.assertEqual(diagnostics["guard"]["found"], False)
         self.assertIn("the skill's hooks/guard.py was not found", diagnostics["problems"])
+
+    def test_toolkit_found_is_reported_without_a_problem(self):
+        self.isolate_notify_variables("LOOP_NOTIFY_REQUIRED=\n")
+        diagnostics = self.service.build_diagnostics()
+        self.assertEqual(diagnostics["toolkit"], {"path": os.path.abspath(self.toolkit), "found": True})
+        self.assertEqual(diagnostics["problems"], [])
+        self.assertEqual(diagnostics["standards"], [])
+
+    def test_a_missing_toolkit_is_a_problem_with_the_two_plugin_lines(self):
+        self.isolate_notify_variables("LOOP_NOTIFY_REQUIRED=\n")
+        self.write_config({})
+        with mock.patch.object(skill_locator, "REPO_ROOT_DIR", os.path.join(self.folder, "no-sibling")):
+            diagnostics = self.service.build_diagnostics()
+        self.assertEqual(diagnostics["toolkit"], {"path": "", "found": False})
+        problem = [item for item in diagnostics["problems"] if item.startswith("claude-dev-toolkit not found")]
+        self.assertEqual(len(problem), 1, diagnostics["problems"])
+        self.assertIn("/plugin marketplace add iagopadilha/claude-dev-toolkit", problem[0])
+        self.assertIn("/plugin install claude-dev-toolkit@claude-dev-toolkit", problem[0])
+
+    def test_standards_check_warns_for_each_binding_whose_skill_does_not_resolve(self):
+        self.isolate_notify_variables("LOOP_NOTIFY_REQUIRED=\n")
+        project = os.path.join(self.folder, "project")
+        self.write_claude_md(project, "# P\n\n## Standards\nbackend: backend-dev\nfrontend: acme:ghost-front-skill\n")
+        diagnostics = self.service.build_diagnostics([project])
+        rows = {row["slot"]: row for row in diagnostics["standards"]}
+        self.assertEqual((rows["backend"]["resolved"], rows["frontend"]["resolved"]), (True, False))
+        self.assertEqual(diagnostics["problems"], [])
+        self.assertEqual(len([item for item in diagnostics["warnings"] if item.startswith("standards:")]), 1)
+        warning = [item for item in diagnostics["warnings"] if item.startswith("standards:")][0]
+        self.assertIn("frontend", warning)
+        self.assertIn("acme:ghost-front-skill", warning)
+
+    def test_standards_check_reads_each_subproject_and_not_the_monorepo_root(self):
+        self.isolate_notify_variables("LOOP_NOTIFY_REQUIRED=\n")
+        project = os.path.join(self.folder, "mono")
+        self.write_claude_md(project, "## Standards\nbackend: root-skill-ignored\n")
+        self.write_claude_md(os.path.join(project, "api"), "## Standards\nbackend: backend-dev\n")
+        specs = os.path.join(project, ".specs", "project")
+        os.makedirs(specs)
+        with open(os.path.join(specs, "SUBPROJECTS.json"), "w", encoding="utf-8") as handle:
+            json.dump({"repos": {"mono": {"monorepo": True, "confirmed": True, "projects": [{"path": "api"}]}}}, handle)
+        diagnostics = self.service.build_diagnostics([project])
+        self.assertEqual([(row["slot"], row["skill"], row["resolved"]) for row in diagnostics["standards"]], [("backend", "backend-dev", True)])
+
+    def test_no_project_means_no_standards_check(self):
+        self.isolate_notify_variables("LOOP_NOTIFY_REQUIRED=\n")
+        self.assertEqual(self.service.build_diagnostics()["standards"], [])
 
     def test_test_notification_through_the_console_and_unknown_channel(self):
         self.isolate_notify_variables("")

@@ -96,7 +96,7 @@ NOTES: up to 2 lines, or "-"
 
 ## `verifier-flow`
 
-Full format in `${CLAUDE_PLUGIN_ROOT}/skills/flow-validator/SKILL.md` (Report section). Summary:
+Full format in `<TOOLKIT>/skills/flow-validator/SKILL.md` (Report section). Summary:
 
 ```
 FLOW: <name or slug>

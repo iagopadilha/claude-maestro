@@ -81,3 +81,16 @@
   .sp-inst-row,.sp-inst-conf-row,.sp-inst-map-row{grid-template-columns:1fr;}
   .sp-inst-end{justify-content:flex-start;}
 }
+
+/* Standards slots (components/standards_block.js) */
+.sp-std{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--line2);border-radius:8px;}
+.sp-std-head{display:flex;gap:8px;align-items:baseline;}
+.sp-std-hint{margin:0;}
+.sp-std-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:6px 14px;}
+.sp-std-field{display:flex;flex-direction:column;gap:3px;}
+.sp-std-slot{font-size:11px;color:var(--muted);}
+.sp-std-foot{display:flex;justify-content:flex-end;}
+.sp-std-sub{border:1px solid var(--line2);border-radius:8px;padding:6px 12px;}
+.sp-std-sub>summary{cursor:pointer;font-size:12px;color:var(--text2);}
+.sp-std-sub[open]>summary{margin-bottom:8px;}
+.sp-std-sub .sp-std{border:0;padding:0;}
