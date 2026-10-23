@@ -38,8 +38,8 @@ to `work`:
 ## Signal files (in `.specs/project/loop/`)
 | File | Who writes | Content |
 |---|---|---|
-| `json/LOOP-CMD.json` | `run_loop.py` on every run | `{"argv": ["python", "<run_loop.py>", "<repo>", "--wave", "2", ...], "cwd": "<dir>"}`. **Without** `--answer`/`--option`. It is the command used to relaunch. |
-| `json/MONITOR.json` | the app, when a project is opened (deleted on shutdown) | `{"pid": 123, "port": 47801, "url": "http://127.0.0.1:47801/p/<id>/", "repo": "...", "work": "...", "started_at": "ISO"}` |
+| `json/LOOP-CMD.json` | `run_loop.py` on every run | `{"argv": ["python", "<run_loop.py>", "<repo>", "--wave", "2", ...], "cwd": "<dir>"}`. **Without** `--answer`/`--option`. The panel does not run it as written: `engine/loop_command.py` keeps only the known `run_loop` flags (type-checked), rebuilds the command with the app's own Python and `run_loop.py`, and requires `cwd` to be the repo or its loop worktree; anything else answers 409 `loop_command_invalid`. The guard forbids every profile from writing it (`engine-file-write`). |
+| `json/MONITOR.json` | the app, when a project is opened (deleted on shutdown) | `{"pid": 123, "port": 47801, "url": "http://localhost:47801/p/<id>/", "repo": "...", "work": "...", "started_at": "ISO"}` |
 | `internal/PAUSE` | the app (`POST pause`) | empty file. `run_loop.py` checks it at the top of each turn: when it exists, deletes it and ends with `awaiting_user` ("paused by the user in the panel"). |
 
 ## Lifecycle
@@ -128,7 +128,7 @@ already ran loops and lost the approval (rows changed) is NOT in planning mode (
   "quarantine": [{"id": "slug", "reason": "<note> (2 failures)", "stuck": ["other-feature"], "options": ["try again", "skip and continue"]}],
   "guard_events": [{"t": "ISO", "profile": "executor|spec|verifier|orchestrator", "rule": "path-scope", "detail": "outside the feature's PATHS (src/a)..."}],
   "guard_counts": {"path-scope": 2, "git-push": 1},
-  "monitor": {"url": "http://127.0.0.1:47801/p/<id>/", "idle_in_s": null, "shutdown_in_s": null}
+  "monitor": {"url": "http://localhost:47801/p/<id>/", "idle_in_s": null, "shutdown_in_s": null}
 }
 ```
 **Sign-in of every turn and agent.** `run_loop.py` writes, next to `claude_account`, the structured fields `auth_method` (`login` browser login, `token` sign-in token, `api_key`, or `''`), `auth_email`, `auth_plan` and `cc_account` (never a secret) in `turns/NNN.json` and `meta.json`. The same four fields, plus `claude` and `claude_account`, are on `state.turns[]`, `state.meta`, `pipeline.turns[]`, `history.turns[]` and, **inherited from the turn that spawned them** (an agent runs inside its turn's process, so it has the turn's command and sign-in), on `state.agents[]`, `history.turns[].agents[]` and `feature/<slug>` `agents[]` and `tasks.tasks[].executors[]` (`claude`, `auth_method`, `auth_email`, `cc_account`). A turn written before the fields existed is read from its `claude_account` label (so old turns still show a method); an unknown sign-in is `''`. In the panel: `login` = "subscription · browser login", `token` = "subscription · sign-in token", `api_key` = "API key · billed per token" (shown as a warning).

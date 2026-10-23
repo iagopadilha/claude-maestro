@@ -112,7 +112,7 @@ class RepoRegistryService:
         name = project_repos.unique_name(project_repos.short_name_of(folder), {repo.name for repo in stored})
         added = RepoRef(name=name, path=folder, primary=False, copy=copy_list, setup=self.validate_setup(setup), copy_configured=copy is not None,
                         role=role or project_repos.ROLE_EDIT, reason=self.validate_reason(reason))
-        project_repos.save_repos(context.repo_path, True, stored + [added], scope_defined=True)
+        project_repos.save_repos(context.repo_path, True, stored + [added], scope_defined=True, approve_setup_for=(name,))  # typed by the user
         self.log.info("repo_added", project=context.project.id, repo=name)
         self.notify_changed(context)
         return {"ok": True, "repo": self.describe_repo(added), "repos": self.list_repos(context)["repos"], "multi": True}
@@ -195,7 +195,7 @@ class RepoRegistryService:
         if target is None:
             raise RepoNotFoundError("repo not found: %s" % name)
         target.setup = self.validate_setup(setup)
-        project_repos.save_repos(context.repo_path, multi, stored)
+        project_repos.save_repos(context.repo_path, multi, stored, approve_setup_for=(name,))  # typed by the user: the engine runs only an approved text
         return {"ok": True, "name": name, "setup": target.setup or None}
 
     def read_suggested_repos(self, context):

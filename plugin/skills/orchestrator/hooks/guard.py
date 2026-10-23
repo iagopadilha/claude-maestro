@@ -24,6 +24,9 @@ the old flat plugin layout (`.specs/project/PERMISSIONS.json`, `SCOPE.json`, `gu
 read from the new place first and from the flat place as a fallback, until `harness.py state migrate` moves it.
 
 Covers the Bash and PowerShell tools (same command analysis).
+
+The analysis that outgrew this file lives in sibling modules of the same folder (stdlib only, imported through `sys.path`): `guard_git` (shell lexer and
+git/gh invocation finder), `guard_sql` (SQL tokenizer), `guard_paths` (Windows path spellings), `guard_egress` (uploads). Keep them together with this file.
 """
 import fnmatch
 import json
@@ -35,6 +38,12 @@ import subprocess
 import sys
 import tempfile
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # the sibling modules import from any cwd (the hook runs as a script)
+from guard_egress import egress_upload_reason  # noqa: E402
+from guard_git import ASSIGNMENT_RE, command_starts, executable_name, gh_api_writes, gh_calls_in, git_calls_in, quoted_ranges, shell_event_variants  # noqa: E402
+from guard_paths import clean_components, expand_short_names, git_bash_drive, has_short_name, strip_windows_prefixes, SHORT_NAME_RE  # noqa: E402
+from guard_sql import SQL_UNPARSEABLE, SQL_WRITE_KEYWORDS, sql_statement_writes, sql_statements  # noqa: E402,F401
 
 READ_ONLY_GIT = {"status", "diff", "log", "show", "rev-parse", "ls-files", "blame", "describe", "grep", "shortlog"}
 WRITE_SQL = re.compile(r"\b(insert|update|delete|drop|create|alter|truncate|replace|grant|revoke|call|merge)\b", re.I)
@@ -58,13 +67,25 @@ SECRET_HINT = re.compile(
 STATE_FILE = re.compile(
     r"\.specs[\\/]project[\\/](ROADMAP\.md|FLOWS\.md|STATE\.md|RULES\.md|phases[\\/]|archive[\\/]|loop(?:[\\/]|$)|"
     r"VALIDATE\.md|DEPENDENCIES\.md|GRAPH\.md|ANSWERS\.md|NOTICE\.txt|rules\.tests\.json|SCOPE\.json|LOOP\.json|LOOP\.lock|"
-    r"PERMISSIONS\.json|ROADMAP-APPROVED\.json|delivery\.json)", re.I
+    r"PERMISSIONS\.json|ROADMAP-APPROVED\.json|delivery\.json|REPOS\.json)", re.I
 )
 # the roadmap approval is the user's click in the panel: nobody running under the guard writes it, not even the orchestrator
 APPROVAL_FILE = re.compile(r"\.specs[\\/]project[\\/](?:loop[\\/](?:json[\\/])?)?ROADMAP-APPROVED\.json", re.I)
-# panel endpoints that only the user's click triggers (start/check the loop, approve the roadmap, Act, answer/resume/instruct)
-# (a full URL, so grepping the docs for the route text is not a call)
-PANEL_TRIGGER_RE = re.compile(r"https?://[^/\s\"']+/p/[^/\s\"']+/api/(?:loop/|roadmap/approve\b|action/|answer\b|resume\b|instruction\b)", re.I)
+# files the ENGINE owns, hard for every profile: the relaunch command the panel executes on Resume, and the project's repo list (the planning chat proposes
+# repos in REPOS-SUGGESTED.json; the app validates and applies them to REPOS.json, nobody under the guard edits it)
+ENGINE_FILE_RE = re.compile(r"\.specs[\\/]project[\\/](?:loop[\\/](?:[^\\/]+[\\/])*LOOP-CMD\.json|LOOP-CMD\.json|REPOS\.json)$", re.I)
+# panel endpoints that only the user's click triggers (start/check the loop, approve the roadmap, Act, answer/resume/instruct): a host and port, with or without
+# the scheme (so grepping the docs for the route text is not a call). Matched on the command with quotes, `^` and string concatenation (`" + "`, `""`) removed,
+# so splitting the URL in pieces does not hide it, whatever sends it (curl, iwr, irm, wget, python urllib).
+PANEL_TRIGGER_RE = re.compile(
+    r"(?:https?://[^/\s]+|(?:localhost|127(?:\.\d+){3}|\[::1\]|0\.0\.0\.0)(?::\d+)?|[\w.-]+:\d+|\$\{?\w+\}?|%\w+%)"
+    r"/p/[^/\s]+/api/(?:loop/|roadmap/approve\b|action/|answer\b|resume\b|instruction\b)", re.I)
+PANEL_GLUE_RE = re.compile(r"[\"']\s*\+\s*[\"']|[\"'`^]")
+
+
+def panel_trigger_hit(command):
+    """True when the command text names a panel route that only the user's click triggers (see PANEL_TRIGGER_RE)."""
+    return bool(PANEL_TRIGGER_RE.search(command) or PANEL_TRIGGER_RE.search(PANEL_GLUE_RE.sub("", command)))
 
 # loop files: `.json` in loop/json/, `.md` and NOTICE.txt at loop/, the rest (guard.log, locks, markers) in loop/internal/
 LOOP_FOLDER = ("project", "loop")
@@ -104,13 +125,18 @@ def integration_branch():
     return (os.environ.get("LOOP_PR_BASE") or os.environ.get("LOOP_INTEGRATION_BRANCH") or "developer").strip().lower()
 
 
-# ---- push: text of the whole command (catches `python -c "...git push..."`, `$(git push)`, quotes), besides the segment
+# ---- push: the structured parse (guard_git: a git invocation ANYWHERE in the command, global options skipped generically, aliases resolved) is the main check.
+# This text net runs besides it on the whole command (catches `python -c "...git push..."` and a `["git", "push"]` list). Its option list has no nested
+# quantifier that can match the same text two ways (no ReDoS on `git -a -a -a ...`): `-C <path>` / `-c <k=v>` are one branch, every other option the other.
 PROTECTED_NAMES = {"developer", "develop", "main", "master", "release", "production", "dev", integration_branch()}
 _PROT = "|".join(re.escape(name) for name in sorted(PROTECTED_NAMES, key=len, reverse=True))
-PUSH_CMD = r"(?:\bgit(?:\.exe)?['\"]?(?:\s+-[-\w]+(?:[= ]\S+)?)*\s+push\b|['\"]git(?:\.exe)?['\"]\s*,\s*['\"]push['\"])"
+PROTECTED_NAME_RE = re.compile(r"(?<![\w.-])(?:" + _PROT + r")(?![\w.-])", re.I)
+_GIT_OPTIONS = r"(?:\s+(?:-C|-c)\s+(?:\"[^\"]*\"|'[^']*'|\S+)|\s+-(?![Cc]\s)[-\w.]*(?:=(?:\"[^\"]*\"|'[^']*'|\S+))?)*"
+PUSH_CMD = r"(?:\bgit(?:\.exe)?['\"]?" + _GIT_OPTIONS + r"\s+push\b|['\"]git(?:\.exe)?['\"]\s*,\s*['\"]push['\"])"
 PUSH_RE = re.compile(PUSH_CMD, re.I)
-PUSH_PROTECTED_RE = re.compile(PUSH_CMD + r"[^\n]*?(?<![\w.-])(?:" + _PROT + r")(?![\w.-])", re.I)
-PUSH_FORCE_RE = re.compile(PUSH_CMD + r"[^\n]*?(?:\s--force\b|\s--force-with-lease\b|\s-f\b|\s\+\S)", re.I)
+PUSH_PROTECTED_RE = re.compile(PUSH_CMD + r"[^\n]*?(?:(?<![\w.-])(?:" + _PROT + r")(?![\w.-])|\s--mirror\b|\s--all\b)", re.I)
+PUSH_FORCE_RE = re.compile(PUSH_CMD + r"[^\n]*?(?:\s--force\b|\s--force-with-lease\b|\s-[A-Za-z]*f[A-Za-z]*(?=\s|$)|\s\+\S)", re.I)
+CONTINUATION_RE = re.compile(r"\\\r?\n|`\r?\n")
 
 # scripts that WRITE project state: only the orchestrator runs them (rule, applied dependency, written graph, LOOP.json).
 # The same scripts through the app CLI: `harness.py rules write`, `harness.py audit ... --write|--apply`,
@@ -125,7 +151,8 @@ DELIVERY_RE = re.compile(r"\bdelivery\.py\b|" + HARNESS_CLI + r"deliver\b", re.I
 LOOP_RUN_RE = re.compile(r"\brun_loop\.py\b|" + HARNESS_CLI + r"(?:loop|check|serve)\b", re.I)
 
 # ---- shell writes (redirection, tee, Set-Content, sed -i...): only the targets that must NEVER be touched
-REDIRECT_RE = re.compile(r"(?<![\d&<])>>?\s*(?!&)(\"[^\"]+\"|'[^']+'|[^\s;|&<>]+)")
+# `>`, `>>`, `>|`, and with a stream prefix: `1>`, `2>`, `2>>`, `&>`, `&>>`, `*>` (PowerShell); `2>&1` / `>&2` are stream joins, not files
+REDIRECT_RE = re.compile(r"(?<![<>])(?:[&*]|\d)?>>?\|?\s*(?!&)(\"[^\"]+\"|'[^']+'|[^\s;|&<>]+)")
 CMD_TARGET_RE = re.compile(r"\b(?:tee(?:\s+-a)?|Set-Content|Add-Content|Out-File)\s+(?:-\w+\s+)*(\"[^\"]+\"|'[^']+'|[^\s;|&<>]+)", re.I)
 SED_INPLACE_RE = re.compile(r"\bsed\s+-i\S*\s+(?:-e\s+)?(?:'[^']*'|\"[^\"]*\"|\S+)\s+(\S+)")
 NULL_TARGETS = {"/dev/null", "$null", "nul", "null"}
@@ -133,7 +160,7 @@ NULL_TARGETS = {"/dev/null", "$null", "nul", "null"}
 # rules that not even PERMISSIONS.json releases: workflows never push to the integration branch/main nor force, and the
 # roadmap approval and the panel's trigger endpoints are only ever the user's click
 HARD = {"push-protected", "push-force", "approval-write", "panel-trigger", "grafana-write", "headless-push", "headless-gh", "permissions-write",
-        "prod-sql-write", "agent-allowlist", "model-ceiling", "mcp-allowlist", "skill-allowlist"}
+        "prod-sql-write", "agent-allowlist", "model-ceiling", "mcp-allowlist", "skill-allowlist", "engine-file-write"}
 
 # headless loop (LOOP_HEADLESS=1, exported by the engine): delivery belongs to the engine, so the session only commits;
 # PERMISSIONS.json holds the user's releases, so the session never writes it (any profile, HARD)
@@ -177,8 +204,8 @@ AGENT_PROFILES = {
 }
 
 # rules added by the loop-guard-hardening feature, per profile (kept apart so the lists above stay readable):
-# production SQL never writes, uploads leave nothing, the orchestrator dispatches only plugin agents at Sonnet/Haiku, an unreadable SCOPE.json stops the executor
-GUARDED_EXTRA_RULES = ["prod-sql-write", "egress-upload"]
+# production SQL never writes, uploads leave nothing, the engine's own files (LOOP-CMD.json, REPOS.json) are never written, the orchestrator dispatches only plugin agents at Sonnet/Haiku, an unreadable SCOPE.json stops the executor
+GUARDED_EXTRA_RULES = ["prod-sql-write", "egress-upload", "engine-file-write"]
 PROFILE_EXTRA_RULES = {
     "orchestrator": GUARDED_EXTRA_RULES + ["agent-allowlist", "model-ceiling"],
     "executor": GUARDED_EXTRA_RULES + ["scope-unreadable"],
@@ -348,25 +375,12 @@ def split_commands(command):
     return [part.strip() for part in re.split(r"&&|\|\||;|\||\n|&(?!&)", command) if part.strip()]
 
 
-def git_subcommand(segment):
-    # also `"git" push`, `'git' commit` and `& "C:\Program Files\Git\bin\git.exe" push` (quoted executable, PowerShell call operator)
-    match = re.match(r"^(?:&\s*)?['\"]?(?:[^'\"\s]*[\\/]|[^'\"]*[\\/](?=git(?:\.exe)?['\"]))?git(?:\.exe)?['\"]?\s+(?:-[-\w]+(?:[= ]\S+)?\s+)*([a-z][\w-]*)", segment)
-    return match.group(1) if match else None
-
-
 def current_branch(cwd):
     try:
         out = subprocess.run(["git", "-C", cwd or ".", "branch", "--show-current"], capture_output=True, text=True, timeout=5)
         return out.stdout.strip()
     except Exception:
         return ""
-
-
-def default_push(segment):
-    """`git push` / `git push origin` (no refspec): pushes the current branch."""
-    after = re.split(r"\bpush\b", segment, maxsplit=1)[1] if re.search(r"\bpush\b", segment) else ""
-    positional = [token for token in after.split() if not token.startswith("-")]
-    return len(positional) <= 1
 
 
 def shell_write_targets(command):
@@ -399,15 +413,84 @@ def norm(path):
 def normalize_path(path, base=None, fold_case=None):
     """Canonical, lowercase, forward-slash absolute form of a path as a tool or a shell may spell it: backslashes, `//` collapsed,
     `.` and `..` resolved, git-bash `/c/...` and WSL `/mnt/c/...` drive forms turned into `c:/...` (Windows), a relative path resolved
-    against `base` (the hook's cwd)."""
+    against `base` (the hook's cwd). Windows spellings are undone too (guard_paths): `\\\\?\\` / `\\\\.\\` prefixes, `\\\\localhost\\C$\\` shares, `file::$DATA` streams,
+    trailing dots and spaces per component, and 8.3 short names (`CLAUDE~1.JSO`) of a file that exists. ONE canonical form for every path rule."""
     text = str(path).strip().strip("\"'").replace("\\", "/")
+    text = strip_windows_prefixes(text)
     text = re.sub(r"/{2,}", "/", text)
-    if os.name == "nt":
-        text = re.sub(r"^/(?:mnt/)?([a-zA-Z])(?=/|$)", r"\1:", text)
+    text = git_bash_drive(text)
+    text = clean_components(text)
     if not (text.startswith("/") or re.match(r"^[a-zA-Z]:/", text)) and base:
         text = normalize_path(base, None, False) + "/" + text
     text = posixpath.normpath(text).rstrip("/")
+    if os.name == "nt" and "~" in text:
+        text = expand_short_names(text)
     return text.lower() if (CASE_INSENSITIVE if fold_case is None else fold_case) else text
+
+
+def unresolved_short_name(absolute, specs_dir):
+    """True when `absolute` (a normalize_path result) still holds an 8.3 short name (`CLAUDE~1.JSO`) the system could not expand AND what comes before it
+    is a protected folder: the project's `.specs/`, the user's home, or `~/.claude/`. Such a name may be one of the protected files under another
+    spelling, so it is refused rather than guessed."""
+    if os.name != "nt" or not has_short_name(absolute):
+        return False
+    parts = absolute.split("/")
+    first = next(position for position, part in enumerate(parts) if SHORT_NAME_RE.match(part))
+    before = "/".join(parts[:first])
+    home = normalize_path(os.path.expanduser("~"), None, False)
+    claude = home + "/.claude"
+    specs = norm(specs_dir) if specs_dir else None
+    fold_before = before.lower()
+    return fold_before in (home.lower(), claude.lower()) or fold_before.startswith(claude.lower() + "/") or bool(
+        specs and (fold_before == specs.lower() or fold_before.startswith(specs.lower() + "/")))
+
+
+def path_forms(target, cwd=None):
+    """The spellings of a tool or shell target the protected-file regexes are matched against: as written, and canonical (normalize_path)."""
+    text = str(target or "").strip().strip("\"'")
+    forms = [text]
+    try:
+        forms.append(normalize_path(text, cwd))
+    except Exception:
+        pass
+    return forms
+
+
+def path_matches(pattern, target, cwd=None):
+    """A protected-file regex tested against every spelling of `target` (raw and canonical)."""
+    return any(pattern.search(form) for form in path_forms(target, cwd))
+
+
+ENGINE_FILE_MSG = "LOOP-CMD.json (the command the panel relaunches) and REPOS.json (the repo list) belong to the engine/app: nobody under the guard writes them"
+SHORT_NAME_MSG = "an 8.3 short name (like CLAUDE~1.JSO) that cannot be expanded, under a protected folder (.specs, the home folder, ~/.claude): it may be a protected file"
+
+
+def protected_target_hits(target, profile_rules, cwd, specs_dir, state_message):
+    """The rules about files nobody (or only the orchestrator) writes, for ONE write target of a tool or of the shell. The target is matched in every
+    spelling that reaches the same file (raw, and canonical: slashes, `.`/`..`, trailing dots, streams, `\\\\?\\`, shares, 8.3 names)."""
+    hits = []
+    forms = path_forms(target, cwd)
+
+    def matches(pattern):
+        return any(pattern.search(form) for form in forms)
+    if "approval-write" in profile_rules and matches(APPROVAL_FILE):
+        hits.append(("approval-write", "ROADMAP-APPROVED.json is written only by the user's click in the panel"))
+    if "permissions-write" in profile_rules and matches(PERMISSIONS_FILE):
+        hits.append(("permissions-write", PERMISSIONS_MSG))
+    if "state-write" in profile_rules and matches(STATE_FILE):
+        hits.append(("state-write", state_message))
+    if "engine-file-write" in profile_rules:
+        if matches(ENGINE_FILE_RE):
+            hits.append(("engine-file-write", ENGINE_FILE_MSG))
+        elif len(forms) > 1 and unresolved_short_name(forms[-1], specs_dir):
+            hits.append(("engine-file-write", SHORT_NAME_MSG))
+    return hits
+
+
+def secret_target_hit(target, cwd, specs_dir):
+    """True when a tool path or shell target is a credential path in any spelling (see `secrets`)."""
+    return (any(SECRET_HINT.search(form) for form in path_forms(target, cwd)) or secret_path_hit(target, cwd)
+            or mentions_copied_secret(target, cwd, specs_dir))
 
 
 def has_git_ancestor(absolute):
@@ -479,15 +562,32 @@ def read_scope_file(specs_dir):
 
 
 def scope_file_state(specs_dir):
-    """"absent" (no SCOPE.json in the new or the old flat place), "ok", or "unreadable" (cannot be opened, not valid JSON, or not an object)."""
+    """"absent" (no SCOPE.json in the new or the old flat place), "ok", or "unreadable" (cannot be opened, not valid JSON, not an object, or a shape `scope_shape_ok` refuses)."""
     path = loop_file(specs_dir, "SCOPE.json")
     if not os.path.exists(path):
         return "absent"
     try:
         with open(path, encoding="utf-8") as handle:
-            return "ok" if isinstance(json.load(handle), dict) else "unreadable"
+            return "ok" if scope_shape_ok(json.load(handle)) else "unreadable"
     except Exception:
         return "unreadable"
+
+
+def scope_shape_ok(data):
+    """True for a SCOPE.json the guard can enforce: an object whose `features` and `tasks` (when present) are objects of lists of strings (the PATHS), and
+    whose `roots` and `copied` (when present) are lists of strings. A file that parses but has another shape (`features` a list, a feature with `null` PATHS)
+    would make `load_scope` return nothing and widen the executor to the whole repo, so it is treated like unparseable JSON."""
+    if not isinstance(data, dict):
+        return False
+    for key in ("features", "tasks"):
+        if key in data:
+            table = data[key]
+            if not isinstance(table, dict) or not all(isinstance(paths, list) and all(isinstance(item, str) for item in paths) for paths in table.values()):
+                return False
+    for key in ("roots", "copied"):
+        if key in data and not (isinstance(data[key], list) and all(isinstance(item, str) for item in data[key])):
+            return False
+    return True
 
 
 def load_scope(specs_dir, slug=None, task=None):
@@ -640,7 +740,104 @@ def secret_path_hit(text, cwd):
         absolute = normalize_path(expand_user_path(token), cwd)
         if absolute in secret_files or any(absolute.startswith(item + "/") for item in secret_folders) or absolute in secret_folders:
             return True
+        if GLOB_CHARS.search(absolute) and any(glob_matches(absolute, secret) for secret in secret_files):
+            return True  # `cat ~/.claude/.cred*`, `Get-Content ~/.claude/*`, `type ~/*.json`: a glob that expands to a credential file
     return False
+
+
+def glob_regex(pattern):
+    """Regex source of a path glob: `*` and `?` stay inside one folder, `**/` is any number of folders, `[...]` a class, `{a,b}` alternatives."""
+    out, index = [], 0
+    while index < len(pattern):
+        char = pattern[index]
+        if pattern.startswith("**/", index):
+            out.append("(?:.*/)?")
+            index += 3
+        elif pattern.startswith("**", index):
+            out.append(".*")
+            index += 2
+        elif char == "*":
+            out.append("[^/]*")
+            index += 1
+        elif char == "?":
+            out.append("[^/]")
+            index += 1
+        elif char == "[" and "]" in pattern[index + 2:]:
+            end = pattern.index("]", index + 2)
+            out.append("[" + pattern[index + 1:end].replace("\\", "\\\\") + "]")
+            index = end + 1
+        else:
+            out.append(re.escape(char))
+            index += 1
+    return "".join(out)
+
+
+def glob_matches(pattern, path):
+    """True when the path glob `pattern` (normalized, forward slashes) matches the normalized `path`."""
+    flags = re.I if CASE_INSENSITIVE else 0
+    for option in expand_braces(pattern):
+        try:
+            if re.fullmatch(glob_regex(option), path, flags):
+                return True
+        except re.error:  # a token that only looks like a glob (`[z-a]`): not a match, and never a crash that would fail open
+            continue
+    return False
+
+
+def credential_files():
+    """Normalized paths of the user's own Claude credential files."""
+    return builtin_secret_paths()
+
+
+def search_reaches_credentials(tool_name, tool_input, cwd):
+    """Why a Grep/Glob call can hit `~/.claude.json` or `~/.claude/.credentials.json` without naming them, else ''. Grep: the searched folder holds one of
+    them and no `glob`/`type` filter rules it out. Glob: the pattern, joined to the searched folder, matches one (`.cred*`, `*.json`, `**/*`...).
+    A search of another folder under `~/.claude` (`skills/**`) is not affected."""
+    if not isinstance(tool_input, dict) or tool_name not in ("Grep", "Glob"):
+        return ""
+    base = tool_input.get("path")
+    root = normalize_path(expand_user_path(base), cwd) if isinstance(base, str) and base.strip() else (normalize_path(cwd) if cwd else "")
+    if not root:
+        return ""
+    secrets = credential_files()
+    if tool_name == "Glob":
+        pattern = tool_input.get("pattern")
+        if not isinstance(pattern, str) or not pattern.strip():
+            return ""
+        expanded = expand_user_path(pattern).replace("\\", "/")
+        full = normalize_path(expanded) if re.match(r"^(?:[a-zA-Z]:)?/", expanded) else root + "/" + expanded.lstrip("/")
+        return "Glob pattern that matches a Claude credential file" if any(glob_matches(full, secret) for secret in secrets) else ""
+    file_type = str(tool_input.get("type") or "").lower()
+    if file_type and file_type != "json":
+        return ""
+    glob = tool_input.get("glob")
+    for secret in secrets:
+        if not secret.startswith(root.rstrip("/") + "/"):
+            continue
+        if isinstance(glob, str) and glob.strip() and not glob.strip().startswith("!"):
+            if not any(glob_matches(root + "/" + ("**/" + option if "/" not in option else option), secret) for option in expand_braces(glob.strip().replace("\\", "/"))):
+                continue
+        return "Grep over a folder that holds a Claude credential file"
+    return ""
+
+
+def credential_dir_read(statement, cwd):
+    """Reason when one shell statement reads recursively (grep -r, rg --hidden/-u, Get-ChildItem -Recurse | Select-String, find -exec cat, findstr /s, cp -r...)
+    a folder that holds a Claude credential file (`~/.claude`, the home folder), else ''. Best effort, like `broad_secret_read`."""
+    tokens = re.findall(r"\"[^\"]*\"|'[^']*'|[^\s|]+", statement)
+    plain = [token.strip("\"'") for token in tokens]
+    names = [secret.rsplit("/", 1)[-1] for secret in credential_files()]
+    how = broad_reader(statement, plain, names)
+    if not how and IGNORE_AWARE_RE.search(statement) and re.search(r"\s--hidden\b", statement):
+        how = "search with --hidden reads dot files such as the Claude credentials"
+    if not how:
+        return ""
+    folders = [normalize_path(expand_user_path(token), cwd) for token in plain if token and not token.startswith("-") and re.search(r"[\\/~$%]|^\.\.?$", token)
+               and not GLOB_CHARS.search(token)]
+    if not folders and cwd:
+        folders = [normalize_path(cwd)]
+    secrets = credential_files()
+    return how if any(secret.startswith(folder.rstrip("/") + "/") for folder in folders for secret in secrets) else ""
 
 
 # ---- broad reads that would reach a copied config file without NAMING it (rg --no-ignore, grep -r, find -exec cat, globs...)
@@ -650,7 +847,7 @@ IGNORE_OFF_RE = re.compile(r"\s(?:--no-ignore\S*|--unrestricted|-[a-zA-Z]*u[a-zA
 IGNORE_AWARE_RE = re.compile(r"(?:^|[\s|(])(?:rg|ripgrep|ag|ack)(?:\.exe)?\s", re.I)
 GREP_RE = re.compile(r"(?:^|[\s|(])(?:grep|egrep|fgrep|ugrep|ug)(?:\.exe)?\s", re.I)
 GREP_RECURSIVE_RE = re.compile(r"\s(?:--recursive|--dereference-recursive|-d\s*recurse|-[a-zA-Z]*[rR][a-zA-Z]*)(?=\s|$)")
-GIT_GREP_BYPASS_RE = re.compile(r"\bgit(?:\.exe)?\s+(?:-[-\w]+(?:[= ]\S+)?\s+)*grep\b[^\n]*?\s--(?:no-index|no-exclude-standard)\b", re.I)
+GIT_GREP_BYPASS_RE = re.compile(r"\bgit(?:\.exe)?" + _GIT_OPTIONS + r"\s+grep\b[^\n]*?\s--(?:no-index|no-exclude-standard)\b", re.I)  # _GIT_OPTIONS: no ReDoS on `git -a -a ...`
 READ_TOOLS = r"(?:cat|grep|egrep|fgrep|head|tail|less|more|strings|xxd|od|base64|cp|sed|awk|type|rg|bat|tac|nl)"
 FIND_RE = re.compile(r"(?:^|[\s|(])find(?:\.exe)?\s", re.I)
 FIND_READ_RE = re.compile(r"(?:-exec(?:dir)?|-ok(?:dir)?|\|\s*xargs(?:\s+-\S+)*)\s+(?:\S*[\\/])?" + READ_TOOLS + r"\b", re.I)
@@ -932,9 +1129,10 @@ BUILD_OUTPUT_DIRS = {"bin", "obj", "node_modules", ".pytest_cache", "__pycache__
 STATEMENT_SPLIT_RE = re.compile(r"&&|\|\||;|\n")
 
 
-def split_statements(command):
+def split_statements(command, pipes=False):
     """Statements of a command, split on `&&`, `||`, `;` and newline OUTSIDE quotes: a `;` inside a quoted sed/awk script (`sed -i 's/a/b/; s/c/d/' f`)
-    belongs to the script, and splitting there made the script's tail look like a file path (false `repo-only` block, and a target hidden after it)."""
+    belongs to the script, and splitting there made the script's tail look like a file path (false `repo-only` block, and a target hidden after it).
+    With `pipes` a single `|` and a single `&` (background) split too, so `echo x | rm -rf /outside` and `sleep 1 & rm ...` are seen as their own commands."""
     statements, current, quote, index = [], [], None, 0
     while index < len(command):
         char = command[index]
@@ -948,7 +1146,7 @@ def split_statements(command):
         elif command.startswith(("&&", "||"), index):
             statements.append("".join(current))
             current, index = [], index + 1
-        elif char in ";\n":
+        elif char in ";\n" or (pipes and ((char == "|" and command[index - 1:index] != ">") or (char == "&" and command[index + 1:index + 2] != ">" and command[index - 1:index] != ">"))):
             statements.append("".join(current))
             current = []
         else:
@@ -956,73 +1154,9 @@ def split_statements(command):
         index += 1
     statements.append("".join(current))
     return statements
+
+
 PS_PATH_RE = re.compile(r"-(?:Path|FilePath|LiteralPath)\s+(\"[^\"]+\"|'[^']+'|[^\s;|&<>]+)", re.I)
-
-
-def quoted_ranges(text):
-    """(start, end) of every CLOSED quoted string: a `>` inside one is text, not a redirect (`python -c "print('a > b')"`)."""
-    ranges, quote, start = [], None, 0
-    for index, char in enumerate(text):
-        if quote:
-            if char == quote:
-                ranges.append((start, index))
-                quote = None
-        elif char in "\"'":
-            quote, start = char, index
-    return ranges
-
-
-# ---- uploads: curl / wget / Invoke-WebRequest / Invoke-RestMethod that send data to a host other than this machine
-EGRESS_TOOL_RE = re.compile(r"(?<![\w.-])(curl|wget|Invoke-WebRequest|iwr|Invoke-RestMethod|irm)(?:\.exe)?(?![\w-])", re.I)
-EGRESS_UPLOAD_METHODS = r"(?:POST|PUT|PATCH|DELETE)"
-EGRESS_UPLOAD_RES = {
-    "curl": [re.compile(r"(?<![\w-])-[A-Za-z0-9]*[dFT][A-Za-z0-9]*(?=\s|$)|(?<![\w-])--(?:data[\w-]*|form[\w-]*|upload-file|json)(?![\w-])")],
-    "wget": [re.compile(r"(?<![\w-])--(?:post-data|post-file|body-data|body-file)(?![\w-])", re.I)],
-    "powershell": [re.compile(r"(?<![\w-])-(?:Body|InFile)(?![\w-])", re.I)],
-}
-EGRESS_METHOD_RES = {
-    "curl": re.compile(r"(?<![\w-])(?:-X|--request)(?:\s+|=)?" + EGRESS_UPLOAD_METHODS + r"(?![\w-])", re.I),
-    "wget": re.compile(r"(?<![\w-])--method(?:\s+|=)" + EGRESS_UPLOAD_METHODS + r"(?![\w-])", re.I),
-    "powershell": re.compile(r"(?<![\w-])-Method\s+" + EGRESS_UPLOAD_METHODS + r"(?![\w-])", re.I),
-}
-EGRESS_URL_RE = re.compile(r"https?://([^/\s\"'?#]+)", re.I)
-EGRESS_BARE_LOCAL_RE = re.compile(r"(?:^|[\s\"'])(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?::\d+)?(?:/|[\s\"']|$)", re.I)
-LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"}
-
-
-def is_local_host(authority):
-    """True for localhost, 127.0.0.1, [::1], 0.0.0.0 and *.localhost (user info and port ignored: `http://localhost@evil.com` is evil.com)."""
-    host = authority.rsplit("@", 1)[-1].lower()
-    host = host[:host.index("]") + 1] if host.startswith("[") and "]" in host else host.split(":")[0]
-    return host in LOCAL_HOSTS or host.endswith(".localhost")
-
-
-def egress_upload_reason(statement):
-    """Reason when one statement uploads with curl/wget/iwr/irm to a host that is not this machine, else ''. A GET anywhere, and any method
-    to a local host (route checks, E2E), pass. A URL held in a variable cannot be proven local, so it counts as non-local."""
-    spans = quoted_ranges(statement)
-    for tool in EGRESS_TOOL_RE.finditer(statement):
-        if any(start < tool.start() < end for start, end in spans):
-            continue
-        rest = statement[tool.start():]
-        pipe = next((index for index, char in enumerate(rest) if char == "|" and not any(start < tool.start() + index < end for start, end in spans)), len(rest))
-        rest = rest[:pipe]
-        family = {"curl": "curl", "wget": "wget"}.get(tool.group(1).lower(), "powershell")
-        masked = rest
-        for start, end in quoted_ranges(rest):
-            masked = masked[:start + 1] + " " * (end - start - 1) + masked[end:]
-        unquoted = rest.replace('"', "").replace("'", "")
-        if not (any(pattern.search(masked) for pattern in EGRESS_UPLOAD_RES[family]) or EGRESS_METHOD_RES[family].search(unquoted)):
-            continue
-        urls = EGRESS_URL_RE.findall(rest)
-        if urls and all(is_local_host(authority) for authority in urls):
-            continue
-        if not urls and EGRESS_BARE_LOCAL_RE.search(rest):
-            continue
-            continue
-        host = next((authority for authority in urls if not is_local_host(authority)), "a host held in a variable")
-        return "%s uploads data to %s: the loop never sends project data out (reading, GET, is fine; local hosts are fine)" % (tool.group(1), host[:60])
-    return ""
 
 
 def confined_write_targets(statement):
@@ -1041,6 +1175,7 @@ def confined_write_targets(statement):
     return found
 
 
+LEADING_WRAPPERS = {"env", "command", "exec", "sudo", "doas", "nohup", "time", "builtin"}  # run the next word as the program: `command rm x`
 DELETE_COMMANDS = {"rm", "rmdir", "del", "erase", "rd", "remove-item", "ri"}
 COPY_MOVE_COMMANDS = {"cp", "mv", "copy", "move", "xcopy", "copy-item", "cpi", "move-item", "mi"}
 CREATE_COMMANDS = {"new-item", "ni", "mkdir", "md"}
@@ -1061,12 +1196,14 @@ def file_command_targets(statement):
         tokens = shlex.split(statement.strip(), posix=False)
     except ValueError:
         tokens = statement.split()
-    while tokens and tokens[0] == "&":
+    while tokens and (tokens[0] == "&" or ASSIGNMENT_RE.match(tokens[0]) or executable_name(tokens[0]) in LEADING_WRAPPERS):
+        wrapper = executable_name(tokens[0]) in LEADING_WRAPPERS
         tokens = tokens[1:]
+        while wrapper and tokens and tokens[0].startswith("-"):
+            tokens = tokens[1:]
     if not tokens:
         return []
-    command = re.split(r"[\/]", tokens[0].strip("\"'"))[-1].lower()
-    command = command[:-4] if command.endswith(".exe") else command
+    command = executable_name(tokens[0])  # `rm`, a backslash-rm, `/usr/bin/rm`, `C:/.../rm.exe`: the program, whatever the spelling
     robocopy = command == "robocopy"
     if not (command in DELETE_COMMANDS or command in COPY_MOVE_COMMANDS or command in CREATE_COMMANDS or robocopy):
         return []
@@ -1139,36 +1276,106 @@ def resolve_dir(path, cwd):
     return norm(path if os.path.isabs(path) else os.path.join(cwd or os.getcwd(), path))
 
 
-def git_command_dirs(segment, cwd):
-    """For a `git ...` segment: (subcommand, folders the command acts on). The folder is the cwd moved by every `-C <path>`;
-    `--git-dir`/`--work-tree` add their own. (None, []) when the segment is not git."""
-    try:
-        tokens = shlex.split(segment, posix=False)
-    except ValueError:
-        tokens = segment.split()
-    if not tokens or not re.match(r"^(?:.*[\\/])?git(?:\.exe)?$", tokens[0].strip("\"'"), re.I):
-        return None, []
-    effective, extra, index = cwd, [], 1
-    while index < len(tokens) and tokens[index].startswith("-"):
-        token = tokens[index]
-        has_value = index + 1 < len(tokens)
-        if token == "-C" and has_value:
-            effective = resolve_dir(tokens[index + 1], effective)
-            index += 2
-            continue
-        if token == "-c" and has_value:
-            index += 2
-            continue
-        inline = re.match(r"^--(?:git-dir|work-tree)=(.+)$", token)
-        if inline:
-            extra.append(resolve_dir(inline.group(1), cwd))
-        elif token in ("--git-dir", "--work-tree") and has_value:
-            extra.append(resolve_dir(tokens[index + 1], cwd))
-            index += 2
-            continue
-        index += 1
-    sub = tokens[index].strip("\"'") if index < len(tokens) else None
-    return sub, [resolve_dir(".", effective)] + extra
+CD_NAMES = {"cd", "pushd", "chdir", "set-location", "sl"}
+GH_WRITE_FAMILIES = {"pr", "release", "repo", "gist", "workflow"}  # blocked, except `gh pr|repo <read verb>`
+GH_REVIEWED_FAMILIES = {"issue", "label", "secret", "variable", "ruleset", "run", "project", "cache", "codespace", "ssh-key", "gpg-key", "extension"}  # a read verb passes
+GH_READ_VERBS = {"view", "list", "diff", "status", "checks"}
+
+
+def cd_target(words):
+    """Folder named by a `cd` / `pushd` / `Set-Location` that is the program of `words` (after `VAR=x`), else None."""
+    starts = command_starts(words)
+    if not starts or executable_name(words[starts[0]]) not in CD_NAMES:
+        return None
+    args = [word for word in words[starts[0] + 1:] if word.lower() not in ("/d", "-l", "-p")]
+    if args and args[0].lower() in ("-path", "-literalpath"):
+        args = args[1:]
+    return args[0] if args and args[0] != "-" else None
+
+
+def git_call_hits(call, profile_rules, cwd, roots):
+    """Rules about ONE git invocation (a GitCall of guard_git) run from `cwd`: push (git-push, push-protected, push-force, headless-push), write git
+    (git-write), repo-only, git add -A / commit -a."""
+    hits = []
+    effective = cwd
+    for value in call.dirs_c:
+        effective = resolve_dir(value, effective)
+    folders = [resolve_dir(".", effective)] + [resolve_dir(item, cwd) for item in call.extra_dirs]
+    sub = call.sub
+    if call.is_push:
+        if "headless-push" in profile_rules:
+            hits.append(("headless-push", HEADLESS_MSG))
+        if "git-push" in profile_rules:
+            hits.append(("git-push", "git push: only on the user's explicit request (at the end of the flow, delivery is done by `harness.py deliver`)"))
+        force, mirror_all, positional = call.push_facts()
+        if mirror_all or any(PROTECTED_NAME_RE.search(arg) for arg in positional):
+            hits.append(("push-protected", "push to a protected branch (integration branch/main/master...): never, only feature branches"))
+        elif (len(positional) <= 1 or any(arg in ("HEAD", "@") for arg in positional[1:])) and current_branch(folders[0]).lower() in PROTECTED_NAMES:
+            hits.append(("push-protected", "git push without a refspec while on the protected branch %s" % current_branch(folders[0])))
+        if force:
+            hits.append(("push-force", "forced push: never"))
+    if sub not in READ_ONLY_GIT:
+        if roots and "repo-only" in profile_rules:
+            outside = [folder for folder in folders if not inside_any(folder, roots)]
+            if outside:
+                hits.append(("repo-only", "git %s outside the project's worktrees (%s): the repo of its -C/cwd must be one of them" % (sub, outside[0][:80])))
+        if sub != "push" and "git-write" in profile_rules:
+            hits.append(("git-write", "git %s: write git is the orchestrator's only" % sub))
+    if sub == "add" and "git-add-all" in profile_rules and any(arg in ("-A", "--all", ".") for arg in call.args):
+        hits.append(("git-add-all", "git add . / -A: add files by name"))
+    if sub == "commit" and "git-add-all" in profile_rules and any(arg == "--all" or re.fullmatch(r"-[A-Za-z]*a[A-Za-z]*", arg) for arg in call.args):
+        hits.append(("git-add-all", "git commit -a: add files by name"))
+    return hits
+
+
+def gh_call_hits(call, profile_rules):
+    """Rules about ONE gh invocation: headless-gh (any gh in a headless loop), pr-release (gh pr/release/repo/gist/workflow and the other families that
+    publish or change something, unless a read verb; `gh api` with a method other than GET or with `-f/-F/--field/--input`)."""
+    hits = []
+    if "headless-gh" in profile_rules:
+        hits.append(("headless-gh", HEADLESS_MSG))
+    if "pr-release" in profile_rules:
+        reads = call.sub2 in GH_READ_VERBS
+        if (call.sub in GH_WRITE_FAMILIES and not (call.sub in ("pr", "repo") and reads)) or (call.sub in GH_REVIEWED_FAMILIES and not reads):
+            hits.append(("pr-release", "gh pr/release/gist: leaves the machine; the end-of-flow PR is made by `harness.py deliver`"))
+        elif call.sub == "api" and gh_api_writes(call.args):
+            hits.append(("pr-release", "gh api that writes (method other than GET, or -f/-F/--field/--input): leaves the machine"))
+    return hits
+
+
+def check_git_and_gh(command, profile_rules, start_cwd, roots):
+    """Every git and gh invocation of `command`, wherever it sits (see guard_git), plus the text net for a push hidden in a string. Returns [(rule, reason)]."""
+    hits, pushed = [], False
+    for events in shell_event_variants(command):  # `\"` closes a string in PowerShell and not in Bash: both readings are checked
+        cwd, stack = start_cwd, []
+        for event in events:
+            if event[0] == "open":
+                stack.append(cwd)
+                continue
+            if event[0] == "close":
+                cwd = stack.pop() if stack else cwd
+                continue
+            words = event[1]
+            for call in git_calls_in(words):
+                pushed = pushed or call.is_push
+                hits.extend(git_call_hits(call, profile_rules, cwd, roots))
+            for call in gh_calls_in(words):
+                hits.extend(gh_call_hits(call, profile_rules))
+            moved = cd_target(words)
+            if moved:
+                cwd = resolve_dir(moved, cwd)
+    flat = CONTINUATION_RE.sub(" ", command)
+    if PUSH_RE.search(flat):
+        if not pushed:  # a push the parse did not see (`python -c "...git push..."`, a ["git", "push"] list)
+            if "headless-push" in profile_rules:
+                hits.append(("headless-push", HEADLESS_MSG))
+            if "git-push" in profile_rules:
+                hits.append(("git-push", "git push: only on the user's explicit request (at the end of the flow, delivery is done by `harness.py deliver`)"))
+        if PUSH_PROTECTED_RE.search(flat):
+            hits.append(("push-protected", "push to a protected branch (integration branch/main/master...): never, only feature branches"))
+        if PUSH_FORCE_RE.search(flat):
+            hits.append(("push-force", "forced push: never"))
+    return hits
 
 
 def check_bash(command, profile_rules, permissions):
@@ -1179,44 +1386,15 @@ def check_bash(command, profile_rules, permissions):
     roots = project_roots(specs_dir) if specs_dir else []
     running_cwd = cwd or (roots[0] if roots else None)
     start_cwd = running_cwd
-    # 1) text of the whole command: catches a push hidden in python -c, $(...), quotes
-    if PUSH_RE.search(command):
-        if "headless-push" in profile_rules:
-            hits.append(("headless-push", HEADLESS_MSG))
-        if "git-push" in profile_rules:
-            hits.append(("git-push", "git push: only on the user's explicit request (at the end of the flow, delivery is done by `harness.py deliver`)"))
-        if PUSH_PROTECTED_RE.search(command):
-            hits.append(("push-protected", "push to a protected branch (integration branch/main/master...): never, only feature branches"))
-        if PUSH_FORCE_RE.search(command):
-            hits.append(("push-force", "forced push: never"))
-    # 2) per segment: write git, add -A, gh, install, credentials
+    # 1) git and gh: every invocation anywhere in the command (guard_git: after `VAR=x`, `env`, `command`, in a subshell, `$(...)`, backticks, a quoted
+    # `bash -c "..."`), global options skipped, aliases resolved; a `cd` moves the folder the next call acts on (scoped to its subshell)
+    hits.extend(check_git_and_gh(command, profile_rules, running_cwd, roots))
+    # 2) per segment: install, credentials
     for segment in split_commands(command):
         segment_cwd = running_cwd
         cd_move = CD_RE.match(segment)
         if cd_move:
             running_cwd = resolve_dir(cd_move.group(1), running_cwd)
-        if roots and "repo-only" in profile_rules:
-            git_sub, git_dirs = git_command_dirs(segment, segment_cwd)
-            if git_sub and git_sub not in READ_ONLY_GIT:
-                outside = [folder for folder in git_dirs if not inside_any(folder, roots)]
-                if outside:
-                    hits.append(("repo-only", "git %s outside the project's worktrees (%s): the repo of its -C/cwd must be one of them" % (git_sub, outside[0][:80])))
-        sub = git_subcommand(segment)
-        if sub:
-            if sub == "push":
-                if default_push(segment) and current_branch(cwd).lower() in PROTECTED_NAMES:
-                    hits.append(("push-protected", "git push without a refspec while on the protected branch %s" % current_branch(cwd)))
-            elif sub not in READ_ONLY_GIT and "git-write" in profile_rules:
-                hits.append(("git-write", "git %s: write git is the orchestrator's only" % sub))
-            if sub == "add" and "git-add-all" in profile_rules and re.search(r"\badd\s+(-A|--all|\.)(\s|$)", segment):
-                hits.append(("git-add-all", "git add . / -A: add files by name"))
-            if sub == "commit" and "git-add-all" in profile_rules and re.search(r"\s-a[m\s]|--all", segment):
-                hits.append(("git-add-all", "git commit -a: add files by name"))
-        if "headless-gh" in profile_rules and re.match(r"^gh(\.exe)?\b", segment):
-            hits.append(("headless-gh", HEADLESS_MSG))
-        if re.match(r"^gh\s+(pr|release|repo|gist|workflow)\b", segment) and "pr-release" in profile_rules:
-            if not re.match(r"^gh\s+(pr|repo)\s+(view|list|diff|status|checks)\b", segment):
-                hits.append(("pr-release", "gh pr/release/gist: leaves the machine; the end-of-flow PR is made by `harness.py deliver`"))
         if INSTALL.search(segment) and "install" in profile_rules:
             hits.append(("install", "installing a dependency: only if the spec asks for it"))
         if "secrets" in profile_rules and (SECRET_HINT.search(segment) or secret_path_hit(segment, segment_cwd) or mentions_copied_secret(segment, segment_cwd, specs_dir)):
@@ -1227,7 +1405,7 @@ def check_bash(command, profile_rules, permissions):
         hits.append(("delivery", "only the orchestrator delivers (push of the feature branch + PR)"))
     if "loop-run" in profile_rules and LOOP_RUN_RE.search(command):
         hits.append(("loop-run", "the loop and the panel are started by the user (or by the orchestrator at the user's request), never by a subagent"))
-    if "panel-trigger" in profile_rules and PANEL_TRIGGER_RE.search(command):
+    if "panel-trigger" in profile_rules and panel_trigger_hit(command):
         hits.append(("panel-trigger", "panel endpoint that only the user's click triggers (loop, roadmap approval, Act, answer/resume/instruction)"))
     # 2a) uploads to a host other than this machine (per statement, quote aware)
     if "egress-upload" in profile_rules:
@@ -1235,12 +1413,12 @@ def check_bash(command, profile_rules, permissions):
             reason = egress_upload_reason(statement)
             if reason:
                 hits.append(("egress-upload", reason))
-    # 2b) broad reads that reach a copied config file without naming it (rg --no-ignore, grep -r, find -exec cat, globs...)
-    if "secrets" in profile_rules and specs_dir:
+    # 2b) broad reads that reach a copied config file or the Claude credentials without naming them (rg --no-ignore, grep -r ~/.claude, find -exec cat, globs...)
+    if "secrets" in profile_rules:
         statement_cwd = start_cwd
         for statement in split_statements(command):
             statement = statement.strip()
-            reason = broad_secret_read(statement, statement_cwd, specs_dir) if statement else ""
+            reason = (broad_secret_read(statement, statement_cwd, specs_dir) or credential_dir_read(statement, statement_cwd)) if statement else ""
             if reason:
                 hits.append(("secrets", reason))
             cd_move = CD_RE.match(statement)
@@ -1249,7 +1427,7 @@ def check_bash(command, profile_rules, permissions):
     # 2c) shell writes are confined like Write/Edit (PATHS, worktrees, .specs/), per statement so a `cd` is followed
     if specs_dir and ({"path-scope", "repo-only", "specs-only"} & set(profile_rules)):
         statement_cwd = start_cwd
-        for statement in split_statements(command):
+        for statement in split_statements(command, pipes=True):
             statement = statement.strip()
             for target in confined_write_targets(statement):
                 hits.extend(check_shell_target(target, statement_cwd, profile_rules, specs_dir, permissions.get("_slug"), permissions.get("_task")))
@@ -1259,20 +1437,20 @@ def check_bash(command, profile_rules, permissions):
             cd_move = CD_RE.match(statement)
             if cd_move:
                 statement_cwd = resolve_dir(cd_move.group(1), statement_cwd)
-    # 3) shell write to a file that must never be touched
-    if "permissions-write" in profile_rules:
-        shell_targets = list(shell_write_targets(command))
-        for statement in split_statements(command):
-            shell_targets.extend(confined_write_targets(statement))
-        if any(PERMISSIONS_FILE.search(str(target).strip("\"'")) for target in shell_targets) or PERMISSIONS_CMD_RE.search(command):
-            hits.append(("permissions-write", PERMISSIONS_MSG))
-    for target in shell_write_targets(command):
-        if APPROVAL_FILE.search(target) and "approval-write" in profile_rules:
-            hits.append(("approval-write", "ROADMAP-APPROVED.json is written only by the user's click in the panel"))
-        if STATE_FILE.search(target) and "state-write" in profile_rules:
-            hits.append(("state-write", "only the orchestrator writes ROADMAP/STATE/RULES/phases and the loop folder (via shell too)"))
-        if "secrets" in profile_rules and (SECRET_HINT.search(target) or secret_path_hit(target, running_cwd) or mentions_copied_secret(target, running_cwd, specs_dir)):
+    # 3) shell write to a file that must never be touched: the target of a redirect, tee, Set-Content, sed -i, and the destination of a copy/move or the
+    # path of a delete/create, matched in every spelling (protected_target_hits)
+    if "permissions-write" in profile_rules and PERMISSIONS_CMD_RE.search(command):
+        hits.append(("permissions-write", PERMISSIONS_MSG))
+    written = list(shell_write_targets(command))
+    file_targets = []
+    for statement in split_statements(command, pipes=True):
+        file_targets.extend(confined_write_targets(statement))
+        file_targets.extend(file_command_targets(statement))
+    for target in dict.fromkeys(written + file_targets):
+        hits.extend(protected_target_hits(target, profile_rules, running_cwd, specs_dir, "only the orchestrator writes ROADMAP/STATE/RULES/phases and the loop folder (via shell too)"))
+        if "secrets" in profile_rules and secret_target_hit(target, running_cwd, specs_dir):
             hits.append(("secrets", "write to a credential path"))
+    for target in written:
         for pattern in permissions.get("deny_path_regex", []):
             if project_pattern_matches(pattern, target):
                 hits.append(("project-deny", "path forbidden by the project: %s" % pattern))
@@ -1316,39 +1494,8 @@ def grafana_write_reason(tool_name, tool_input):
 
 # ---- MySQL MCP is read only (planning and loop profiles): the query of mcp__mcp-mysql-dev__* / mcp__mcp-mysql-prod__* is inspected
 SQL_MCP_TOOL = re.compile(r"^mcp__mcp-mysql-(?:dev|prod)__", re.I)
-SQL_WRITE_KEYWORDS = {"insert", "update", "delete", "replace", "merge", "create", "alter", "drop", "truncate", "grant", "revoke",
-                      "call", "load", "rename"}
 SQL_WRITE_REASON = ("read only through MCP: write the change as a .sql script (or a migration) and ask the user "
                     "(write the script in the feature folder sql/ and return STATUS: NEEDS_CONFIRM: apply <script> on DEV, then answer)")
-SQL_STRING_RE = re.compile(r"'(?:[^'\\]|\\.|'')*'|\"(?:[^\"\\]|\\.|\"\")*\"|`[^`]*`", re.S)
-SQL_EXECUTABLE_COMMENT_RE = re.compile(r"/\*!\d*\s*(.*?)\*/", re.S)
-SQL_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
-SQL_LINE_COMMENT_RE = re.compile(r"(?:--(?=\s|$)|#)[^\n]*")
-
-
-def sql_statements(sql):
-    """Statements of a SQL text, lowercased, with comments and string/identifier literals removed (a MySQL `/*! ... */` is code and stays)."""
-    text = SQL_EXECUTABLE_COMMENT_RE.sub(lambda match: " " + match.group(1) + " ", str(sql))
-    text = SQL_BLOCK_COMMENT_RE.sub(" ", text)
-    text = SQL_STRING_RE.sub("''", text)
-    text = SQL_LINE_COMMENT_RE.sub(" ", text)
-    return [part.strip().lstrip("( \t\r\n").lower() for part in text.split(";") if part.strip().strip("( \t\r\n")]
-
-
-def sql_statement_writes(statement):
-    words = re.findall(r"[a-z_@.]+", statement)
-    first = words[0] if words else ""
-    if first in SQL_WRITE_KEYWORDS:
-        return first.upper()
-    if first == "set" and re.match(r"set\s+(?:global|persist|persist_only|@@global\.|@@persist\.)", statement):
-        return "SET GLOBAL"
-    if first == "with":
-        for word in words:
-            if word in ("insert", "update", "delete", "replace"):
-                return word.upper()
-    if re.search(r"\binto\s+(?:outfile|dumpfile)\b", statement):
-        return "SELECT INTO OUTFILE"
-    return ""
 
 
 def sql_write_reason(tool_name, tool_input):
@@ -1612,31 +1759,29 @@ def check_tool(tool_name, tool_input, profile_rules, permissions):
             hits.append(("outbound-msg", "%s sends/changes something outside the machine (ticket, issue, message: never in the feature's scope)" % tool_name))
     if tool_name in ("Write", "Edit", "NotebookEdit"):
         target = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
-        if APPROVAL_FILE.search(target) and "approval-write" in profile_rules:
-            hits.append(("approval-write", "ROADMAP-APPROVED.json is written only by the user's click in the panel"))
-        if PERMISSIONS_FILE.search(target) and "permissions-write" in profile_rules:
-            hits.append(("permissions-write", PERMISSIONS_MSG))
-        if STATE_FILE.search(target) and "state-write" in profile_rules:
-            hits.append(("state-write", "only the orchestrator writes ROADMAP/STATE/RULES/phases and the loop folder"))
-        if "secrets" in profile_rules and (SECRET_HINT.search(target) or secret_path_hit(target, permissions.get("_cwd")) or mentions_copied_secret(target, permissions.get("_cwd"), permissions.get("_specs_dir"))):
+        cwd, specs_dir = permissions.get("_cwd"), permissions.get("_specs_dir")
+        hits.extend(protected_target_hits(target, profile_rules, cwd, specs_dir, "only the orchestrator writes ROADMAP/STATE/RULES/phases and the loop folder"))
+        if "secrets" in profile_rules and secret_target_hit(target, cwd, specs_dir):
             hits.append(("secrets", "credential path"))
         if "capabilities-block" in profile_rules and tool_name in ("Write", "Edit"):
-            reason = capabilities_edit_reason(tool_name, tool_input, target, permissions.get("_cwd"))
+            reason = capabilities_edit_reason(tool_name, tool_input, target, cwd)
             if reason:
                 hits.append(("capabilities-block", reason))
-        if tool_name in ("Write", "Edit", "NotebookEdit"):
-            hits.extend(check_specs_only(target, profile_rules, permissions.get("_specs_dir"), permissions.get("_cwd")))
-        if tool_name in ("Write", "Edit"):
-            hits.extend(check_scope(target, profile_rules, permissions.get("_specs_dir"), permissions.get("_slug"), permissions.get("_cwd"), permissions.get("_task")))
+        hits.extend(check_specs_only(target, profile_rules, specs_dir, cwd))
+        hits.extend(check_scope(target, profile_rules, specs_dir, permissions.get("_slug"), cwd, permissions.get("_task")))
         for pattern in permissions.get("deny_path_regex", []):
             if project_pattern_matches(pattern, target):
                 hits.append(("project-deny", "path forbidden by the project: %s" % pattern))
     if tool_name in ("Read", "Glob", "Grep"):
+        cwd, specs_dir = permissions.get("_cwd"), permissions.get("_specs_dir")
         target = json.dumps(tool_input)
-        if "secrets" in profile_rules and (SECRET_HINT.search(target) or secret_path_hit(target, permissions.get("_cwd")) or mentions_copied_secret(target, permissions.get("_cwd"), permissions.get("_specs_dir"))):
+        # the JSON text (a Windows backslash comes doubled) and each string value on its own (a `\?\` or `~` spelling reads right only unescaped)
+        values = [value for value in (tool_input.values() if isinstance(tool_input, dict) else []) if isinstance(value, str)]
+        if "secrets" in profile_rules and (SECRET_HINT.search(target) or secret_path_hit(target, cwd) or mentions_copied_secret(target, cwd, specs_dir)
+                                           or any(secret_target_hit(value, cwd, specs_dir) for value in values)):
             hits.append(("secrets", "reading a credential"))
         if "secrets" in profile_rules and tool_name in ("Glob", "Grep"):
-            reason = tool_broad_secret(tool_name, tool_input, permissions.get("_cwd"), permissions.get("_specs_dir"))
+            reason = tool_broad_secret(tool_name, tool_input, cwd, specs_dir) or search_reaches_credentials(tool_name, tool_input, cwd)
             if reason:
                 hits.append(("secrets", reason))
     return hits

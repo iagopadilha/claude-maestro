@@ -99,7 +99,7 @@ from permission_denials import (  # noqa: E402,F401  (re-exported: tests, servic
 from worktree_state import (  # noqa: E402,F401  (re-exported: tests, services and `harness.py` keep using `run_loop.<name>`)
     RANK, loop_worktrees, roadmap_score, fingerprint, heads_of, count_new_commits, SYSTEM_DOCUMENT, dirty_worktrees,
     dirty_outside_specs, IN_FLIGHT_STATUSES, PORCELAIN_ROW, row_path, feature_scope_rows, commit_leftovers, discard_leftovers,
-    settle_dirty_worktrees, rewind, acquire_lock,
+    settle_dirty_worktrees, rewind, acquire_lock, release_lock,
 )
 from worktrees import (  # noqa: E402,F401  (re-exported: tests, services and `harness.py` keep using `run_loop.<name>`)
     HEAVY_FOLDERS, LAST_RUN_NAME, MIN_GIT_WORKTREE_VERSION, roadmap_features, worktree_repos, step, branch_exists, base_branch_of,
@@ -475,28 +475,32 @@ def main():
         print("[dry-run] turn 1 command:", " ".join(claude_command(opts, "/orchestrator continue --headless --turn 1 --wave %d" % opts.wave)))
         return 0
 
-    start_monitor(repo, work, meta, opts)
-    specs = os.path.join(work, ".specs", "project")
-    if opts.option:
-        options = load_json(loop_state.state_file(work, "LOOP.json")).get("options") or []
-        if not 1 <= opts.option <= len(options):
-            sys.exit("--option %d invalid: the notice listed %d option(s) (%s)" % (opts.option, len(options), "; ".join("%d) %s" % (i, o) for i, o in enumerate(options, 1)) or "none"))
-        opts.answer = str(options[opts.option - 1])
-    if opts.answer:
-        write_answer(work, opts.answer)
-    auto_state = {"total": 0, "per_feature": {}, "tiebreaks": {}}
-    if not opts.answer:
-        if not try_auto_answer(work, int(meta.get("turns", 0)) + 1, opts, meta, auto_state):  # turn stopped on a trivial question: answer it and carry on without you
-            try_gate_tiebreak(work, int(meta.get("turns", 0)) + 1, opts, meta, auto_state)  # spec that failed the gate on the previous run: break the tie
+    lock = acquire_lock(work)  # first thing after the worktree exists: a second loop on it stops here, before the monitor, the answer or a Claude call
+    try:
+        start_monitor(repo, work, meta, opts)
+        specs = os.path.join(work, ".specs", "project")
+        if opts.option:
+            options = load_json(loop_state.state_file(work, "LOOP.json")).get("options") or []
+            if not 1 <= opts.option <= len(options):
+                sys.exit("--option %d invalid: the notice listed %d option(s) (%s)" % (opts.option, len(options), "; ".join("%d) %s" % (i, o) for i, o in enumerate(options, 1)) or "none"))
+            opts.answer = str(options[opts.option - 1])
+        if opts.answer:
+            write_answer(work, opts.answer)
+        auto_state = {"total": 0, "per_feature": {}, "tiebreaks": {}}
+        if not opts.answer:
+            if not try_auto_answer(work, int(meta.get("turns", 0)) + 1, opts, meta, auto_state):  # turn stopped on a trivial question: answer it and carry on without you
+                try_gate_tiebreak(work, int(meta.get("turns", 0)) + 1, opts, meta, auto_state)  # spec that failed the gate on the previous run: break the tie
 
-    lock = acquire_lock(work)
-    logs = loop_state.turns_dir(work)
-    turn = int(meta.get("turns", 0))
-    stall, last_score, last_print, limit_hits = 0, roadmap_score(work)[0], "", 0
-    opts.last_claude_used = (meta.get("claude"), meta.get("claude_account")) if meta.get("claude") else None  # a resumed run compares with the last turn
-    cost = float(meta.get("cost_usd", 0))
-    if not loop_state.load_snapshot(work, turn):  # baseline: state before this run's first turn (return point for --rewind)
-        loop_state.snapshot(work, turn, git(work, "rev-parse", "HEAD")[1], heads_of(work, meta))
+        logs = loop_state.turns_dir(work)
+        turn = int(meta.get("turns", 0))
+        stall, last_score, last_print, limit_hits = 0, roadmap_score(work)[0], "", 0
+        opts.last_claude_used = (meta.get("claude"), meta.get("claude_account")) if meta.get("claude") else None  # a resumed run compares with the last turn
+        cost = float(meta.get("cost_usd", 0))
+        if not loop_state.load_snapshot(work, turn):  # baseline: state before this run's first turn (return point for --rewind)
+            loop_state.snapshot(work, turn, git(work, "rev-parse", "HEAD")[1], heads_of(work, meta))
+    except BaseException:  # every early exit before the loop proper (sys.exit included) lets the lock go
+        release_lock(lock)
+        raise
     try:
         while True:
             paused = pause_requested(work, turn)  # before spending the next turn
@@ -718,10 +722,7 @@ def main():
     except KeyboardInterrupt:
         return finish(work, meta, "error", "interrupted by the user (Ctrl+C)", opts)
     finally:
-        try:
-            os.remove(lock)
-        except OSError:
-            pass
+        release_lock(lock)
 
 
 def entry():

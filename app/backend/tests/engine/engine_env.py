@@ -41,9 +41,11 @@ def create_fake_skill(skill_dir, copy_guard=True):
     with open(os.path.join(plugin_hooks, "hooks.json"), "w", encoding="utf-8") as handle:
         json.dump(HOOKS_JSON, handle)
     if copy_guard and os.path.isfile(GUARD_REAL):
-        target = os.path.join(skill_dir, "hooks", "guard.py")
-        shutil.copyfile(GUARD_REAL, target)
-        return target
+        source_dir = os.path.dirname(GUARD_REAL)
+        for name in os.listdir(source_dir):  # guard.py imports its sibling modules (guard_sql.py, guard_paths.py, ...)
+            if name.startswith("guard") and name.endswith(".py"):
+                shutil.copyfile(os.path.join(source_dir, name), os.path.join(skill_dir, "hooks", name))
+        return os.path.join(skill_dir, "hooks", "guard.py")
     return ""
 
 

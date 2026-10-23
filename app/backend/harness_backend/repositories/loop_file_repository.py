@@ -15,6 +15,7 @@ ENGINE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "engi
 if ENGINE_DIR not in sys.path:
     sys.path.insert(0, ENGINE_DIR)
 import graph_view  # noqa: E402
+import loop_io  # noqa: E402
 import loop_state  # noqa: E402
 
 IS_WINDOWS = os.name == "nt"
@@ -144,10 +145,7 @@ class LoopFileRepository:
         return loop_state.loop_path(work_dir, "LOOP.lock")
 
     def read_lock_pid(self, work_dir):
-        try:
-            return int(loop_state.read(self.get_lock_path(work_dir)).strip() or 0)
-        except ValueError:
-            return 0
+        return loop_io.lock_owner_pid(self.get_lock_path(work_dir))
 
     def is_process_alive(self, pid):
         return self.process_checker(pid)

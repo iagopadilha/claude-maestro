@@ -47,7 +47,7 @@ class AppHttpServer:
             except OSError:
                 continue
             self.port = self.server.server_address[1]
-            self.url = "http://127.0.0.1:%d/" % self.port
+            self.url = "http://127.0.0.1:%d/" % self.port  # the bound address: `localhost` tries ::1 first, and on Windows a refused connect costs 2 s
             return self.url
         raise OSError("port %d is busy" % fixed_port if fixed_port else "no free port in %d..%d" % port_range)
 

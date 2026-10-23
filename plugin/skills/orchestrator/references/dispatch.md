@@ -100,7 +100,7 @@ Every feature is its own lane with ONE agent per step (`SKILL.md`, "Lanes"): nev
 
 Before dispatching 2+ executors in parallel, **check disjointness by code**, not by eye: `python "<app>/harness.py" state disjoint <root> <slug1> <slug2>` (exit 1 = `paths` conflict).
 
-Ceiling: one agent per lane, so at most `--wave` simultaneous (default 3, never more than 8); brownfield mappers 3. Dispatch the whole round (one agent per live lane, each at its own step) in a single message, otherwise it runs in series.
+Ceiling: one agent per lane, except a `building` lane, which runs up to `Max parallel tasks` executors per task wave; so at most `--wave` × `Max parallel tasks` simultaneous (`--wave` default 3, never more than 8; `Max parallel tasks` default 3, 1 to 5), shrunk when the spend or minutes left in the turn are short; brownfield mappers 3. Dispatch the whole round (one agent per live lane, each at its own step) in a single message, otherwise it runs in series.
 
 ## .NET projects
 
